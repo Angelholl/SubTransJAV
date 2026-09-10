@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+.mimosa/
+.zcode/
+Logs/
+Errors/
+Temp/
+.analysis_tmp/
+config/api_keys.bin
+config/glossary_learned.csv
+测试文件/
+*.lnk

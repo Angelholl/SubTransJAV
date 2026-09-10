@@ -1,0 +1,364 @@
+"""
+subtransjav-refine 命令行入口
+"""
+
+import argparse
+import os
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="subtransjav-refine",
+        description="v2 两阶段字幕净语翻译流水线（阶段A 净语+翻译 → 阶段B 审校+抛光）")
+
+    # ---- 输入源 ----
+    grp_input = p.add_argument_group("输入源")
+    grp_input.add_argument("-i", "--input", nargs="+", default=[],
+                           action="extend",
+                           help="输入 SRT 文件路径（可多个，可多次 -i 累积）")
+    grp_input.add_argument("--input-dir", default="",
+                           help="输入目录（扫描目录下所有 .srt 文件）")
+    grp_input.add_argument("-r", "--recursive", action="store_true",
+                           help="递归扫描子目录（需配合 --input-dir）")
+    grp_input.add_argument("--filter-pattern", default="*.srt",
+                           help="文件名过滤模式（默认 *.srt，支持 *.ja.srt 等）")
+    grp_input.add_argument("--min-size", type=int, default=0,
+                           help="最小文件大小（字节）")
+    grp_input.add_argument("--max-size", type=int, default=0,
+                           help="最大文件大小（字节，0=不限）")
+    grp_input.add_argument("--min-date", default="",
+                           help="最早修改日期（YYYY-MM-DD）")
+    grp_input.add_argument("--max-date", default="",
+                           help="最晚修改日期（YYYY-MM-DD）")
+    grp_input.add_argument("--exclude", nargs="*", default=[],
+                           help="排除的路径模式（如 *_raw.srt）")
+
+    p.add_argument("-o", "--output-dir", default="", help="输出目录（默认与输入同目录）")
+
+    p.add_argument("--profile", choices=["local", "cloud"], default="local",
+                   help="v2 兜底档位：local=strict(cleaner_rules+误译拦截) | cloud=lenient(仅通用校验)")
+
+    for n, label in ((1, "阶段A"), (3, "阶段B")):
+        g = p.add_argument_group(f"{label}（槽位 s{n}）")
+        g.add_argument(f"--s{n}-provider",
+                       choices=["deepseek", "zen", "lmstudio", "ollama",
+                                "siliconflow", "custom"],
+                       help=f"{label} 服务商（槽位 s{n}）")
+        g.add_argument(f"--s{n}-model", help=f"{label} 模型名（槽位 s{n}）")
+        g.add_argument(f"--s{n}-instructions", help=f"{label} 指令模板文件（槽位 s{n}）")
+
+    p.add_argument("--templates-dir", default=".",
+                   help="角色卡所在目录（默认在当前目录查找 角色-净语翻译.txt / 角色-审校抛光.txt 两张 v2 角色卡）")
+    p.add_argument("--lmstudio-endpoint", default="http://localhost:1234/v1")
+    p.add_argument("--ollama-endpoint", default="http://localhost:11434/v1")
+    p.add_argument("--zen-endpoint", default="https://opencode.ai/zen/v1")
+    p.add_argument("--siliconflow-endpoint", default="https://api.siliconflow.cn/v1")
+    p.add_argument("--custom-endpoint", default="", help="自定义 OpenAI 兼容接口地址")
+
+    p.add_argument("--batch-local", type=int, default=30, help="本地服务商每批条数（上限50）")
+    p.add_argument("--batch-cloud", type=int, default=30, help="云端服务商每批条数")
+
+    p.add_argument("--glossary", default="", help="词库 CSV 文件（原文,译文）")
+    p.add_argument("--no-gl1", action="store_true", help="词库不作用于阶段A（净语+翻译）")
+    p.add_argument("--no-gl2", action="store_true", help="词库不作用于阶段B（审校+抛光）")
+
+    # ---- 翻译记忆库 ----
+    grp_tm = p.add_argument_group("翻译记忆库 (TM)")
+    grp_tm.add_argument("--tm-db", default="",
+                        help="翻译记忆库路径（默认 Temp/tm.db）")
+    grp_tm.add_argument("--tm", action="store_true", default=True,
+                        help="启用翻译记忆库（默认启用）")
+    grp_tm.add_argument("--no-tm", action="store_true",
+                        help="禁用翻译记忆库")
+    grp_tm.add_argument("--tm-threshold", type=float, default=0.85,
+                        help="模糊匹配阈值 (0-1，默认 0.85)")
+    grp_tm.add_argument("--no-tm-learn-gate", action="store_true",
+                        help="关闭 TM 学习准入门槛（默认开启，用于 A/B 验证）")
+    p.add_argument("--auto-glossary", action="store_true",
+                   help="阶段A 完成后自动从翻译结果中提取术语到词库")
+    p.add_argument("--cleaner-config", default=None,
+                   help="自定义净语规则配置目录（默认使用内置模板）")
+    grp_tm.add_argument("--tm-stats", action="store_true",
+                        help="显示翻译记忆库统计后退出")
+    grp_tm.add_argument("--tm-export", default="",
+                        help="导出翻译记忆库为 CSV 后退出")
+    grp_tm.add_argument("--tm-import", default="",
+                        help="从 CSV 导入翻译记忆库后退出")
+    grp_tm.add_argument("--tm-clear", action="store_true",
+                        help="清空翻译记忆库后退出")
+
+    p.add_argument("--deepseek-key", default="",
+                   help="DeepSeek API Key（命令行传密钥会暴露在进程列表，建议改用环境变量 DEEPSEEK_API_KEY）")
+    p.add_argument("--zen-key", default="",
+                   help="Zen/OpenCode API Key（命令行传密钥会暴露在进程列表，建议改用环境变量 OPENCODE_API_KEY）")
+    p.add_argument("--siliconflow-key", default="",
+                   help="SiliconFlow API Key（命令行传密钥会暴露在进程列表，建议改用环境变量 SILICONFLOW_API_KEY）")
+    p.add_argument("--custom-key", default="",
+                   help="自定义服务商 API Key（命令行传密钥会暴露在进程列表，建议改用环境变量 CUSTOM_API_KEY）")
+
+    p.add_argument("--fallback-local", action="store_true",
+                   help="云端阶段故障(限流/宕机/持续解析失败)时自动切换本地模型接管")
+    p.add_argument("--fallback-model", default="google/gemma-4-12b",
+                   help="本地接管使用的 LM Studio 模型名")
+
+    grp_v2 = p.add_argument_group("v2 管线")
+    grp_v2.add_argument("--v2-concurrency", type=int, default=1,
+                        help="批间并发数（1-5，默认1为串行，越界自动钳制）")
+    grp_v2.add_argument("--v2-ctx", type=int, default=32768,
+                        help="本地模型上下文窗口（默认32768，用于批大小与max_tokens预算）")
+    grp_v2.add_argument("--force", action="store_true",
+                        help="忽略已有产物强制重跑（覆盖前自动备份）")
+
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--clean-tmp-on-exit", action="store_true",
+                   help="进程退出时自动清理 .refine_tmp 临时目录")
+    p.add_argument("--dry-run", action="store_true", help="仅打印执行计划，不实际调用")
+    return p
+
+
+def _collect_input_files(args) -> list:
+    """收集输入文件：来自 -i 和 --input-dir（含递归/过滤）。"""
+    from .batch import find_srt_files
+    files = list(args.input)
+
+    if args.input_dir:
+        scanned = find_srt_files(
+            directory=args.input_dir,
+            recursive=args.recursive,
+            pattern=args.filter_pattern,
+            min_size=args.min_size,
+            max_size=args.max_size,
+            min_date=args.min_date,
+            max_date=args.max_date,
+            exclude_patterns=args.exclude or None,
+        )
+        if not scanned:
+            print(f"⚠️ 目录下未找到匹配的 SRT 文件: {args.input_dir}")
+        else:
+            print(f"📂 目录扫描: {args.input_dir} -> {len(scanned)} 个文件")
+            files.extend(scanned)
+
+    # 去重（保持顺序）
+    seen = set()
+    deduped = []
+    for f in files:
+        af = os.path.abspath(f)
+        if af not in seen:
+            seen.add(af)
+            deduped.append(af)
+    return deduped
+
+
+def config_from_args(args):
+    from .config import RefineConfig, StageConfig
+
+    # v2 固定 4 槽：槽0（--s1-*）=阶段A 启用、槽2（--s3-*）=阶段B 启用；
+    # 槽1/3 为占位禁用槽（v2 未用，保留 4 槽结构以兼容 TM by_stage 历史数据）
+    stages = [
+        StageConfig(0, True, args.s1_provider or "lmstudio",
+                    args.s1_model or "", args.s1_instructions or ""),
+        StageConfig(1, False, "deepseek", "", ""),
+        StageConfig(2, True, args.s3_provider or "lmstudio",
+                    args.s3_model or "", args.s3_instructions or ""),
+        StageConfig(3, False, "lmstudio", "", ""),
+    ]
+
+    endpoints = {"lmstudio": args.lmstudio_endpoint,
+                 "ollama": args.ollama_endpoint,
+                 "zen": args.zen_endpoint,
+                 "siliconflow": args.siliconflow_endpoint,
+                 "custom": args.custom_endpoint}
+
+    input_files = _collect_input_files(args)
+
+    return RefineConfig(
+        inputs=input_files,
+        output_dir=args.output_dir,
+        stages=stages,
+        templates_dir=args.templates_dir,
+        batch_local=args.batch_local,
+        batch_cloud=args.batch_cloud,
+        glossary_path=args.glossary,
+        apply_glossary_stage1=not args.no_gl1,
+        apply_glossary_stage2=not args.no_gl2,
+        api_key_deepseek=args.deepseek_key,
+        api_key_zen=args.zen_key,
+        api_key_siliconflow=args.siliconflow_key,
+        api_key_custom=args.custom_key,
+        endpoints=endpoints,
+        fallback_local=args.fallback_local,
+        fallback_model=args.fallback_model,
+        verbose=args.verbose,
+        tm_enabled=not args.no_tm,
+        tm_db_path=args.tm_db,
+        tm_threshold=args.tm_threshold,
+        auto_glossary=args.auto_glossary,
+        cleaner_config_dir=args.cleaner_config or "",
+        v2_profile=args.profile,
+        v2_concurrency=args.v2_concurrency,
+        v2_ctx_local=args.v2_ctx,
+        force=args.force,
+        tm_learn_gate=not args.no_tm_learn_gate,
+    )
+
+
+def print_plan(cfg):
+    from .config import PROVIDER_TEXT
+    from .batch import scan_summary
+    print("📋 执行计划：")
+    print(f"   输入: {len(cfg.inputs)} 个文件")
+    summary = scan_summary(cfg.inputs)
+    if summary["total_size_mb"] > 0:
+        print(f"   总大小: {summary['total_size_mb']} MB")
+    if len(summary["dirs"]) > 1:
+        print(f"   涉及目录: {len(summary['dirs'])} 个")
+    for p in cfg.inputs[:10]:
+        print(f"     - {os.path.basename(p)}")
+    if len(cfg.inputs) > 10:
+        print(f"     ... 共 {len(cfg.inputs)} 个文件")
+    print(f"   输出目录: {cfg.output_dir or '(与输入同目录)'}")
+    errs = cfg.validate()
+    print(f"   管线: v2 两阶段（净语+翻译 / 审校+抛光）| 兜底档位: {cfg.v2_profile}")
+    for tag, slot in (("阶段A 净语+翻译", 0), ("阶段B 审校+抛光", 2)):
+        s = cfg.stages[slot]
+        m = cfg.resolve_model(s) or "(默认)"
+        print(f"   ▶ {tag}  [{PROVIDER_TEXT.get(s.provider, s.provider)}] {m}")
+    if cfg.glossary_path:
+        scope = [n for n, on in (("阶段A", cfg.apply_glossary_stage1),
+                                 ("阶段B", cfg.apply_glossary_stage2)) if on]
+        print(f"   词库: {cfg.glossary_path} -> {','.join(scope) or '无'}")
+    if cfg.tm_enabled:
+        print(f"   翻译记忆库: {'启用' if cfg.tm_enabled else '禁用'}"
+              f" (阈值 {cfg.tm_threshold})")
+    if errs:
+        print("❌ 配置问题:")
+        for e in errs:
+            print("   -", e)
+    return not errs
+
+
+def _handle_tm_commands(args):
+    """处理翻译记忆库管理命令（执行后退出）。返回 True 表示已处理。"""
+    from .tm import TranslationMemory
+    import sys as _sys
+
+    # Windows GBK 终端兼容：确保 UTF-8 输出
+    if _sys.stdout.encoding and _sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+        try:
+            _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    tm = TranslationMemory(args.tm_db) if args.tm_db else TranslationMemory()
+    try:
+        if args.tm_stats:
+            s = tm.stats()
+            print("翻译记忆库统计：")
+            print(f"   总条目: {s['total']}")
+            print(f"   总命中: {s['total_hits']}")
+            for stage, cnt in sorted(s.get("by_stage", {}).items()):
+                stage_names = {0: "阶段1(净语)", 1: "阶段2(翻译)",
+                               2: "阶段3(审核)", 3: "阶段4(抛光)"}
+                print(f"   {stage_names.get(stage, f'阶段{stage}')}: {cnt} 条")
+            print(f"   数据库: {s['db_path']}")
+            return True
+        if args.tm_export:
+            tm.export_csv(args.tm_export)
+            print(f"已导出到: {args.tm_export}")
+            return True
+        if args.tm_import:
+            n = tm.import_csv(args.tm_import)
+            print(f"已导入 {n} 条新记录")
+            return True
+        if args.tm_clear:
+            tm.clear()
+            print("翻译记忆库已清空")
+            return True
+    finally:
+        tm.close()
+    return False
+
+
+def main(argv=None):
+    # 模型缓存重定向到仓库 models/ 目录（不占 C 盘）
+    from subtransjav.utils.model_cache import apply_model_cache_env
+    apply_model_cache_env()
+
+    args = build_parser().parse_args(argv)
+
+    # TM 管理命令（独立于翻译流程）
+    if _handle_tm_commands(args):
+        return
+
+    cfg = config_from_args(args)
+
+    # ------------------------------------------------------------------
+    # 运行日志：全量落盘（Logs/M-D.txt，同日追加时间）+ 7 天自动清理
+    # ------------------------------------------------------------------
+    import sys as _sys
+    import time as _time
+    from .config import LOGS_DIR
+    from .runlog import (TeeWriter, next_log_path, cleanup_old_logs,
+                         write_summary, archive_error_log, errors_dir)
+
+    cleanup_old_logs(LOGS_DIR)
+    log_path = next_log_path(LOGS_DIR)
+    log_file = open(log_path, 'w', encoding='utf-8')
+    shared_counts = {'error': 0, 'warn': 0, 'failover': 0}
+    tee_out = TeeWriter(_sys.stdout, log_file, shared_counts)
+    tee_err = TeeWriter(_sys.stderr, log_file, shared_counts)
+    start_time = _time.time()
+    status = "⚠️ 中断"
+    err_msg = ""
+    exit_code = 0
+
+    _orig_stdout, _orig_stderr = _sys.stdout, _sys.stderr
+    _sys.stdout = tee_out
+    _sys.stderr = tee_err
+    try:
+        if args.clean_tmp_on_exit:
+            import atexit
+            from .orchestrator import cleanup_created_tmp_dirs
+            atexit.register(cleanup_created_tmp_dirs)
+
+        if args.dry_run:
+            ok = print_plan(cfg)
+            status = "✅ 成功（dry-run）" if ok else "❌ 失败（dry-run 配置错误）"
+            exit_code = 0 if ok else 2
+        else:
+            try:
+                from .pipeline_v2 import run_v2
+                out = run_v2(cfg)
+                status = "✅ 成功"
+                print(f"\n✅ [refine-v2] 最终输出: {out}")
+            except KeyboardInterrupt:
+                status = "⚠️ 用户中断"
+                exit_code = 130
+            except Exception as e:
+                status = "❌ 失败"
+                err_msg = str(e)
+                exit_code = 1
+                print(f"\n❌ [refine] 执行失败：{e}")
+    finally:
+        _sys.stdout, _sys.stderr = _orig_stdout, _orig_stderr
+        try:
+            tee_out.close()
+            tee_err.close()
+            write_summary(log_file, status, _time.time() - start_time,
+                          len(cfg.inputs), shared_counts, log_path)
+        finally:
+            log_file.close()
+        # 失败/中断的运行归档到 Errors/，并按同一保留策略清理
+        archived = archive_error_log(log_path, status, LOGS_DIR)
+        if archived:
+            cleanup_old_logs(errors_dir(LOGS_DIR))
+            print(f"❗ 错误日志已归档: {archived}")
+
+        print(f"\n📄 运行日志已保存: {log_path}")
+        if err_msg:
+            print(f"   {err_msg}")
+        _sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

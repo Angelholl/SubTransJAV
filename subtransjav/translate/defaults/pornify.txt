@@ -1,0 +1,2 @@
+# Tone: pornify -- custom style instructions (empty by default).
+# Add your own style instructions below. Each line is appended to the system prompt.

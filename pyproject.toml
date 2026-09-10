@@ -1,0 +1,88 @@
+# =============================================================================
+# SubTransJAV - pyproject.toml
+# =============================================================================
+# 从 SubTransJAV 项目剥离的独立字幕翻译（净语翻译两阶段流水线（v2））项目。
+#
+# 安装：
+#   pip install -e .            # 核心翻译引擎（refine CLI 所需）
+#   pip install -e ".[gui]"     # 桌面 GUI（pywebview）
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subtransjav"
+version = "1.0.0"
+description = "Standalone two-stage (v2) SRT subtitle translation (net-speech refine pipeline) extracted from SubTransJAV"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "MeiZhong"}]
+requires-python = ">=3.10,<3.14"
+keywords = ["subtitle", "srt", "translation", "llm", "pysubtrans"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# 翻译引擎核心依赖（refine v2 两阶段流水线 + PySubtrans 云端服务商通道）
+dependencies = [
+    "pysubtrans>=1.5.0",      # AI 字幕翻译引擎
+    "openai>=1.35.0",         # OpenAI 兼容接口（deepseek/zen/lmstudio/siliconflow/custom）
+    "requests",
+    "pysrt",
+    "srt",
+    "tiktoken>=0.7.0",
+    "pyyaml>=6.0",
+    "opencc-python-reimplemented>=0.1.7",
+    "psutil>=5.9",              # 进程树管理（terminate_process_tree 等核心模块）
+    "sudachipy>=0.6.0",
+    "sudachidict_core>=20210608",
+]
+
+[project.optional-dependencies]
+gui = [
+    "pywebview>=5.0.0",
+    "pythonnet>=3.0; sys_platform == 'win32'",
+]
+gemini = [
+    "google-genai>=1.39.0",
+    "google-api-core>=2.14.0",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+subtransjav-refine = "subtransjav.refine.cli:main"
+subtransjav-gui = "subtransjav.webview_gui.main:main"
+
+# -----------------------------------------------------------------------------
+# Setuptools Configuration
+# -----------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+include = ["subtransjav*"]
+exclude = ["tests*", "config*", "models*"]
+
+[tool.setuptools.package-data]
+"subtransjav.translate" = ["defaults/*.txt"]
+"subtransjav.webview_gui" = ["assets/*.html", "assets/*.css", "assets/*.js", "assets/*.ico"]
+"subtransjav.refine" = ["defaults/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
