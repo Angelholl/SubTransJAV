@@ -1,15 +1,31 @@
+# Python
+.venv/
 __pycache__/
 *.pyc
-.venv/
-.pytest_cache/
 *.egg-info/
-.mimosa/
-.zcode/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+models/
+
+# 运行数据
 Logs/
 Errors/
 Temp/
+测试文件/
 .analysis_tmp/
+
+# 敏感数据（严禁入库）
 config/api_keys.bin
 config/glossary_learned.csv
-测试文件/
+
+# 本地工具数据
+.zcode/
+.mimosa/
+
+# 快捷方式
 *.lnk
+
+# 内部专用工具（不随发布）
+tools/sync_release.py
