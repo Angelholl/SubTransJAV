@@ -1,7 +1,7 @@
 """
 SubTransJAV PyWebView API
 
-Backend API for the standalone SRT translation GUI (ex-SubTransJAV Tab 4).
+Backend API for the standalone SRT translation GUI.
 Maintains the thin wrapper pattern - delegates work to the
 ``subtransjav.refine.cli`` subprocess and streams its output.
 """
@@ -270,7 +270,7 @@ class TranslateAPI:
             from subtransjav.refine.grammar_hint import is_grammar_hint_available
             status["features"]["grammar_hints"] = {
                 "available": is_grammar_hint_available(),
-                "description": "日语形态素分析提示（S2阶段自动启用）"
+                "description": "日语形态素分析提示（阶段A 自动启用）"
             }
         except ImportError:
             status["features"]["grammar_hints"] = {
@@ -703,7 +703,7 @@ class TranslateAPI:
         return logs
 
     # ================================================================
-    # Refine UI 辅助 API（净语翻译四阶段界面）
+    # Refine UI 辅助 API（净语翻译两阶段界面）
     # ================================================================
     def refine_default_paths(self) -> Dict[str, Any]:
         """返回词库/角色卡目录的默认路径"""

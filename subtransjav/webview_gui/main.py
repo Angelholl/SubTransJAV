@@ -1,8 +1,8 @@
 """
 SubTransJAV PyWebView GUI Entry Point
 
-Standalone desktop GUI for the four-stage SRT refinement pipeline,
-extracted from the SubTransJAV project's Tab 4 (AI SRT Translate).
+Standalone desktop GUI for the two-stage SRT refinement pipeline
+(stage A: cleanup + translation; stage B: review + polish).
 
 Requires the [gui] extra: pip install subtransjav[gui]
 """

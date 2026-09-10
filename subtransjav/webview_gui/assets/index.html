@@ -110,8 +110,7 @@
 
                         <div class="tab-panel active" id="tab4-panel" role="tabpanel">
 <!-- ============================================================
-      净语翻译（refine）四阶段配置界面
-     （自 SubTransJAV TAB4 剥离的独立版）
+      净语翻译（refine）两阶段配置界面
 ============================================================= -->
 <div class="translator-container" id="refinePanel">
   <div style="display:flex; flex-direction:column; gap:10px;">
@@ -320,7 +319,7 @@
       <button type="button" id="refineCancelBtn" class="btn"
               style="background:#d9534f; color:#fff;" disabled>⏹ 停止</button>
       <span style="color:#888; font-size:12px;">
-        产物命名 *_refine_A.srt → *_final_cn.srt；已存在产物默认跳过
+        产物命名含 .subtransjav 中间件与 *_final_cn.srt 终稿；已存在产物默认跳过
       </span>
     </div>
 
@@ -379,13 +378,19 @@
 
                 <div class="about-section">
                     <h3>简介</h3>
-                    <p>基于 SubTransJAV（TAB4）的独立 .srt 字幕日译中工具，本地双引擎推理。
-                       v2 两阶段流水线：阶段A 净语+翻译（一次调用完成清洗与日译中）→
+                    <p>SubTransJAV 是一款 .srt 字幕日译中桌面工具，支持本地与云端双引擎推理。
+                       采用 v2 两阶段流水线：阶段A 净语+翻译（一次调用完成文本清洗与日译中）→
                        阶段B 审校+抛光（对照日文原文审核、补译、润色）。</p>
                 </div>
 
                 <div class="about-section">
-                    <p>TM 翻译记忆库 · 双引擎分歧质量报告与伪影过滤 · 词库自动学习 · 云端故障本地接管</p>
+                    <ul>
+                        <li>TM 翻译记忆库（三层准入门槛，防止低质翻译入库）</li>
+                        <li>双引擎分歧质量报告与伪影/幻觉过滤</li>
+                        <li>词库自动学习（带准入门槛，防止污染词库）</li>
+                        <li>云端故障本地接管（云端限流/宕机时自动切换本地模型）</li>
+                        <li>双语字幕上下文预审（context_review 分歧复核工具）</li>
+                    </ul>
                 </div>
 
                 <div class="about-section">
@@ -400,7 +405,8 @@
 
                 <div class="about-section">
                     <p style="text-align: center; margin-top: 20px;">
-                        <a href="https://github.com/meizhong986/SubTransJAV" class="about-link" target="_blank">SubTransJAV 项目主页</a>
+                        <!-- TODO: 建仓后填入项目主页链接 -->
+                        <span class="about-link">SubTransJAV 项目主页</span>
                     </p>
                 </div>
             </div>

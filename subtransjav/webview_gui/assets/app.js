@@ -1,12 +1,9 @@
 /**
- * 净语翻译 · SubTransJAV Translate - JavaScript Controller
- *
- * 从 SubTransJAV GUI app.js 剥离，仅保留 TAB4（AI SRT Translate / 净语翻译）
- * 相关逻辑的独立精简版。
+ * SubTransJAV GUI 前端控制器
  *
  * Features:
  * - SRT 文件列表管理（按钮选择 / 文件夹扫描 / 拖拽）
- * - 四阶段流水线配置与启动（refine 子进程）
+ * - 两阶段流水线配置与启动（refine 子进程）
  * - 实时日志流 + 进度轮询
  * - 主题切换
  */
@@ -554,7 +551,7 @@ const DirectoryControls = {
 };
 
 // ============================================================
-// Translator Manager (净语翻译四阶段执行)
+// Translator Manager (净语翻译两阶段执行)
 // ============================================================
 const TranslatorManager = {
     state: {
@@ -706,7 +703,7 @@ const TranslatorManager = {
 // Theme Manager (runtime stylesheet switching with persistence)
 // ============================================================
 const ThemeManager = {
-    storageKey: 'wj_theme',
+    storageKey: 'subtransjav_theme',
     themes: {
         'default': 'style.css',
         'google': 'style.google.css',
