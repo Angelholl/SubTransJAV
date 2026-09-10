@@ -6,7 +6,7 @@ Refine 指令模板构建（v2）：
 
 规则文本（句末助词/重试指令/硬性豁免）来自 translation_rules.yaml
 单一数据源（rules_loader），不再在代码中硬编码，防止 YAML 与代码漂移。
-legacy 四阶段模板加载函数已随 legacy 管线删除。
+legacy 管线（已删除）的模板加载函数不再保留。
 """
 
 import functools

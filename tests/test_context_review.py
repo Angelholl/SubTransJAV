@@ -363,7 +363,6 @@ class TestStats:
                 make_row(cat=2, verify="N/A", film="a.csv")]
         st = cr.compute_film_stat("a.csv", rows, {r["id"] for r in rows})
         lines = cr.build_stat_block([st], rows)
-        joined = "\n".join(lines)
         assert all(ln.startswith("#") for ln in lines)
         assert "必看行 3" in lines[1]
         assert "类别1=2 类别2=1" in lines[1]

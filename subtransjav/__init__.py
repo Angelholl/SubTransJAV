@@ -1,6 +1,5 @@
 """
-SubTransJAV —— 从 SubTransJAV TAB4（AI SRT Translate / 净语翻译）剥离的
-独立字幕翻译项目。
+SubTransJAV —— 字幕翻译与精修工具包。
 
 子包：
     refine    v2 两阶段净语翻译流水线（阶段A 净语+翻译 → 阶段B 审校+抛光）

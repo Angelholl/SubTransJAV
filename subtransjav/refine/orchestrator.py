@@ -6,7 +6,7 @@ pipeline_v2（两阶段管线）复用的公共工具：
   - 翻译记忆库初始化（_init_tm）
   - 词库合并加载（load_glossary_merged / learned_glossary_path）
   - 阶段路径解析（_resolve_stage_paths / refine_tmp_dir / strip_lang_suffix）
-legacy 四阶段编排器（run 流程与单文件执行及其阶段辅助函数）已删除。
+legacy 管线（已删除）的编排器（run 流程与单文件执行及其阶段辅助函数）不再保留。
 """
 
 import hashlib

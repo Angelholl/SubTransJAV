@@ -37,9 +37,8 @@ dependencies = [
     "pysubtrans>=1.5.0",      # AI 字幕翻译引擎
     "openai>=1.35.0",         # OpenAI 兼容接口（deepseek/zen/lmstudio/siliconflow/custom）
     "requests",
-    "pysrt",
     "srt",
-    "tiktoken>=0.7.0",
+    "regex",                  # 正则引擎（deletion_patch 直接 import）
     "pyyaml>=6.0",
     "opencc-python-reimplemented>=0.1.7",
     "psutil>=5.9",              # 进程树管理（terminate_process_tree 等核心模块）
