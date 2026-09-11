@@ -26,6 +26,3 @@ config/glossary_learned.csv
 
 # 快捷方式
 *.lnk
-
-# 内部专用工具（不随发布）
-tools/sync_release.py
