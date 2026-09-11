@@ -6,7 +6,7 @@ WebView GUI 安全护栏（纯函数，无 webview/GUI 依赖，便于单元测�
 """
 
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import urlparse
 
 # Project root (subtransjav/webview_gui/security.py -> project root)
@@ -22,7 +22,19 @@ def _resolve_safe_path(path: str) -> Path:
 
     Raises ``ValueError`` when the path is outside every allowed root.
     """
-    resolved = Path(path).resolve()
+    raw = path.replace("\\", "/")
+    # 跨平台越界判定：Windows 盘符绝对路径（如 D:/x.csv）在非 Windows
+    # 语义下不是绝对路径，resolve() 会把它折进 cwd；先按越界拒绝。
+    # 本机原生绝对路径交由下方白名单裁决（Windows 行为不变）。
+    if PureWindowsPath(raw).is_absolute() and not Path(raw).is_absolute():
+        raise ValueError(f"路径不在允许的目录下: {raw}")
+    resolved = Path(raw).resolve()
+
+    # 锚点逃逸判定：字面锚定于仓库根的路径折叠 .. 后不得逃出仓库根，
+    # 即使逃出落点仍在 home 白名单内（CI 工作区常嵌套于 home 之下）。
+    anchored = REPO_ROOT in Path(raw).parents
+    if anchored and not resolved.is_relative_to(REPO_ROOT.resolve()):
+        raise ValueError(f"路径不在允许的目录下: {resolved}")
 
     try:
         resolved.relative_to(Path.home())

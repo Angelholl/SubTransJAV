@@ -41,7 +41,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -959,7 +959,14 @@ def _guard_output(path: Path) -> Path:
     tmp_path 下运行，属工具的合法使用场景）；其余一律拒绝
     （打印错误并返回 None，由调用方以非零码退出）。
     """
-    p = Path(path).resolve()
+    raw = str(path).replace("\\", "/")
+    # 跨平台越界判定：Windows 盘符绝对路径（如 D:/x.csv）在 POSIX 下会被
+    # resolve() 折进 cwd/项目内，先按越界拒绝；本机原生绝对路径仍交由
+    # 下方白名单（项目内 / 系统临时目录）裁决，Windows 行为不变。
+    if PureWindowsPath(raw).is_absolute() and not Path(raw).is_absolute():
+        print(f"❌ 输出路径越界（须位于项目目录内）: {raw}")
+        return None
+    p = Path(raw).resolve()
     root = Path(__file__).resolve().parents[1]
     tmp = Path(tempfile.gettempdir()).resolve()
     inside_root = str(p).startswith(str(root) + os.sep) or p == root
