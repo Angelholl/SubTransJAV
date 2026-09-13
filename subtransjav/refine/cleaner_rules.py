@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -234,12 +233,9 @@ class ChineseCleaner:
         degree_words = {"好", "太", "真", "非常", "超级", "特别", "真的好"}
         for dw in degree_words:
             remaining = remaining.replace(dw, "")
-        for marker in self.action_markers:
-            if marker in remaining:
-                return True
-        return False
+        return any(marker in remaining for marker in self.action_markers)
 
-    def _extract_emotion_root(self, text: str) -> Optional[str]:
+    def _extract_emotion_root(self, text: str) -> str | None:
         stripped = text.strip()
         if not stripped:
             return None
@@ -271,17 +267,11 @@ class ChineseCleaner:
         inner = stripped[1:-1]
         if inner in self._hardened_keywords_set:
             return False
-        for pat in self._hardened_patterns_compiled:
-            if pat.search(inner):
-                return False
-        return True
+        return all(not pat.search(inner) for pat in self._hardened_patterns_compiled)
 
     def _is_garbage(self, text: str) -> bool:
         stripped = text.strip()
-        for pat in self._garbage_patterns:
-            if pat.match(stripped):
-                return True
-        return False
+        return any(pat.match(stripped) for pat in self._garbage_patterns)
 
     def _is_pure_exclamation(self, text: str) -> bool:
         stripped = re.sub(r'[，。、！？\s,\.!?…~～…—]', '', text.strip())
@@ -341,10 +331,7 @@ class ChineseCleaner:
         for kw in self._hardened_keywords_set:
             if kw in stripped:
                 return True
-        for pat in self._hardened_patterns_compiled:
-            if pat.search(stripped):
-                return True
-        return False
+        return any(pat.search(stripped) for pat in self._hardened_patterns_compiled)
 
     def _is_linkage_keep(self, item: Subtitle, items: list[Subtitle], idx: int) -> bool:
         """联动保留：向后扫描3秒内是否有实义承接"""
@@ -384,10 +371,10 @@ class ChineseCleaner:
         for j in seg:
             if j == idx:
                 continue
-            if abs(items[j].start - item.start) <= 3000:
-                if self._has_substantive(items[j].text) or self._is_hardened(items[j].text):
-                    same_seg_has_content = True
-                    break
+            if (abs(items[j].start - item.start) <= 3000
+                    and (self._has_substantive(items[j].text) or self._is_hardened(items[j].text))):
+                same_seg_has_content = True
+                break
         if same_seg_has_content:
             return False, "L2-segment-content"
 

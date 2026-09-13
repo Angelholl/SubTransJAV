@@ -66,7 +66,7 @@ class TestConnectiveParticle:
 
     def test_subject_ga_not_misclassified(self):
         """主语が 不应被误判为接续助词（转折）。
-        
+
         注意：此测试在无 SudachiPy 环境下验证 fallback 模式。
         fallback 模式使用正则检测，不会产生"转折"误报。
         """
@@ -107,8 +107,8 @@ class TestFallback:
 
     def test_fallback_when_sudachi_unavailable(self):
         """回退模式应能检测基本的转折和修饰关系。"""
-        from subtransjav.refine.grammar_hint import _detect_rules_fallback
         from subtransjav.refine.filters import parse_srt
+        from subtransjav.refine.grammar_hint import _detect_rules_fallback
 
         entries = parse_srt(SRT_CONNECTIVE)
         # 使用条目2（含けど）
@@ -189,8 +189,8 @@ class TestPluralAdnominalAndDeRentou:
 
     def test_fallback_rule7_plural_adnominal(self):
         """fallback 路径（无 Sudachi）：正则命中 → 输出定语提示。"""
-        from subtransjav.refine.grammar_hint import _detect_rules_fallback
         from subtransjav.refine.filters import parse_srt
+        from subtransjav.refine.grammar_hint import _detect_rules_fallback
 
         text = parse_srt(SRT_DE_ADNOMINAL)[0]["text"]
         hints = _detect_rules_fallback(text, [], [])
@@ -205,9 +205,8 @@ class TestPluralAdnominalAndDeRentou:
 
     def test_sudachi_rule7_when_available(self):
         """Sudachi 路径（已安装 sudachipy 时）：检测规则⑦命中。"""
-        from subtransjav.refine.grammar_hint import (
-            _detect_rules, is_grammar_hint_available)
         from subtransjav.refine.filters import parse_srt
+        from subtransjav.refine.grammar_hint import _detect_rules, is_grammar_hint_available
         if not is_grammar_hint_available():
             return  # 未安装则由 fallback 用例覆盖
         text = parse_srt(SRT_DE_ADNOMINAL)[0]["text"]
@@ -216,8 +215,7 @@ class TestPluralAdnominalAndDeRentou:
 
     def test_sudachi_rule8_de_rentou_when_available(self):
         """Sudachi 路径（已安装 sudachipy 时）：助動詞「だ」連用形「で」→ 中顿提示。"""
-        from subtransjav.refine.grammar_hint import (
-            _detect_rules, is_grammar_hint_available)
+        from subtransjav.refine.grammar_hint import _detect_rules, is_grammar_hint_available
         if not is_grammar_hint_available():
             return  # 未安装则跳过（fallback 无法区分格助詞/助動詞，宁缺毋滥）
         hints = _detect_rules("僕たち水泳部の部長で", [], [])
@@ -225,9 +223,7 @@ class TestPluralAdnominalAndDeRentou:
 
     def test_subject_sentence_no_false_positive(self):
         """僕たちが主语句（僕たちが公園で遊ぶ）不应触发规则⑦定语提示。"""
-        from subtransjav.refine.grammar_hint import _detect_rules
-        from subtransjav.refine.grammar_hint import (
-            is_grammar_hint_available)
+        from subtransjav.refine.grammar_hint import _detect_rules, is_grammar_hint_available
         if not is_grammar_hint_available():
             return
         hints = _detect_rules("僕たちが公園で遊ぶ", [], [])
@@ -243,8 +239,8 @@ class TestEntriesParameter:
 
     def test_entries_parameter_optimization(self):
         """传入预解析 entries 应返回相同结果。"""
-        from subtransjav.refine.grammar_hint import generate_grammar_hints
         from subtransjav.refine.filters import parse_srt
+        from subtransjav.refine.grammar_hint import generate_grammar_hints
 
         entries = parse_srt(SRT_CONNECTIVE)
 
@@ -267,3 +263,45 @@ class TestEntriesParameter:
         from subtransjav.refine.grammar_hint import generate_grammar_hints
         hint = generate_grammar_hints("", 1)
         assert hint == ""
+
+
+# ---------------------------------------------------------------------------
+# Test: thread safety (D4)
+# ---------------------------------------------------------------------------
+
+class TestThreadSafety:
+    """D4 回归：多线程并发冷缓存 miss 时不得抛 RuntimeError: Already borrowed
+    （单例惰性初始化与 tokenize 调用均已加锁）。"""
+
+    def test_concurrent_cold_cache_tokenize(self):
+        import threading
+
+        from subtransjav.refine import grammar_hint as gh
+        if not gh.is_grammar_hint_available():
+            return  # 未安装 sudachipy 时无从触发，由既有 fallback 用例覆盖
+        gh._tokenize_cached.cache_clear()
+        gh._tokenizer_instance = None       # 强制多线程并发走单例冷初始化
+        gh._sudachi_available = None
+        texts = [f"ボクたち、水泳部の部長で…その{i}は良い天気ですね。"
+                 for i in range(80)]        # 各不相同 → 全部缓存 miss
+        errors = []
+
+        def _worker():
+            try:
+                for t in texts:
+                    gh._tokenize_cached(t)
+            except Exception as e:          # noqa: BLE001  收集后统一断言
+                errors.append(e)
+
+        threads = [threading.Thread(target=_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert errors == []
+        # 并发后单例仍可用，且同一文本复算的分词面一致（Morpheme 无值相等，
+        # 按 surface 序列比较）
+        assert gh._get_tokenizer() is not None
+        expected = [t.surface() for t in gh._tokenize_cached(texts[0])]
+        gh._tokenize_cached.cache_clear()
+        assert [t.surface() for t in gh._tokenize_cached(texts[0])] == expected

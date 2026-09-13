@@ -21,13 +21,14 @@ import hashlib
 import os
 import sqlite3
 import time
-from typing import List, Tuple, Optional
-
 
 _DEFAULT_TM_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "Temp", "translation_memory"
 )
+
+# exact_map 单批 IN 查询的哈希个数上限（sqlite 变量上限默认 999，留安全余量）
+_EXACT_MAP_CHUNK = 500
 
 
 def _default_tm_path() -> str:
@@ -52,7 +53,7 @@ class TranslationMemory:
     def __init__(self, db_path: str = ""):
         self.db_path = db_path or _default_tm_path()
         os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -122,7 +123,7 @@ class TranslationMemory:
         conn.commit()
         return False
 
-    def store_batch(self, pairs: List[Tuple[str, str, int]]) -> int:
+    def store_batch(self, pairs: list[tuple[str, str, int]]) -> int:
         """批量存入。pairs = [(source, target, stage), ...]。返回新增条数。"""
         added = 0
         for src, tgt, stg in pairs:
@@ -134,7 +135,7 @@ class TranslationMemory:
     # 查找
     # ------------------------------------------------------------------
 
-    def lookup_exact(self, source: str, stage: int = 0) -> Optional[str]:
+    def lookup_exact(self, source: str, stage: int = 0) -> str | None:
         """精确查找：返回译文或 None。命中时自动更新 hit_count。"""
         h = _simhash(_normalize(source))
         conn = self._get_conn()
@@ -148,6 +149,46 @@ class TranslationMemory:
             conn.commit()
             return row[0]
         return None
+
+    def exact_map(self, sources: list[str], stage: int = 0) -> dict:
+        """批量精确查找（P1-6）：一次参数化 SQL 取回 {原输入串: 译文}。
+
+        - sqlite 变量上限（默认 999）→ 按 _EXACT_MAP_CHUNK 分批 IN 查询；
+        - 返回 dict 以**调用方传入的原始字符串**为键（内部归一化仅用于
+          哈希），调用方无需再做归一化对齐；
+        - 命中条目 hit_count 一次性自增并提交（与 lookup_exact 语义一致，
+          但从 N 次 commit 收敛为每批 1 次）。
+        """
+        mapping: dict = {}
+        hash_to_sources: dict = {}
+        for src in sources:
+            norm = _normalize(src)
+            if not norm:
+                continue
+            hash_to_sources.setdefault(_simhash(norm), []).append(src)
+        hashes = list(hash_to_sources)
+        if not hashes:
+            return mapping
+        conn = self._get_conn()
+        for i in range(0, len(hashes), _EXACT_MAP_CHUNK):
+            chunk = hashes[i:i + _EXACT_MAP_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                "SELECT content_hash, target_text FROM tm_entries "
+                f"WHERE stage=? AND content_hash IN ({placeholders})",
+                (stage, *chunk)).fetchall()
+            if not rows:
+                continue
+            for h, target in rows:
+                for src in hash_to_sources[h]:
+                    mapping[src] = target
+            hit_placeholders = ",".join("?" * len(rows))
+            conn.execute(
+                "UPDATE tm_entries SET hit_count=hit_count+1 "
+                f"WHERE stage=? AND content_hash IN ({hit_placeholders})",
+                (stage, *[r[0] for r in rows]))
+        conn.commit()
+        return mapping
 
     def has_exact(self, source: str, stage: int = 0) -> bool:
         """只读精确查找：返回是否存在匹配条目（不更新 hit_count）。"""
@@ -175,7 +216,7 @@ class TranslationMemory:
         return {}
 
     def lookup_fuzzy(self, source: str, stage: int = 0,
-                     threshold: float = 0.8) -> List[Tuple[str, str, float]]:
+                     threshold: float = 0.8) -> list[tuple[str, str, float]]:
         """模糊查找：返回 [(source, target, similarity), ...] 按相似度降序。
         threshold: 字符重叠率下限 (0-1)。
         """
@@ -221,7 +262,7 @@ class TranslationMemory:
             "db_path": self.db_path,
         }
 
-    def clear(self, stage: Optional[int] = None):
+    def clear(self, stage: int | None = None):
         """清空记忆库。stage=None 清空全部。"""
         conn = self._get_conn()
         if stage is not None:
@@ -230,7 +271,7 @@ class TranslationMemory:
             conn.execute("DELETE FROM tm_entries")
         conn.commit()
 
-    def export_csv(self, path: str, stage: Optional[int] = None):
+    def export_csv(self, path: str, stage: int | None = None):
         """导出为 CSV"""
         import csv
         conn = self._get_conn()
@@ -253,7 +294,7 @@ class TranslationMemory:
         """从 CSV 导入。返回新增条数。"""
         import csv
         added = 0
-        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        with open(path, encoding="utf-8-sig", newline="") as f:
             reader = csv.reader(f)
             for row in reader:
                 if len(row) >= 2 and row[0].strip() and row[1].strip():

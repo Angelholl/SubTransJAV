@@ -14,6 +14,8 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+      - name: line-endings
+        run: if grep -rlU $'\r' --include='*.py' --include='*.yaml' subtransjav config tests; then echo "::error::CRLF line endings detected"; exit 1; fi
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -22,4 +24,4 @@ jobs:
       - name: Lint
         run: ruff check subtransjav tests
       - name: Test
-        run: python -m pytest tests -q
+        run: python -m pytest tests -q --cov=subtransjav --cov-report=term

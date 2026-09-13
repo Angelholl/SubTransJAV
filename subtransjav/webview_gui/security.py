@@ -54,6 +54,30 @@ def _resolve_safe_path(path: str) -> Path:
 _EXECUTABLE_EXTS = {".exe", ".bat", ".cmd", ".com", ".scr", ".msi", ".ps1", ".vbs", ".js", ".jar"}
 
 
+def _strip_extended_prefix(path: str) -> str:
+    """还原 Windows 扩展路径前缀（``\\\\?\\`` / ``\\\\?\\UNC\\``）。
+
+    ``Path.resolve()`` 对 ``\\\\?\\C:\\...`` 的折叠在部分 Python 版本上会
+    畸变为盘符相对路径（如 ``C:Windows``），导致黑名单前缀判定漏判逃逸；
+    统一先还原为常规路径再 resolve（指向同一目标，语义不变）。
+    """
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
+def _norm_case_key(p: Path) -> str:
+    """路径的大小写/分隔符归一化键。
+
+    Windows 文件系统大小写不敏感，而 ``Path.is_relative_to`` 的逐段比较
+    对大小写敏感且语义随 Python 版本变化；显式做 ``normcase + casefold``
+    字符串前缀判定，不依赖 pathlib 的版本相关行为（任何平台一致）。
+    """
+    return os.path.normcase(str(p)).casefold()
+
+
 def _validate_user_directory(path: str) -> str:
     """校验用户选择的目录：允许任意磁盘目录，仅阻止系统目录与可执行文件。
 
@@ -62,23 +86,31 @@ def _validate_user_directory(path: str) -> str:
       1. 系统目录（SystemRoot / Program Files / ProgramData 等）；
       2. 直接指向可执行文件的路径（``os.startfile`` 会执行而非浏览）。
 
+    加固（P3-11）：黑名单判定一律在 ``Path.resolve()``（strict=False）之后
+    进行——junction/符号链接、8.3 短路径、大小写变体、``\\\\?\\`` 扩展前缀
+    都先折叠/还原为真实落点，再用大小写不敏感的字符串前缀比较，
+    杜绝经由链接或大小写差异绕过黑名单。
+
     Raises ``ValueError`` 当路径位于系统目录下，或指向可执行文件。
     """
-    p = Path(path).resolve()
+    p = Path(_strip_extended_prefix(path)).resolve()
     system_roots = [
-        os.environ.get("SystemRoot", r"C:\Windows"),
-        os.environ.get("ProgramFiles", r"C:\Program Files"),
-        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
-        os.environ.get("ProgramData", r"C:\ProgramData"),
+        os.environ.get("SystemRoot", r"C:\Windows"),  # noqa: SIM112  Windows 规范环境变量名，改大小写即行为变更
+        os.environ.get("ProgramFiles", r"C:\Program Files"),  # noqa: SIM112  Windows 规范环境变量名
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),  # noqa: SIM112  Windows 规范环境变量名
+        os.environ.get("ProgramData", r"C:\ProgramData"),  # noqa: SIM112  Windows 规范环境变量名
     ]
+    p_key = _norm_case_key(p)
     for root in system_roots:
         if not root:
             continue
         try:
-            if p.is_relative_to(root):
-                raise ValueError(f"不允许访问系统目录: {p}")
+            root_key = _norm_case_key(Path(root).resolve())
         except OSError:
-            pass
+            continue
+        prefix = root_key if root_key.endswith(os.sep) else root_key + os.sep
+        if p_key == root_key or p_key.startswith(prefix):
+            raise ValueError(f"不允许访问系统目录: {p}")
     if p.is_file() and p.suffix.lower() in _EXECUTABLE_EXTS:
         raise ValueError(f"不允许打开可执行文件: {p}")
     return str(p)

@@ -1,9 +1,11 @@
-# -*- coding: utf-8 -*-
 """refine.glossary_learn 单元测试（P0 #5：原子写；P1 #3：词库写锁）"""
 import os
 
+import pytest
+
 from subtransjav.refine.glossary_learn import (
     _acquire_glossary_lock,
+    _ensure_http_url,
     _release_glossary_lock,
     load_learned_glossary,
     save_learned_glossary,
@@ -59,3 +61,25 @@ def test_lock_stale_cleared(tmp_path):
     lock2 = _acquire_glossary_lock(p, timeout=1.0)
     assert lock2 is not None
     _release_glossary_lock(lock2)
+
+
+# ---------------------------------------------------------------------------
+# _ensure_http_url：端点 scheme 白名单（设计决策：不拦截 localhost/私有地址，
+# 连接本地 LM Studio/Ollama 是核心功能）
+# ---------------------------------------------------------------------------
+
+def test_ensure_http_url_rejects_non_http():
+    for url in ("file:///C:/Windows/System32/config",
+                "javascript:alert(1)",
+                "ftp://example.com/v1",
+                "localhost:1234/v1",
+                ""):
+        with pytest.raises(ValueError):
+            _ensure_http_url(url)
+
+
+def test_ensure_http_url_allows_local_http():
+    assert _ensure_http_url("http://localhost:1234/v1") == "http://localhost:1234/v1"
+    assert _ensure_http_url("http://127.0.0.1:11434/v1")
+    assert _ensure_http_url("https://api.example.com/v1")
+    assert _ensure_http_url("HTTPS://api.example.com/v1")

@@ -10,6 +10,7 @@
   - 清理: 启动时自动删除 7 天前的旧日志
 """
 
+import contextlib
 import os
 import time
 from datetime import datetime
@@ -37,10 +38,8 @@ class TeeWriter:
 
     # ------------------------------------------------------------------
     def write(self, s):
-        try:
+        with contextlib.suppress(Exception):
             self._original.write(s)
-        except Exception:
-            pass
         self._buf += s
         while '\n' in self._buf:
             line, self._buf = self._buf.split('\n', 1)
@@ -48,14 +47,10 @@ class TeeWriter:
         return len(s)
 
     def flush(self):
-        try:
+        with contextlib.suppress(Exception):
             self._original.flush()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self._file.flush()
-        except Exception:
-            pass
 
     def close(self):
         if self._buf:
@@ -149,7 +144,7 @@ def archive_error_log(log_path: str, status: str, logs_dir: str) -> str:
             while os.path.exists(f"{base}-{seq}{ext}"):
                 seq += 1
             target = f"{base}-{seq}{ext}"
-        with open(log_path, 'r', encoding='utf-8') as src, \
+        with open(log_path, encoding='utf-8') as src, \
                 open(target, 'w', encoding='utf-8') as dst:
             dst.write(src.read())
         return target
@@ -181,7 +176,5 @@ def write_summary(f, status: str, elapsed: float, inputs: int,
     ]
     text = "\n".join(lines) + "\n"
     f.write(text)
-    try:
+    with contextlib.suppress(Exception):
         f.flush()
-    except Exception:
-        pass

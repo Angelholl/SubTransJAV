@@ -1,76 +1,9 @@
 """Tests for P2 security/robustness hardening."""
 
 import io
-import threading
-from unittest.mock import MagicMock
-
 
 # ---------------------------------------------------------------------------
-# 1. FailoverController._switch thread-safety & atomicity
-# ---------------------------------------------------------------------------
-
-class TestFailoverSwitchLock:
-    """Verify _switch uses a lock and only switches once under concurrency."""
-
-    def _make_controller(self):
-        """Build a minimal FailoverController with a stub client."""
-        from subtransjav.translate.failover_patch import FailoverController
-
-        ctrl = FailoverController(fallback_cfg={
-            "server_address": "http://localhost:9999/v1",
-            "endpoint": "/chat/completions",
-            "model": "test-model",
-        })
-        # Stub client with mutable settings dict & headers dict
-        client = MagicMock()
-        client.settings = {
-            "server_address": "http://cloud.example.com/v1",
-            "endpoint": "/chat/completions",
-            "model": "cloud-model",
-            "api_key": "",
-        }
-        client.headers = {}
-        ctrl.bind_client(client)
-        return ctrl
-
-    def test_switch_idempotent_under_concurrency(self):
-        """Multiple threads calling _switch concurrently must result in
-        exactly one switch (switched=True once)."""
-        ctrl = self._make_controller()
-        barrier = threading.Barrier(10)
-        errors = []
-
-        def try_switch(idx):
-            try:
-                barrier.wait(timeout=5)
-                ctrl._switch("test", f"batch-{idx}", f"reason-{idx}")
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=try_switch, args=(i,)) for i in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-
-        assert not errors, f"Unexpected errors: {errors}"
-        assert ctrl.switched is True
-        # Only one reason should have been recorded
-        assert ctrl.switch_reason != ""
-
-    def test_switch_sets_settings_atomically(self):
-        """After _switch, client.settings must have all fallback fields set."""
-        ctrl = self._make_controller()
-        ctrl._switch("transport", "b1", "test")
-
-        s = ctrl._client.settings
-        assert s["server_address"] == "http://localhost:9999/v1"
-        assert s["model"] == "test-model"
-        assert ctrl.switched is True
-
-
-# ---------------------------------------------------------------------------
-# 2. safe_print preserves sep/end in UnicodeEncodeError fallback
+# safe_print preserves sep/end in UnicodeEncodeError fallback
 # ---------------------------------------------------------------------------
 
 class TestSafePrintSepEnd:

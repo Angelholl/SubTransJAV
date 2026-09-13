@@ -1,34 +1,10 @@
 """
-SubTransJAV Translation Module
+SubTransJAV Translation Package
 
-Provides AI-powered subtitle translation via PySubtrans.
+v2 pipeline uses ``llm_client.LLMClient`` directly (see
+``subtransjav.refine.pipeline_v2``). ``providers`` provides
+SUPPORTED_TARGETS / PROVIDER_CONFIGS shared with ``refine.config``.
 
-For programmatic usage (e.g., from the refine pipeline):
-    from subtransjav.translate import translate_with_config
-
-    result = translate_with_config(
-        input_path="subtitles.srt",
-        provider="deepseek",
-        target_lang="english"
-    )
+The legacy PySubtrans engine (core / service / handlers / deletion_patch /
+failover_patch / defaults) has been removed.
 """
-
-from . import core, providers, service
-
-# Export high-level service API for direct usage
-from .service import (
-    ConfigurationError,
-    TranslationError,
-    translate_with_config,
-)
-
-__all__ = [
-    # Submodules
-    'core',
-    'providers',
-    'service',
-    # Service layer exports
-    'translate_with_config',
-    'TranslationError',
-    'ConfigurationError',
-]

@@ -47,7 +47,7 @@
                 <div class="section-content">
                     <!-- File List Display -->
                     <div class="file-list-container" id="fileListContainer">
-                        <div class="file-list" id="fileList" tabindex="0">
+                        <div class="file-list" id="fileList" tabindex="0" data-testid="file-list">
                             <div class="empty-state" id="emptyState">
                                 <span class="empty-icon">📂</span>
                                 <p>No files selected</p>
@@ -108,7 +108,7 @@
                 <div class="tabs-container">
                     <div class="tab-content-container">
 
-                        <div class="tab-panel active" id="tab4-panel" role="tabpanel">
+                        <div class="tab-panel active" id="refine-panel" data-testid="refine-panel" role="tabpanel">
 <!-- ============================================================
       净语翻译（refine）两阶段配置界面
 ============================================================= -->
@@ -278,6 +278,10 @@
       <label style="display:flex; align-items:center; gap:4px;">
         <input type="checkbox" id="refineGl2" checked> 词库→阶段B
       </label>
+      <label style="display:flex; align-items:center; gap:4px;"
+             title="中断后重跑时，检测到 *_manifest.json 即复用已完成阶段，仅续跑剩余阶段">
+        <input type="checkbox" id="resumeToggle" data-testid="resume-toggle"> 断点恢复（复用已完成阶段）
+      </label>
       <label style="display:flex; align-items:center; gap:4px;" title="向子进程传递 --verbose 输出调试日志">
         <input type="checkbox" id="debugLogging"> 详细日志
       </label>
@@ -315,8 +319,8 @@
     </details>
 
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-      <button type="button" id="refineStartBtn" class="btn btn-primary">▶ 开始净语翻译</button>
-      <button type="button" id="refineCancelBtn" class="btn"
+      <button type="button" id="refineStartBtn" class="btn btn-primary" data-testid="btn-start">▶ 开始净语翻译</button>
+      <button type="button" id="refineCancelBtn" class="btn" data-testid="btn-stop"
               style="background:#d9534f; color:#fff;" disabled>⏹ 停止</button>
       <span style="color:#888; font-size:12px;">
         产物命名含 .subtransjav 中间件与 *_final_cn.srt 终稿；已存在产物默认跳过
@@ -327,7 +331,7 @@
       <div class="progress-bar" id="progressBar">
         <div class="progress-fill" id="progressFill"></div>
       </div>
-      <span class="status-label" id="statusLabel">Idle</span>
+      <span class="status-label" id="statusLabel" data-testid="status-bar">Idle</span>
     </div>
   </div>
 </div>
@@ -347,7 +351,7 @@
                     </button>
                 </div>
                 <div class="section-content">
-                    <div class="console-output" id="consoleOutput">
+                    <div class="console-output" id="consoleOutput" data-testid="console">
                         <div class="console-line">Ready.</div>
                     </div>
                 </div>

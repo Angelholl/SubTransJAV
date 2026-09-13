@@ -11,7 +11,7 @@ def load_glossary(path: str):
     entries = []
     if path and os.path.isfile(path):
         try:
-            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            with open(path, encoding="utf-8-sig", newline="") as f:
                 for row in csv.reader(f):
                     if len(row) >= 2 and row[0].strip() and row[1].strip():
                         src, dst = row[0].strip(), row[1].strip()

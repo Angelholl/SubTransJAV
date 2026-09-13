@@ -22,6 +22,24 @@ A dual-engine subtitle translation & refinement pipeline built for Chinese-speak
 - 质量报告 + 双引擎分歧分析
 - Webview GUI + CLI 双入口
 
+## 架构一览
+
+```
+SRT 输入
+   │  预合并（短句按时间间隙合并，减少批次数）
+   ▼
+阶段A：净语+翻译（角色卡①，词库/TM 上下文注入）
+   │  产出中间稿 *.subtransjav.srt
+   ▼
+阶段B：审校+抛光（角色卡②，幻觉检测/加固短语/质量审校）
+   │  兜底规则（解析失败/超时降级：保留原文并记录风险事件）
+   ▼
+产物：*_final_cn.srt 终稿 + 质量报告 / 分歧复核 / 风险清单
+   └── 学习沉淀：TM 句子级翻译记忆（带准入门槛）+ 术语词库
+```
+
+两阶段各自独立配置服务商与模型（`--s1-*` / `--s3-*`）；云端阶段故障可选本地接管（`--fallback-local`）。
+
 ## 受众定位
 
 本项目面向中文用户：默认翻译方向为 日文 → 中文，角色卡模板、质量审校规则与 GUI 均为中文语境设计。
@@ -65,11 +83,62 @@ subtransjav-refine --input-dir "字幕目录" -r --filter-pattern "*.srt" --excl
 
 每部影片产出：`*.subtransjav.srt`（中间稿）、`*_final_cn.srt`（终稿）、`*_质量报告.txt`、`*_分歧复核.csv`（若存在 pass1/pass2 双引擎字幕则含「双引擎分歧」章节）。
 
+## 配置分层速查
+
+优先级从低到高：内置默认 < `config/user_settings.json` < `SUBTRANSJAV_*` 环境变量 < CLI/GUI 显式赋值。
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `temperature_cloud` | 0.5 | 云端采样温度 |
+| `temperature_local` | 0.1 | 本地采样温度 |
+| `premerge_max_gap_s` | 8.0 | 预合并时长上限（秒） |
+| `premerge_max_items` | 3 | 预合并条数上限 |
+| `v2_concurrency_max` | 5 | 批间并发钳制上限 |
+| `timeout_llm` | 900 | LLM 单批超时（秒） |
+| `timeout_http` | 60 | HTTP 客户端超时（秒） |
+| `timeout_probe` | 5 | 本地服务探测超时（秒） |
+
+环境变量命名：`SUBTRANSJAV_` + 大写字段名（如 `SUBTRANSJAV_TIMEOUT_LLM=600`）。完整语义见 `docs/使用与维护手册.md` 第 2 节。
+
+## 断点恢复
+
+长任务中断后可续跑，复用已完成的阶段A 产物，不重复计算：
+
+```bat
+:: 指纹（输入/配置/词库/TM）校验通过才复用：
+subtransjav-refine -i 字幕.srt ... --resume
+
+:: 指纹不匹配仍强制复用旧产物（自行承担错位风险）：
+subtransjav-refine -i 字幕.srt ... --resume --force-resume
+```
+
+任务成功后断点产物（`*_manifest.json`、`*_refine_A.srt`）自动清理；`--force` 为忽略产物整任务重跑（覆盖前自动备份）。
+
+## 事件协议与退出码（供集成/二次开发）
+
+`--event-format ndjson` 后管线向 stdout 输出结构化事件（每行一个 JSON 对象），人类可读文本转往 stderr。事件类型 9 种：`task_started` / `phase_started` / `phase_progress` / `phase_finished` / `warning` / `degraded` / `error` / `heartbeat` / `task_finished`。
+
+退出码：`0` 成功、`1` 执行失败、`2` dry-run 配置错误、`3` 部分降级（需复核风险清单）、`130` 用户中断。完整字段与心跳机制见手册第 4 节。
+
+## FAQ（精选）
+
+- **GBK 控制台乱码？** 程序内部已强制 UTF-8 输出；必要时 CMD 先执行 `chcp 65001`。
+- **LM Studio 未启动/探测失败？** 确认服务已启动并加载模型，端口与端点一致（默认 `http://localhost:1234/v1`）。
+- **提示模型未指定？** `lmstudio` / `ollama` / `siliconflow` / `custom` 需经 `--s1-model` / `--s3-model` 指定模型名。
+- **云端密钥放哪？** 三级解析：CLI/GUI 传参 > 环境变量 > GUI 保存（DPAPI 加密存储）；本地服务无需密钥。
+- **只想看执行计划、不实际调用？** 加 `--dry-run`。
+
+更多问题见 [docs/使用与维护手册.md](docs/使用与维护手册.md)。
+
 ## 词库与模板（自配）
 
 `config/glossary.csv`、`config/templates/`、`subtransjav/*/defaults/` 均为空模板或通用默认。
 
 本项目只提供翻译工程框架，不分发任何语料/词库数据，按需自行配置。TM 翻译记忆库的自动学习产物（`glossary_learned.csv`、`tm.db`）由你自己的翻译流程生成，管理命令见 `--tm-stats` / `--tm-export` / `--tm-import` / `--tm-clear`。
+
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 声明
 

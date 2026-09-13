@@ -116,9 +116,9 @@ def _fix_stream_encoding(stream: TextIO | None, fd: int) -> None:
 
     # Check if already UTF-8
     try:
-        if hasattr(stream, 'encoding') and stream.encoding:
-            if stream.encoding.lower() in ('utf-8', 'utf8'):
-                return
+        if (hasattr(stream, 'encoding') and stream.encoding
+                and stream.encoding.lower() in ('utf-8', 'utf8')):
+            return
     except (AttributeError, TypeError):
         pass
 
@@ -132,10 +132,7 @@ def _fix_stream_encoding(stream: TextIO | None, fd: int) -> None:
 
     # Fallback: create new TextIOWrapper
     try:
-        if hasattr(stream, 'buffer'):
-            buffer = stream.buffer
-        else:
-            buffer = io.BufferedWriter(io.FileIO(fd, 'w'))
+        buffer = stream.buffer if hasattr(stream, 'buffer') else io.BufferedWriter(io.FileIO(fd, 'w'))
 
         wrapper = io.TextIOWrapper(
             buffer,
@@ -175,7 +172,7 @@ def safe_print(*args: Any, **kwargs: Any) -> None:
         # Fallback: encode with replacement, preserving sep/end/file/flush
         sep = kwargs.get('sep', ' ')
         end = kwargs.get('end', '\n')
-        file = kwargs.get('file', None)
+        file = kwargs.get('file')
         flush = kwargs.get('flush', False)
         output = sep.join(str(arg) for arg in args)
         try:

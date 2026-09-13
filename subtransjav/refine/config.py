@@ -2,6 +2,7 @@
 Refine 配置：阶段定义 / 服务商预设 / 默认参数
 """
 
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -11,6 +12,35 @@ DEFAULT_BATCH_CLOUD = 30
 
 # 本地模型单批硬上限（防止超出小模型能力）
 LOCAL_BATCH_HARD_CAP = 50
+
+# ---------------------------------------------------------------------------
+# P1-5 配置单一来源：散点参数收口（默认值 = 历史硬编码现值，行为不变）
+# ---------------------------------------------------------------------------
+DEEPSEEK_BASE_DEFAULT = "https://api.deepseek.com/v1"
+
+DEFAULT_TEMPERATURE_CLOUD = 0.5      # 云端服务商采样温度
+DEFAULT_TEMPERATURE_LOCAL = 0.1      # 本地服务商采样温度（实测最优低温）
+DEFAULT_PREMERGE_MAX_GAP_S = 8.0     # 断句预合并：合并后总时长上限（秒）
+DEFAULT_PREMERGE_MAX_ITEMS = 3       # 断句预合并：合并条数上限
+DEFAULT_V2_CONCURRENCY_MAX = 5       # 批间并发钳制上限
+DEFAULT_TIMEOUT_LLM = 900.0          # LLM 单批超时（秒；本地慢模型单批可达数分钟）
+DEFAULT_TIMEOUT_HTTP = 60.0          # OpenAI 兼容 HTTP 客户端超时（秒）
+DEFAULT_TIMEOUT_PROBE = 5.0          # 本地服务探测类 GET 超时（秒）
+DEFAULT_HEARTBEAT_STALE_S = 45.0     # GUI 心跳超时阈值（秒；≈2.25×心跳间隔 20s，超时提示"最近活动 Ns 前"）
+
+# 用户可调字段（config/user_settings.json / 环境变量 SUBTRANSJAV_<大写字段名>）。
+# 优先级：默认 < 用户配置文件 < 环境变量 < CLI/GUI 显式赋值（构造后赋值天然最高）。
+TUNABLE_FIELD_TYPES = {
+    "temperature_cloud": float,
+    "temperature_local": float,
+    "premerge_max_gap_s": float,
+    "premerge_max_items": int,
+    "v2_concurrency_max": int,
+    "timeout_llm": float,
+    "timeout_http": float,
+    "timeout_probe": float,
+    "heartbeat_stale_s": float,
+}
 
 # ---- 服务商预设 ----
 # deepseek 走原生通道；其余统一以 provider='custom' + endpoint 调用
@@ -74,6 +104,76 @@ def default_glossary_path() -> str:
         return cfg
     legacy = os.path.join(LEGACY_WORKDIR, "glossary.csv")
     return legacy if os.path.isfile(legacy) else cfg
+
+
+# ---------------------------------------------------------------------------
+# P1-5 配置分层：默认 < 用户配置文件 < 环境变量 < CLI/GUI 显式赋值
+# ---------------------------------------------------------------------------
+
+def user_settings_path() -> str:
+    """用户配置文件路径：<repo_root>/config/user_settings.json。
+
+    文件格式（浅合并，仅 TUNABLE_FIELD_TYPES 中的字段生效）：
+        {"temperature_cloud": 0.3, "timeout_llm": 600}
+    """
+    return os.path.join(CONFIG_DIR, "user_settings.json")
+
+
+def _coerce_tunable(raw, typ):
+    """按字段类型收敛配置值；类型非法返回 None（调用方警告后忽略）。"""
+    try:
+        return typ(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_user_settings() -> dict:
+    """读取用户配置文件（不存在则返回 {}，零开销常态）。
+
+    - 非法 JSON / 顶层非对象 -> print 警告并忽略（不 crash）；
+    - 未知字段直接忽略；值类型非法的字段在覆盖时再按类型收敛并忽略。
+    """
+    path = user_settings_path()
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"⚠️ 用户配置文件解析失败，已忽略: {path} ({e})")
+        return {}
+    if not isinstance(data, dict):
+        print(f"⚠️ 用户配置文件顶层应为 JSON 对象，已忽略: {path}")
+        return {}
+    return {k: v for k, v in data.items() if k in TUNABLE_FIELD_TYPES}
+
+
+def resolve_tunable(name: str):
+    """解析单个可调字段的生效值：默认 < 用户配置文件 < 环境变量。
+
+    供无 cfg 上下文的调用点（如 GUI 并发钳制）使用；CLI/GUI 层在
+    拿到配置对象后自行赋值，天然位于本函数之后的最高优先级。
+    """
+    typ = TUNABLE_FIELD_TYPES.get(name)
+    if typ is None:
+        raise KeyError(f"未知可调配置字段: {name}")
+    value = RefineConfig.__dataclass_fields__[name].default
+    user = load_user_settings()
+    if name in user:
+        coerced = _coerce_tunable(user[name], typ)
+        if coerced is not None:
+            value = coerced
+        else:
+            print(f"⚠️ 用户配置字段 {name} 类型非法，已忽略: {user[name]!r}")
+    env_raw = os.environ.get(f"SUBTRANSJAV_{name.upper()}")
+    if env_raw is not None and env_raw.strip() != "":
+        coerced = _coerce_tunable(env_raw.strip(), typ)
+        if coerced is not None:
+            value = coerced
+        else:
+            print(f"⚠️ 环境变量 SUBTRANSJAV_{name.upper()} 类型非法，已忽略: "
+                  f"{env_raw!r}")
+    return value
 
 
 @dataclass
@@ -140,14 +240,103 @@ class RefineConfig:
     v2_keep_untranslated: str = "original"   # 阶段B仍失败时: original=保留日文原文 | empty=删除
     force: bool = False             # v2: 忽略已有产物强制重跑（覆盖前自动备份）
     tm_learn_gate: bool = True      # TM 学习准入门槛总开关（False 用于 A/B 验证）
+    # 断点续跑（清单指纹校验见 manifest 模块）
+    resume: bool = False            # v2: 复用上次中断任务已完成的阶段A产物
+    force_resume: bool = False      # v2: 指纹校验不匹配时仍强制复用旧产物（隐含 resume）
+    # 结构化事件（GUI 进度通道）
+    event_format: str = "text"      # 事件输出格式: text=人类可读（默认）| ndjson=结构化事件行
+    heartbeat_interval: float = 20.0  # ndjson 心跳间隔（秒）
+    # ---- P1-5 配置单一来源（散点收口；默认值=历史硬编码现值，行为不变）----
+    temperature_cloud: float = DEFAULT_TEMPERATURE_CLOUD
+    temperature_local: float = DEFAULT_TEMPERATURE_LOCAL
+    premerge_max_gap_s: float = DEFAULT_PREMERGE_MAX_GAP_S
+    premerge_max_items: int = DEFAULT_PREMERGE_MAX_ITEMS
+    v2_concurrency_max: int = DEFAULT_V2_CONCURRENCY_MAX
+    timeout_llm: float = DEFAULT_TIMEOUT_LLM
+    timeout_http: float = DEFAULT_TIMEOUT_HTTP
+    timeout_probe: float = DEFAULT_TIMEOUT_PROBE
+    heartbeat_stale_s: float = DEFAULT_HEARTBEAT_STALE_S
+    # ---- P1-6 云端多文件并行（opt-in，默认关；本地服务商一律串行）----
+    # 休眠开关：暂无 env/CLI/GUI 开启通道（未列入 TUNABLE_FIELD_TYPES），
+    # 预留 2.0，当前恒为关闭（O10）。
+    v2_file_parallel: bool = False
 
     def __post_init__(self):
-        # v2_concurrency 钳制到 1-5（防 GUI/CLI 传参越界，越界值静默回退）
+        # 不变式：force_resume 隐含 resume——强制复用必须以"允许复用"为前提，
+        # 否则复用分支（cfg.resume and manifest_trusted）会静默失效（O4）。
+        if self.force_resume:
+            self.resume = True
+        # 分层配置接入（构造入口）：默认 < 用户配置文件 < 环境变量 <
+        # CLI/GUI 显式赋值。必须在并发钳制之前，使环境变量覆盖的
+        # v2_concurrency_max 生效。
+        self._apply_layered_overrides()
+        # v2_concurrency 钳制到 1-v2_concurrency_max（防 GUI/CLI 传参越界，
+        # 越界值静默回退）
         try:
             n = int(self.v2_concurrency)
         except (TypeError, ValueError):
             n = 1
-        self.v2_concurrency = max(1, min(5, n))
+        try:
+            n_max = int(self.v2_concurrency_max)
+        except (TypeError, ValueError):
+            n_max = DEFAULT_V2_CONCURRENCY_MAX
+        self.v2_concurrency = max(1, min(n_max, n))
+
+    def _apply_layered_overrides(self):
+        """分层配置：仅当字段仍为 dataclass 默认值时允许用户文件/环境变量覆盖。
+
+        CLI/GUI 在构造时显式传入的非默认值保持最高优先级，不被覆盖。
+        已知取舍：显式传入恰好等于默认值时无法与"未传"区分，此时用户
+        文件/环境变量仍会生效（现 CLI/GUI 均不暴露这些字段，实际不受影响）。
+        """
+        try:
+            user = load_user_settings()
+        except Exception as e:          # 防御：用户配置永不阻塞主流程
+            print(f"⚠️ 用户配置加载失败，已忽略: {e}")
+            user = {}
+        fields = type(self).__dataclass_fields__
+        for name, typ in TUNABLE_FIELD_TYPES.items():
+            spec = fields.get(name)
+            if spec is None:
+                continue
+            if getattr(self, name, None) != spec.default:
+                continue                # 已被 CLI/GUI 显式赋值，不覆盖
+            env_raw = os.environ.get(f"SUBTRANSJAV_{name.upper()}")
+            value = None
+            if env_raw is not None and env_raw.strip() != "":
+                value = _coerce_tunable(env_raw.strip(), typ)
+                if value is None:
+                    print(f"⚠️ 环境变量 SUBTRANSJAV_{name.upper()} 类型非法，"
+                          f"已忽略: {env_raw!r}")
+            if value is None and name in user:
+                value = _coerce_tunable(user[name], typ)
+                if value is None:
+                    print(f"⚠️ 用户配置字段 {name} 类型非法，已忽略: "
+                          f"{user[name]!r}")
+            if value is not None:
+                setattr(self, name, value)
+
+    def effective_summary(self) -> str:
+        """生效配置摘要（多行文本）：散点收口字段 + profile/模型。"""
+
+        def _slot(slot: int) -> str:
+            if len(self.stages) > slot:
+                s = self.stages[slot]
+                return f"[{s.provider}] {self.resolve_model(s) or '(未指定)'}"
+            return "(未配置)"
+
+        return "\n".join([
+            "⚙️ 生效配置:",
+            f"   profile={self.v2_profile} | "
+            f"模型 A={_slot(0)} B={_slot(2)}",
+            f"   temperature_cloud={self.temperature_cloud} "
+            f"temperature_local={self.temperature_local}",
+            f"   premerge: max_gap_s={self.premerge_max_gap_s} "
+            f"max_items={self.premerge_max_items}",
+            f"   v2_concurrency_max={self.v2_concurrency_max}",
+            f"   timeout: llm={self.timeout_llm}s http={self.timeout_http}s "
+            f"probe={self.timeout_probe}s",
+        ])
 
     # ------------------------------------------------------------------
     def resolve_endpoint(self, provider: str) -> str:
@@ -212,6 +401,8 @@ class RefineConfig:
                 errors.append(f"输入文件不存在：{p}")
         if self.fallback_local and not self.fallback_model.strip():
             errors.append("已启用云端故障本地接管，但未指定接管模型(--fallback-model)")
+        if self.event_format not in ("text", "ndjson"):
+            errors.append(f"event_format 仅支持 text/ndjson，当前: {self.event_format}")
         return errors
 
 

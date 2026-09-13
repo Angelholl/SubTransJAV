@@ -7,7 +7,6 @@
 
 import logging
 import re
-from typing import List, Dict, Tuple
 
 from .rules_loader import load_rules
 
@@ -63,7 +62,7 @@ def _get_compiled():
     return _compiled
 
 
-def _emit_warning(warnings: List[str], text: str, warn_only: bool):
+def _emit_warning(warnings: list[str], text: str, warn_only: bool):
     """把告警写入 warnings 列表；非 warn_only 规则升级为硬性告警。"""
     if warn_only:
         warnings.append(text)
@@ -74,9 +73,9 @@ def _emit_warning(warnings: List[str], text: str, warn_only: bool):
 
 
 def check_and_fix_translation_errors(
-    src_entries: List[Dict],
-    tgt_entries: List[Dict],
-) -> Tuple[int, List[str], set]:
+    src_entries: list[dict],
+    tgt_entries: list[dict],
+) -> tuple[int, list[str], set]:
     """
     翻译质量后验拦截：逐条比对源文与目标文，检测并修正系统性误译。
     返回：(修正条数, 警告列表, flagged_indexes)

@@ -8,9 +8,9 @@ when the user cancels an operation.
 v1.7.4+: Fixes orphaned GPU worker processes on cancellation.
 """
 
-import os
 import logging
-from typing import List, Dict, Any
+import os
+from typing import Any
 
 try:
     import psutil
@@ -56,7 +56,7 @@ def _pid_alive(pid: int) -> bool:
             return False
 
 
-def get_process_tree(pid: int) -> List[int]:
+def get_process_tree(pid: int) -> list[int]:
     """
     Get all descendant PIDs of a process (children, grandchildren, etc.).
 
@@ -85,7 +85,7 @@ def terminate_process_tree(
     pid: int,
     timeout: float = 5.0,
     include_parent: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Terminate a process and all its descendants gracefully.
 
@@ -215,7 +215,7 @@ def terminate_process_tree(
     return result
 
 
-def kill_process_tree(pid: int, include_parent: bool = True) -> Dict[str, Any]:
+def kill_process_tree(pid: int, include_parent: bool = True) -> dict[str, Any]:
     """
     Immediately force-kill a process and all its descendants.
 
@@ -312,7 +312,7 @@ def is_process_alive(pid: int) -> bool:
         return False
 
 
-def get_process_info(pid: int) -> Dict[str, Any]:
+def get_process_info(pid: int) -> dict[str, Any]:
     """
     Get information about a process and its children.
 

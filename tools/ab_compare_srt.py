@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """一次性 A/B 对比脚本：对比两份（三份）日语 SRT 的质量差异。
 
 用法（仓库根目录下）：
@@ -13,7 +12,6 @@
 并写入 Temp/ab_start405/对比报告.txt。
 """
 
-import io
 import os
 import re
 import sys
@@ -45,13 +43,13 @@ def parse_srt(path):
     """解析 SRT，返回 [(start, end, text)]，文本多行合并为单行。"""
     for enc in ("utf-8-sig", "utf-8", "cp932", "gb18030"):
         try:
-            with io.open(path, "r", encoding=enc) as f:
+            with open(path, encoding=enc) as f:
                 raw = f.read()
             break
         except (UnicodeDecodeError, UnicodeError):
             continue
     else:
-        raise RuntimeError("无法解码文件: %s" % path)
+        raise RuntimeError(f"无法解码文件: {path}")
 
     subs = []
     block_re = re.compile(r"\r?\n\s*\r?\n")
@@ -181,7 +179,7 @@ def fmt_ts(sec):
     h, ms = divmod(ms, 3600000)
     m, ms = divmod(ms, 60000)
     s, ms = divmod(ms, 1000)
-    return "%02d:%02d:%02d,%03d" % (h, m, s, ms)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
 def sample_rows(subs, w0, w1):
@@ -216,21 +214,21 @@ def main():
     out("=" * 100)
     out("SRT 质量对比报告  A/B 对比  (一次性脚本 tools/ab_compare_srt.py)")
     out("=" * 100)
-    out("A  : %s" % PATH_A)
-    out("B1 : %s" % PATH_B1)
-    out("BM : %s" % PATH_BM)
+    out(f"A  : {PATH_A}")
+    out(f"B1 : {PATH_B1}")
+    out(f"BM : {PATH_BM}")
     out("")
 
     # ---- 1. 基础统计
     out("## 1. 基础统计")
     out("-" * 100)
-    header = "%-24s %8s %14s %16s %16s" % ("组别", "总条数", "有效发言秒", "日文字符数", "字符/分钟")
+    header = f"{'组别':<24} {'总条数':>8} {'有效发言秒':>14} {'日文字符数':>16} {'字符/分钟':>16}"
     out(header)
     for name, subs in datasets:
         dur = total_speech_time(subs)
         chars = sum(count_ja_chars(t) for _, _, t in subs)
         cpm = chars / (dur / 60.0) if dur > 0 else 0.0
-        out("%-24s %8d %14.1f %16d %16.1f" % (name, len(subs), dur, chars, cpm))
+        out(f"{name:<24} {len(subs):>8} {dur:>14.1f} {chars:>16} {cpm:>16.1f}")
     out("")
 
     # ---- 2. 碎片率
@@ -238,7 +236,7 @@ def main():
     out("-" * 100)
     for name, subs in datasets:
         ratio, n = frag_ratio(subs)
-        out("%-24s 碎片段数=%5d / %5d  = %5.1f%%" % (name, n, len(subs), ratio * 100))
+        out(f"{name:<24} 碎片段数={n:>5} / {len(subs):>5}  = {ratio * 100:>5.1f}%")
     out("")
 
     # ---- 3. 连续重复
@@ -247,7 +245,7 @@ def main():
     for name, subs in datasets:
         n = dup_pairs(subs)
         pct = n / max(1, len(subs) - 1) * 100
-        out("%-24s 重复对=%5d / %5d 对  = %5.1f%%" % (name, n, max(1, len(subs) - 1), pct))
+        out(f"{name:<24} 重复对={n:>5} / {max(1, len(subs) - 1):>5} 对  = {pct:>5.1f}%")
     out("")
 
     # ---- 4. 乱码模式
@@ -257,29 +255,29 @@ def main():
     for name, subs in datasets:
         all_counts[name] = garbled_counts(subs)
     keys = list(next(iter(all_counts.values())).keys())
-    out("%-34s %14s %14s %14s" % ("模式", "A", "B1", "BM"))
+    out(f"{'模式':<34} {'A':>14} {'B1':>14} {'BM':>14}")
     for k in keys:
-        out("%-34s %14d %14d %14d" % (k, all_counts["A 旧引擎 fw-pass1"][k],
-                                       all_counts["B1 AnimeWhisper-pass1"][k],
-                                       all_counts["BM 合并成品"][k]))
+        out(f"{k:<34} {all_counts['A 旧引擎 fw-pass1'][k]:>14} "
+            f"{all_counts['B1 AnimeWhisper-pass1'][k]:>14} "
+            f"{all_counts['BM 合并成品'][k]:>14}")
     out("")
 
     # ---- 5. 抽样对照
     out("## 5. 抽样对照（同一时间窗，A / B1 / BM 三版本并排）")
     for w0, w1 in TIMEWIN:
         out("")
-        out("### 时间窗 [%d s, %d s]" % (w0, w1))
+        out(f"### 时间窗 [{w0} s, {w1} s]")
         out("-" * 100)
         sa = sample_rows(subs_a, w0, w1)
         sb1 = sample_rows(subs_b1, w0, w1)
         sbm = sample_rows(subs_bm, w0, w1)
-        out("A  条目数=%d  B1 条目数=%d  BM 条目数=%d" % (len(sa), len(sb1), len(sbm)))
+        out(f"A  条目数={len(sa)}  B1 条目数={len(sb1)}  BM 条目数={len(sbm)}")
         out("")
         # 按 A 的条目为基准，找 B1/BM 中重叠最大的条目并排
         used_b1 = set()
         used_bm = set()
-        for i, (s0, e0, t0) in enumerate(sa):
-            out("[%s --> %s] A : %s" % (fmt_ts(s0), fmt_ts(e0), t0))
+        for s0, e0, t0 in sa:
+            out(f"[{fmt_ts(s0)} --> {fmt_ts(e0)}] A : {t0}")
             for label, coll, used in (("B1", sb1, used_b1), ("BM", sbm, used_bm)):
                 best, best_ov = None, 0.0
                 for j, (s1, e1, t1) in enumerate(coll):
@@ -290,39 +288,39 @@ def main():
                         best_ov, best = ov, (s1, e1, t1, j)
                 if best and best_ov > 0.2:
                     used.add(best[3])
-                    out("    [%s --> %s] %s: %s" % (fmt_ts(best[0]), fmt_ts(best[1]), label, best[2]))
+                    out(f"    [{fmt_ts(best[0])} --> {fmt_ts(best[1])}] {label}: {best[2]}")
                 else:
-                    out("    (无时间重叠的 %s 条目)" % label)
+                    out(f"    (无时间重叠的 {label} 条目)")
             out("")
         # B1/BM 有而 A 无的条目也列出
         for label, coll, used in (("B1", sb1, used_b1), ("BM", sbm, used_bm)):
             extra = [(s, e, t) for j, (s, e, t) in enumerate(coll) if j not in used]
             if extra:
-                out("  （%s 中未被 A 对上的条目）" % label)
+                out(f"  （{label} 中未被 A 对上的条目）")
                 for s, e, t in extra:
-                    out("    [%s --> %s] %s: %s" % (fmt_ts(s), fmt_ts(e), label, t))
+                    out(f"    [{fmt_ts(s)} --> {fmt_ts(e)}] {label}: {t}")
                 out("")
 
     # ---- 6. 漏行对照
     out("## 6. 漏行对照（中点 2 秒内无对方条目即算无对应）")
     out("-" * 100)
     a_miss, b_miss = match_count(subs_a, subs_bm, 2.0)
-    out("A 中无 BM 对应的条目数（A 漏行方向）: %d / %d" % (a_miss, len(subs_a)))
-    out("BM 中无 A 对应的条目数（B 新增方向）: %d / %d" % (b_miss, len(subs_bm)))
+    out(f"A 中无 BM 对应的条目数（A 漏行方向）: {a_miss} / {len(subs_a)}")
+    out(f"BM 中无 A 对应的条目数（B 新增方向）: {b_miss} / {len(subs_bm)}")
     a_miss1, b1_miss = match_count(subs_a, subs_b1, 2.0)
-    out("（参考）A 中无 B1 对应条目数: %d；B1 中无 A 对应条目数: %d" % (a_miss1, b1_miss))
+    out(f"（参考）A 中无 B1 对应条目数: {a_miss1}；B1 中无 A 对应条目数: {b1_miss}")
     out("")
     out("=" * 100)
     out("报告结束")
 
     # 输出
     txt = "\n".join(lines) + "\n"
-    with io.open(OUT_TXT, "w", encoding="utf-8") as f:
+    with open(OUT_TXT, "w", encoding="utf-8") as f:
         f.write(txt)
 
     safe = txt.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8", errors="replace")
     sys.stdout.write(safe)
-    sys.stdout.write("\n[报告已写入] %s\n" % OUT_TXT)
+    sys.stdout.write(f"\n[报告已写入] {OUT_TXT}\n")
 
 
 if __name__ == "__main__":

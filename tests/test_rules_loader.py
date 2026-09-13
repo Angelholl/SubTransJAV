@@ -14,7 +14,6 @@ from subtransjav.refine.rules_loader import (
     load_rules_safe,
 )
 
-
 # ---------------------------------------------------------------------------
 # 1. 加载与结构
 # ---------------------------------------------------------------------------
@@ -77,6 +76,7 @@ def test_user_rules_yaml_matches_package_default():
     用户副本的合法超集，并同步修改 docstring）。
     """
     from pathlib import Path
+
     import subtransjav.refine.rules_loader as rl
 
     repo_root = Path(rl.__file__).resolve().parents[2]
@@ -139,9 +139,9 @@ def test_prompt_sections_match_yaml():
     p = load_rules()["prompt_sections"]
 
     # RETRY_CLEANING = "\n" + YAML retry_cleaning
-    assert instr.RETRY_CLEANING == "\n" + p["retry_cleaning"]
+    assert "\n" + p["retry_cleaning"] == instr.RETRY_CLEANING
     # HARDENED_SUFFIX = "\n\n" + YAML hardened_suffix
-    assert instr.HARDENED_SUFFIX == "\n\n" + p["hardened_suffix"]
+    assert "\n\n" + p["hardened_suffix"] == instr.HARDENED_SUFFIX
     # legacy STAGE_PROMPTS 阶段表已删除（v2 用 pipeline_v2.V2_STAGE_PROMPTS）
 
 

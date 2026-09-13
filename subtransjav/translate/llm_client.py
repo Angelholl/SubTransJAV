@@ -19,11 +19,13 @@
     <译文/净语结果>（留空 = 删除该条）
 """
 
+import ipaddress
 import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 # ---------------------------------------------------------------------------
 # token 预算（自 legacy core.py 迁移，参数可调；适配 Qwen3 等长上下文本地模型）
@@ -73,7 +75,10 @@ class ClientConfig:
     api_key: str = ""
     model: str = ""
     temperature: float | None = 0.1
-    timeout: float = 900.0         # 本地慢模型单批可达数分钟
+    # 单一批次超时（秒）。P1-5 单一来源：v2 管线经 cfg.timeout_llm 传入
+    # （refine.config.DEFAULT_TIMEOUT_LLM 同值 900.0）；本默认值仅为
+    # 无 cfg 上下文的直接构造保留（translate 层不反向依赖 refine 层）。
+    timeout: float = 900.0
     max_retries: int = 3           # 瞬态错误（429/408/5xx/超时）退避重试次数
     backoff_time: float = 5.0
     concurrency: int = 1           # 批间并发（本地模型保持 1）
@@ -181,6 +186,31 @@ def format_numbered_entries(entries: list) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _loopback_http_client(base_url: str, timeout: float):
+    """回环端点构造 trust_env=False 的 httpx.Client；非回环返回 None（O6）。
+
+    背景：系统代理（Windows 系统设置或 HTTP_PROXY/HTTPS_PROXY 环境变量）
+    会把发往 127.0.0.1/localhost 的请求转给代理，代理通常拒绝回环目标或
+    本身不可达，导致"本地服务明明在跑却连不上"。trust_env=False 使该
+    客户端完全无视代理 env/系统设置，直连本地端口；非回环服务商保持
+    openai 默认行为不变。
+    """
+    try:
+        host = urlsplit(base_url).hostname
+    except ValueError:
+        return None
+    if not host:
+        return None
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:                      # 主机名形式（localhost 等）
+        loopback = host.lower() == "localhost"
+    if not loopback:
+        return None
+    from httpx import Client
+    return Client(trust_env=False, timeout=timeout)
+
+
 class LLMClient:
     """OpenAI 兼容字幕翻译客户端。"""
 
@@ -192,12 +222,13 @@ class LLMClient:
 
     # -- 单批请求 -----------------------------------------------------------
 
-    def _chat(self, system_text: str, user_text: str,
-              max_tokens: int | None = None) -> str:
-        """单次 chat 调用（含瞬态退避与思考模型兜底）。
+    def _ensure_openai_client(self):
+        """懒构造并复用 OpenAI 客户端（双重检查加锁防并发重复初始化）。
 
-        max_tokens 由调用方按批传入（不写入共享 config，
-        避免并发批间互相覆盖的竞态）。
+        回环端点（LM Studio / Ollama 等本地服务）改用 trust_env=False 的
+        专用 httpx.Client（O6），该连接池与客户端同生命周期，随
+        _openai_client 复用；非回环端点传 http_client=None 保持 openai
+        默认行为不变。
         """
         from openai import OpenAI
         cfg = self.config
@@ -206,13 +237,31 @@ class LLMClient:
             # ThreadPoolExecutor 并发调 _chat，避免竞态重复初始化
             with self._lock:
                 if self._openai_client is None:
-                    self._openai_client = OpenAI(
-                        base_url=cfg.base_url,
-                        api_key=cfg.api_key or "not-needed",
-                        timeout=cfg.timeout,
-                        max_retries=0,   # 瞬态退避由本模块统一控制（避免双层重试叠加）
-                    )
-        client = self._openai_client
+                    http_client = _loopback_http_client(cfg.base_url,
+                                                        cfg.timeout)
+                    try:
+                        self._openai_client = OpenAI(
+                            base_url=cfg.base_url,
+                            api_key=cfg.api_key or "not-needed",
+                            timeout=cfg.timeout,
+                            max_retries=0,   # 瞬态退避由本模块统一控制（避免双层重试叠加）
+                            http_client=http_client,   # None=openai 默认行为
+                        )
+                    except BaseException:
+                        if http_client is not None:
+                            http_client.close()   # 构造失败不泄漏连接池
+                        raise
+        return self._openai_client
+
+    def _chat(self, system_text: str, user_text: str,
+              max_tokens: int | None = None) -> str:
+        """单次 chat 调用（含瞬态退避与思考模型兜底）。
+
+        max_tokens 由调用方按批传入（不写入共享 config，
+        避免并发批间互相覆盖的竞态）。
+        """
+        cfg = self.config
+        client = self._ensure_openai_client()
         messages = []
         if system_text:
             messages.append({"role": "system", "content": system_text})
@@ -253,6 +302,28 @@ class LLMClient:
         raise LLMError(f"LLM 调用失败: {last_err}")
 
     @staticmethod
+    def _is_connection_refused(err: Exception) -> bool:
+        """连接拒绝/代理不可达类判定（O6）。
+
+        openai 会把 httpx.ConnectError/ProxyError 包装为 APIConnectionError
+        （str() 往往只剩 "Connection error."），故沿 __cause__ 链查原始
+        异常类型，再用常见错误文本兜底（Windows WinError 10061「积极拒绝」、
+        errno 111、代理连接失败等）。此类故障（端口没开/服务未启动/代理
+        挂了）秒级重试结果几乎必然相同，判为不可重试以快速失败。
+        """
+        cur, depth = err, 0
+        while cur is not None and depth < 6:
+            if type(cur).__name__.lower() in ("connecterror", "proxyerror"):
+                return True
+            cur = getattr(cur, "__cause__", None)
+            depth += 1
+        text = str(err).lower()
+        return any(m in text for m in (
+            "connection refused", "econnrefused", "10061",
+            "unable to connect to proxy", "cannot connect to proxy",
+            "积极拒绝", "拒绝连接"))
+
+    @staticmethod
     def _is_transient(err: Exception) -> bool:
         status = getattr(err, "status_code", None)
         if status is not None:
@@ -265,6 +336,10 @@ class LLMClient:
             if s in (401, 403):
                 return False
             return s in _TRANSIENT_STATUS
+        # 连接拒绝/代理不可达：不可重试，快速失败（O6）；
+        # 429/5xx 等服务端瞬态与超时保持原有退避策略不变。
+        if LLMClient._is_connection_refused(err):
+            return False
         code = getattr(err, "code", None)
         if isinstance(code, int) and code in _TRANSIENT_STATUS:
             return True

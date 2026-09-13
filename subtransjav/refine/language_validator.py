@@ -64,8 +64,7 @@ _ADDRESS_WORDS = {
 }
 # 4. 叙事/内心独白标记词（第一人称/心理动词）
 _NARRATIVE_MARKERS = {
-    "僕は", "僕は", "私は", "わたくし", "自分は", "自分は",
-    "思う", "感じる", "思った", "感じた", "思ってる", "感じてる",
+    "僕は", "私は", "わたくし", "自分は", "思う", "感じる", "思った", "感じた", "思ってる", "感じてる",
 }
 # 5. 日语感叹词/语气词（独立短句，剧情关键）
 _INTERJECTION_WORDS = {
@@ -76,7 +75,7 @@ _INTERJECTION_WORDS = {
     "はいはい", "いいえ", "ううん",
     "あ", "いや", "やだ", "うわ", "ほら",
     "この", "こう", "そっか", "かな", "ねえ", "ねん",
-    "さあ", "ちょっと", "だよね", "もっと",
+    "さあ", "だよね", "もっと",
     "おお", "あああ", "ううう", "えええ",
 }
 # 6. 独立实义短词（2-3字假名，但在对话中有明确语义）
@@ -191,7 +190,7 @@ def filter_stage_output(srt_path: str, stage_index: int,
 
     返回 (保留数, 剔除数)。剔除条目追加到 Errors/dropped_entries.log。
     """
-    from .filters import parse_srt, build_srt
+    from .filters import build_srt, parse_srt
 
     if log is None:
         log = logging.getLogger(__name__)

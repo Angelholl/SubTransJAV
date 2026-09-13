@@ -1,8 +1,7 @@
 """
 双引擎分歧采集单元测试：find_pass_siblings / collect_disagreement。
 """
-from subtransjav.refine.pass_disagreement import (
-    find_pass_siblings, collect_disagreement)
+from subtransjav.refine.pass_disagreement import collect_disagreement, find_pass_siblings
 
 
 def _srt(entries):

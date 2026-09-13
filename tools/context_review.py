@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 上下文预审：离线增强复核 CSV 生成工具
 ==================================================
@@ -47,8 +46,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from subtransjav.refine.filters import parse_srt
 from subtransjav.refine.pass_disagreement import (
-    _MARKER_RE,
     _LANG_RE,
+    _MARKER_RE,
     _timing_span,
 )
 
@@ -221,7 +220,7 @@ def load_review_rows(csv_path: Path) -> tuple[list, dict]:
     （相似度/时间轴起点数值化，供抽样与排序）。
     """
     rows = []
-    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
         for rec in csv.DictReader(f):
             if rec.get("分组") == "已过滤":      # 已过滤伪影一律不审核
                 continue
@@ -788,10 +787,7 @@ def compute_film_stat(name: str, group_rows: list, reviewed_ids: set) -> dict:
     cat_counts = {i: 0 for i in CATEGORIES}
     for r in reviewed:
         cat_counts[r["_category"]] = cat_counts.get(r["_category"], 0) + 1
-    if must_total:
-        rate = (cat_counts[1] + cat_counts[2]) / must_total
-    else:
-        rate = None
+    rate = (cat_counts[1] + cat_counts[2]) / must_total if must_total else None
     return {
         "name": name,
         "must_total": must_total,
@@ -1098,7 +1094,7 @@ def main(argv=None) -> int:
 
     # ---- 构建 + 审核上下文 ----
     contexts, skipped_locate = [], 0
-    for name, rows in picked_by_film.items():
+    for _name, rows in picked_by_film.items():
         for r in rows:
             ctx = build_context(r, films)
             if ctx is None:

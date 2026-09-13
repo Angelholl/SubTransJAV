@@ -199,12 +199,10 @@ def judge_artifact(iou: float, offset: float, text1: str, text2: str,
     if short_str and short_str in _INTERJECTION_WHITELIST:
         return True
     # ② V3 长度组合门槛
-    if (similarity >= 0
+    return (similarity >= 0
             and shorter <= ARTIFACT_SHORT_MAX
             and longer >= ARTIFACT_LONG_MIN
-            and similarity < REVIEW_STRICT_THRESHOLD):
-        return True
-    return False
+            and similarity < REVIEW_STRICT_THRESHOLD)
 
 
 def collect_disagreement(in_path: str) -> dict | None:

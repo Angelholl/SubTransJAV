@@ -8,6 +8,7 @@ Refine 密钥存取：DPAPI 加密存储（与旧项目 api_keys.bin 格式互�
 """
 
 import base64
+import contextlib
 import ctypes
 import json
 import logging
@@ -82,10 +83,8 @@ def _atomic_write(path: str, data: bytes):
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.remove(tmp_path)
-        except OSError:
-            pass
         raise
 
 

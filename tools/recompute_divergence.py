@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from subtransjav.refine.filters import parse_srt
 from subtransjav.refine.pass_disagreement import (
     IOU_THRESHOLD,
     OFFSET_THRESHOLD,
@@ -41,7 +42,6 @@ from subtransjav.refine.pass_disagreement import (
     judge_artifact,
     probe_disagreement_mode,
 )
-from subtransjav.refine.filters import parse_srt
 from subtransjav.refine.quality_report import (
     _weight,
     render_disagreement_section,

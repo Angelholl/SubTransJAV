@@ -4,10 +4,11 @@
 支持递归查找 .srt 文件、按大小/日期/模式过滤。
 """
 
+import contextlib
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any
 
 
 def find_srt_files(
@@ -18,8 +19,8 @@ def find_srt_files(
     max_size: int = 0,
     min_date: str = "",
     max_date: str = "",
-    exclude_patterns: Optional[List[str]] = None,
-) -> List[str]:
+    exclude_patterns: list[str] | None = None,
+) -> list[str]:
     """扫描目录下的 SRT 文件。
 
     Args:
@@ -80,7 +81,7 @@ def find_srt_files(
     return results
 
 
-def scan_summary(files: List[str]) -> Dict[str, Any]:
+def scan_summary(files: list[str]) -> dict[str, Any]:
     """返回文件列表的统计摘要。"""
     if not files:
         return {"count": 0, "total_size": 0, "dirs": []}
@@ -102,9 +103,9 @@ def scan_summary(files: List[str]) -> Dict[str, Any]:
     }
 
 
-def _compile_exclude_patterns(patterns: List[str]) -> List[re.Pattern]:
+def _compile_exclude_patterns(patterns: list[str]) -> list[re.Pattern]:
     """将 glob 风格排除模式编译为正则。
-    
+
     支持:
       *_raw.srt  - 匹配文件名以 _raw.srt 结尾的
       */temp/*   - 匹配路径中含 /temp/ 的
@@ -123,16 +124,15 @@ def _compile_exclude_patterns(patterns: List[str]) -> List[re.Pattern]:
         regex = regex.replace("§DOUBLESTAR§", ".*")
         # 模式匹配路径的任意部分
         regex = f"(?:^|.*/){regex}(?:/.*|$)"
-        try:
+        with contextlib.suppress(re.error):
             result.append(re.compile(regex, re.IGNORECASE))
-        except re.error:
-            pass
     return result
 
 
 def _parse_date(date_str: str, end_of_day: bool = False) -> float:
     """解析 ISO 日期字符串为 Unix 时间戳。"""
-    from datetime import datetime, time as dtime
+    from datetime import datetime
+    from datetime import time as dtime
     try:
         dt = datetime.strptime(date_str.strip(), "%Y-%m-%d")
         if end_of_day:

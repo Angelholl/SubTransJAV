@@ -54,6 +54,15 @@ def _resolve_rules_path(config_dir: str = None) -> str:
     return _PACKAGE_RULES_PATH
 
 
+def resolve_rules_path(config_dir: str = None) -> str:
+    """实际生效的 translation_rules.yaml 路径（公开别名）。
+
+    供 manifest 指纹计算等外部模块对齐"实际加载的文件"，
+    避免跨模块依赖下划线私有名。
+    """
+    return _resolve_rules_path(config_dir)
+
+
 def _nested_get(d: dict, dotted: str):
     cur = d
     for part in dotted.split("."):
@@ -71,7 +80,7 @@ def _validate(rules: dict, path: str):
                 f"{path}: 缺少必需键或值为空: {key}")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _load_cached(path: str, mtime: float) -> dict:
     with open(path, encoding="utf-8") as f:
         rules = yaml.safe_load(f)

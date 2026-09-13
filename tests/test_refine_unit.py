@@ -1,18 +1,13 @@
-# -*- coding: utf-8 -*-
 """Refine 包单元测试与集成桩测试"""
 import os
 import sys
 
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from subtransjav.refine.config import RefineConfig, StageConfig, LOCAL_BATCH_HARD_CAP
-from subtransjav.refine.glossary import (
-    load_glossary, save_glossary, match_glossary, format_glossary_block)
-from subtransjav.refine.filters import (
-    parse_srt, build_srt, is_placeholder, filter_placeholder_file)
+from subtransjav.refine.config import LOCAL_BATCH_HARD_CAP, RefineConfig, StageConfig
+from subtransjav.refine.filters import build_srt, filter_placeholder_file, is_placeholder, parse_srt
+from subtransjav.refine.glossary import format_glossary_block, load_glossary, match_glossary, save_glossary
 from subtransjav.refine.instructions import write_effective_instructions
-
 
 SAMPLE_SRT = """1
 00:00:01,000 --> 00:00:03,000
@@ -91,7 +86,8 @@ def test_write_effective_appends_block(tmp_path):
     out = write_effective_instructions(src.read_text(encoding="utf-8"),
                                        "术语对照表 - X → Y",
                                        work_dir=str(tmp_path))
-    content = open(out, encoding="utf-8").read()
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
     assert "X → Y" in content and "BODY" in content
 
 

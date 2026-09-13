@@ -4,6 +4,7 @@ Tests for Translation Memory (TM) and batch processing.
 
 import os
 import sys
+
 import pytest
 
 # Ensure project root is on sys.path
@@ -346,8 +347,9 @@ class TestCLIBatchArgs:
         assert args.tm_stats is True
 
     def test_collect_input_files_from_dir(self, tmp_path):
-        from subtransjav.refine.cli import _collect_input_files
         from argparse import Namespace
+
+        from subtransjav.refine.cli import _collect_input_files
 
         (tmp_path / "a.srt").write_text("test")
         (tmp_path / "b.srt").write_text("test")
@@ -368,8 +370,9 @@ class TestCLIBatchArgs:
 
     def test_collect_input_files_combined(self, tmp_path):
         """Test combining -i files with --input-dir scanning."""
-        from subtransjav.refine.cli import _collect_input_files
         from argparse import Namespace
+
+        from subtransjav.refine.cli import _collect_input_files
 
         extra = tmp_path / "extra.srt"
         extra.write_text("test")
@@ -392,8 +395,9 @@ class TestCLIBatchArgs:
 
     def test_collect_deduplication(self, tmp_path):
         """Test that duplicate files are removed."""
-        from subtransjav.refine.cli import _collect_input_files
         from argparse import Namespace
+
+        from subtransjav.refine.cli import _collect_input_files
 
         f = tmp_path / "test.srt"
         f.write_text("test")

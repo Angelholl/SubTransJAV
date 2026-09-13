@@ -4,10 +4,9 @@ TM 学习准入门槛测试
 覆盖 scan_learn_defect 单测 + _learn_to_tm 行为单测（gate 开/关）。
 """
 
-from subtransjav.refine.post_validate import scan_learn_defect
 from subtransjav.refine import pipeline_v2 as pv
+from subtransjav.refine.post_validate import scan_learn_defect
 from subtransjav.refine.tm import TranslationMemory
-
 
 # ---------------------------------------------------------------------------
 # scan_learn_defect 单测

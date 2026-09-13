@@ -6,26 +6,78 @@ Maintains the thin wrapper pattern - delegates work to the
 ``subtransjav.refine.cli`` subprocess and streams its output.
 """
 
+import contextlib
 import json
 import logging
 import os
-import sys
 import queue
-import threading
 import subprocess
+import sys
+import threading
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 import webview
 from webview import FileDialog
 
 from subtransjav.utils.process_manager import (
-    terminate_process_tree,
     PSUTIL_AVAILABLE,
+    terminate_process_tree,
 )
+
+from .event_stream import (  # noqa: E402  webview-free 可测模块
+    HEARTBEAT_STALE_S_DEFAULT,
+    EventStreamParser,
+    format_event_line,
+    resume_state_for_path,
+)
+from .strings import msg  # noqa: E402  用户可见文案唯一中文来源
 
 # Project root (subtransjav/webview_gui/api.py -> project root)
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# ---------------------------------------------------------------------------
+# 会话内用户选择的路径登记（信任边界：scan_resume_states 只处理这些路径）
+# 由受信入口登记：文件对话框 / 文件夹扫描 / 拖放（main.py on_drop_event）。
+# ---------------------------------------------------------------------------
+SESSION_SELECTED_PATHS: set[str] = set()
+
+
+def register_session_paths(paths) -> None:
+    """登记用户通过受信入口选择的路径（拖放入口由 main.py 调用）。"""
+    for p in paths or []:
+        if isinstance(p, str) and p:
+            try:
+                SESSION_SELECTED_PATHS.add(str(Path(p).resolve()))
+            except (OSError, ValueError):
+                continue
+
+
+def _ensure_template_dir(templates_dir) -> str:
+    """角色卡目录守卫（反路径穿越加固）。
+
+    角色卡是仓库固定资源语义，仅放行两类目录：
+      1. 服务端默认模板目录（config/templates）——不传目录时的正常主路径；
+      2. 本会话经受信入口（原生文件夹对话框/拖放）登记的用户自选目录，
+         且必须通过 _resolve_safe_path 锚点校验（home/仓库根白名单）。
+    其余前端任意路径一律拒绝，阻断被攻陷前端借角色卡读写接口
+    越锚访问用户主目录下的同名文件。
+    """
+    try:
+        from subtransjav.refine.config import default_templates_dir
+        default_dir = str(_resolve_safe_path(default_templates_dir()))
+    except Exception:
+        default_dir = ""
+    if not templates_dir:
+        return default_dir
+    resolved = str(_resolve_safe_path(templates_dir))
+    if default_dir and os.path.normcase(resolved) == os.path.normcase(default_dir):
+        return resolved
+    allowed = {os.path.normcase(p) for p in SESSION_SELECTED_PATHS}
+    if os.path.normcase(resolved) not in allowed:
+        raise ValueError(
+            f"模板目录仅允许服务端默认目录或本会话选择的目录: {resolved}")
+    return resolved
 
 
 # Security guards live in a webview-free module so they are testable on CI
@@ -34,7 +86,6 @@ from .security import (  # noqa: E402
     _validate_user_directory,
     is_safe_url_scheme,
 )
-
 
 # ---------------------------------------------------------------------------
 # Observability: module-level logger writing to Logs/gui.log
@@ -93,7 +144,7 @@ def _refine_error_tip(e: Exception) -> str:
     return "请检查密钥/网络"
 
 
-def _build_refine_args(options: Dict[str, Any]) -> List[str]:
+def _build_refine_args(options: dict[str, Any]) -> list[str]:
     """构建净语翻译 CLI 参数（v2 两阶段管线）。
 
     options 键：
@@ -153,12 +204,14 @@ def _build_refine_args(options: Dict[str, Any]) -> List[str]:
     if bc:
         args.extend(["--batch-cloud", str(bc)])
 
-    # 批间并发数（1-5，缺省2；CLI 端 __post_init__ 会再钳制一次）
+    # 批间并发数（缺省2；钳制上限经 config 单一来源，CLI 端 __post_init__ 会再钳制一次）
     try:
         n_conc = int(options.get("v2_concurrency") or 2)
     except (TypeError, ValueError):
         n_conc = 2
-    args.extend(["--v2-concurrency", str(max(1, min(5, n_conc)))])
+    from subtransjav.refine.config import resolve_tunable
+    n_max = int(resolve_tunable("v2_concurrency_max"))
+    args.extend(["--v2-concurrency", str(max(1, min(n_max, n_conc)))])
 
     for key, flag in (("lmstudio_endpoint", "--lmstudio-endpoint"),
                       ("ollama_endpoint", "--ollama-endpoint"),
@@ -207,6 +260,13 @@ def _build_refine_args(options: Dict[str, Any]) -> List[str]:
     if options.get("tm_threshold"):
         args.extend(["--tm-threshold", str(options["tm_threshold"])])
 
+    # 断点恢复（复用已完成阶段；仅当用户勾选时传递）
+    if options.get("resume"):
+        args.append("--resume")
+
+    # NDJSON 结构化事件流（GUI 侧解析进度/风险/心跳；同仓 CLI 固定支持）
+    args.extend(["--event-format", "ndjson"])
+
     return args
 
 
@@ -220,12 +280,12 @@ class TranslateAPI:
 
     def __init__(self):
         """Initialize API state."""
-        self.process: Optional[subprocess.Popen] = None
+        self.process: subprocess.Popen | None = None
 
         # 退出时清理 refine 临时目录并终止残留子进程
         import atexit
         atexit.register(self._on_exit_cleanup)
-        self._refine_tmp_dirs: List[str] = []
+        self._refine_tmp_dirs: list[str] = []
 
         # Lock for _translate_process access (GUI thread vs reader thread)
         self._translate_lock = threading.Lock()
@@ -237,7 +297,7 @@ class TranslateAPI:
     # Version / misc
     # ========================================================================
 
-    def get_version(self) -> Dict[str, Any]:
+    def get_version(self) -> dict[str, Any]:
         """Get application version information."""
         try:
             from subtransjav.__version__ import (
@@ -255,16 +315,16 @@ class TranslateAPI:
             return {
                 "success": False,
                 "version": "unknown",
-                "message": "Could not load version information"
+                "message": msg("version_load_failed")
             }
 
-    def get_system_status(self) -> Dict[str, Any]:
+    def get_system_status(self) -> dict[str, Any]:
         """Get system status including optional features like grammar hints."""
         status = {
             "success": True,
             "features": {}
         }
-        
+
         # Check SudachiPy availability for grammar hints
         try:
             from subtransjav.refine.grammar_hint import is_grammar_hint_available
@@ -277,10 +337,10 @@ class TranslateAPI:
                 "available": False,
                 "description": "日语形态素分析提示（未安装 sudachipy）"
             }
-        
+
         return status
 
-    def open_url(self, url: str) -> Dict[str, Any]:
+    def open_url(self, url: str) -> dict[str, Any]:
         """Open a URL in the system browser."""
         try:
             if not is_safe_url_scheme(url):
@@ -295,26 +355,27 @@ class TranslateAPI:
     # File dialogs
     # ========================================================================
 
-    def select_folder(self) -> Dict[str, Any]:
+    def select_folder(self) -> dict[str, Any]:
         """Open native folder dialog to select a folder."""
         windows = webview.windows
         if not windows:
-            return {"success": False, "message": "No active window"}
+            return {"success": False, "message": msg("no_active_window")}
 
         result = windows[0].create_file_dialog(FileDialog.FOLDER)
         if result and len(result) > 0:
+            register_session_paths(result)  # 受信入口：文件夹对话框选取即登记
             return {"success": True, "path": result[0]}
-        return {"success": False, "message": "No folder selected"}
+        return {"success": False, "message": msg("no_folder_selected")}
 
-    def select_output_directory(self) -> Dict[str, Any]:
+    def select_output_directory(self) -> dict[str, Any]:
         """Open native folder dialog to select output directory."""
         return self.select_folder()
 
-    def select_srt_files(self) -> Dict[str, Any]:
+    def select_srt_files(self) -> dict[str, Any]:
         """Open file dialog to select SRT files for translation."""
         windows = webview.windows
         if not windows:
-            return {"success": False, "message": "No active window"}
+            return {"success": False, "message": msg("no_active_window")}
 
         file_types = [
             'Subtitle Files (*.srt)',
@@ -328,31 +389,33 @@ class TranslateAPI:
         )
 
         if result and len(result) > 0:
+            register_session_paths(result)
             return {"success": True, "paths": list(result)}
-        return {"success": False, "message": "No files selected"}
+        return {"success": False, "message": msg("no_files_selected")}
 
-    def select_srt_folder(self) -> Dict[str, Any]:
+    def select_srt_folder(self) -> dict[str, Any]:
         """Open folder dialog and find .srt files in the selected folder."""
         windows = webview.windows
         if not windows:
-            return {"success": False, "message": "No active window"}
+            return {"success": False, "message": msg("no_active_window")}
 
         result = windows[0].create_file_dialog(FileDialog.FOLDER)
         if result and len(result) > 0:
             folder = Path(result[0])
             srt_files = sorted(str(f) for f in folder.glob("*.srt"))
             if srt_files:
+                register_session_paths(srt_files)
                 return {"success": True, "paths": srt_files, "folder": result[0]}
-            return {"success": False, "message": "No .srt files found in selected folder"}
-        return {"success": False, "message": "No folder selected"}
+            return {"success": False, "message": msg("no_srt_in_folder")}
+        return {"success": False, "message": msg("no_folder_selected")}
 
     def scan_srt_folder(self, folder: str, recursive: bool = True,
                         pattern: str = "*.srt", min_size: int = 0,
                         max_size: int = 0, min_date: str = "",
                         max_date: str = "",
-                        exclude: Optional[List[str]] = None) -> Dict[str, Any]:
+                        exclude: list[str] | None = None) -> dict[str, Any]:
         """扫描目录下的 SRT 文件（支持递归/过滤）。
-        
+
         Args:
             folder:   根目录路径
             recursive: 是否递归子目录
@@ -377,6 +440,7 @@ class TranslateAPI:
                 exclude_patterns=exclude,
             )
             summary = scan_summary(files)
+            register_session_paths(files)
             return {
                 "success": True,
                 "paths": files,
@@ -387,7 +451,7 @@ class TranslateAPI:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def open_output_folder(self, path: str, create: bool = True) -> Dict[str, Any]:
+    def open_output_folder(self, path: str, create: bool = True) -> dict[str, Any]:
         """Open a folder in file explorer.
 
         Args:
@@ -412,9 +476,9 @@ class TranslateAPI:
             else:
                 subprocess.run(["xdg-open", str(folder)])
 
-            return {"success": True, "message": "Folder opened"}
+            return {"success": True, "message": msg("folder_opened")}
         except Exception as e:
-            return {"success": False, "message": f"Cannot open folder: {e}"}
+            return {"success": False, "message": msg("cannot_open_folder", e=e)}
 
     def get_default_output_dir(self) -> str:
         """Get the default output directory path."""
@@ -428,19 +492,21 @@ class TranslateAPI:
     def _init_translation_state(self):
         """Initialize translation-specific state if not already done."""
         if not hasattr(self, '_translate_process'):
-            self._translate_process: Optional[subprocess.Popen] = None
+            self._translate_process: subprocess.Popen | None = None
             self._translate_status = "idle"
-            self._translate_error: Optional[str] = None
+            self._translate_error: str | None = None
             self._translate_log_queue: queue.Queue = queue.Queue()
-            self._translate_thread: Optional[threading.Thread] = None
+            self._translate_thread: threading.Thread | None = None
             self._translate_files_total = 0
             self._translate_files_completed = 0
             self._translate_current_file = None
             self._translate_lines_total = 0
             self._translate_lines_done = 0
             self._translate_current_stage = ""
+            # NDJSON 事件流解析器（start_translation 时重建）
+            self._translate_parser: EventStreamParser | None = None
 
-    def start_translation(self, options: Dict[str, Any]) -> Dict[str, Any]:
+    def start_translation(self, options: dict[str, Any]) -> dict[str, Any]:
         """
         Start the refine translation subprocess.
 
@@ -451,7 +517,7 @@ class TranslateAPI:
 
         with self._translate_lock:
             if self._translate_process is not None:
-                return {"success": False, "error": "Translation already in progress"}
+                return {"success": False, "error": msg("translation_in_progress")}
             # Sentinel: mark "starting" to block double-start while Popen runs
             self._translate_process = True
 
@@ -461,14 +527,21 @@ class TranslateAPI:
         self._translate_lines_total = 0
         self._translate_lines_done = 0
         self._translate_current_stage = ""
+        # 每次启动重建事件流解析器（进度/风险/心跳/摘要从零聚合）；
+        # 心跳超时阈值走配置分层（默认 < 用户文件 < 环境变量）
+        try:
+            from subtransjav.refine.config import resolve_tunable
+            _stale_s = float(resolve_tunable("heartbeat_stale_s"))
+        except Exception:
+            _stale_s = HEARTBEAT_STALE_S_DEFAULT
+        self._translate_parser = EventStreamParser(heartbeat_stale_s=_stale_s)
 
         try:
             args = _build_refine_args(options)
 
             # 记录 refine 临时目录，供程序退出时清理
             try:
-                from subtransjav.refine.orchestrator import (
-                    refine_tmp_dir, strip_lang_suffix)
+                from subtransjav.refine.pipeline_support import refine_tmp_dir, strip_lang_suffix
                 for _p in (options.get("inputs") or []):
                     _ip = Path(_p).resolve()
                     _stem = strip_lang_suffix(_ip.stem)
@@ -497,10 +570,12 @@ class TranslateAPI:
                 if v:
                     env[env_var] = str(v)
 
+            # stdout/stderr 分离：stdout 逐行喂 NDJSON 事件解析器，
+            # stderr 原样入日志队列；各自独立线程排空管道防死锁（#190）
             proc = subprocess.Popen(
                 args,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,
                 bufsize=1,
                 universal_newlines=True,
                 encoding="utf-8",
@@ -515,15 +590,22 @@ class TranslateAPI:
             self._translate_status = "running"
             self._translate_error = None
 
+            # 两个守护 reader 线程：stdout→解析器 feed + 人类可读行入日志队列；
+            # stderr→原样入日志队列
             self._translate_thread = threading.Thread(
-                target=self._stream_translation_output,
-                daemon=True
+                target=self._pump_stdout, args=(proc,),
+                name="gui-stdout-reader", daemon=True
             )
             self._translate_thread.start()
+            threading.Thread(
+                target=self._pump_stderr, args=(proc,),
+                name="gui-stderr-reader", daemon=True
+            ).start()
 
             return {
                 "success": True,
-                "message": f"Translation started with {len(options.get('inputs', []))} file(s)",
+                "message": msg("translation_started",
+                               n=len(options.get('inputs', []))),
                 "pid": proc.pid
             }
 
@@ -533,94 +615,54 @@ class TranslateAPI:
                 proc = self._translate_process
                 self._translate_process = None
             if proc is not None and proc is not True and hasattr(proc, 'kill'):
-                try:
+                with contextlib.suppress(Exception):
                     proc.kill()
-                except Exception:
-                    pass
             self._translate_status = "error"
             return {"success": False, "error": str(e)}
 
-    def _stream_translation_output(self):
-        """Background thread to stream translation output and parse progress."""
-        import re
-        with self._translate_lock:
-            proc = self._translate_process
-        # Guard against sentinel (True) — shouldn't happen but be safe
-        if proc is True or not hasattr(proc, 'stdout'):
-            proc = None
+    def _pump_stdout(self, proc: subprocess.Popen):
+        """stdout 守护线程：NDJSON 事件解析 + 人类可读行入日志队列。
+
+        - 事件行格式化成 "[事件] 阶段B 批次 3/10" 风格（心跳不落日志防刷屏）；
+        - 非事件行原样入日志队列，并由解析器的遗留兼容层提取进度/错误。
+        """
+        parser = self._translate_parser or EventStreamParser()
         try:
-            if proc and proc.stdout:
-                for line in proc.stdout:
-                    self._translate_log_queue.put(line)
-                    # refine 引擎总行数："Translating 1875 lines in 2 scenes"
-                    mt = re.search(r'Translating (\d+) lines', line)
-                    if mt:
-                        self._translate_lines_total = int(mt.group(1))
-                        self._translate_lines_done = 0
-                        self._translate_files_total = self._translate_lines_total
-                    # v2 管线总数："[llm] 共 1875 条，分 63 批（并发=1）"
-                    mv = re.search(r'共 (\d+) 条，分 (\d+) 批', line)
-                    if mv:
-                        self._translate_lines_total = int(mv.group(1))
-                        self._translate_lines_done = 0
-                        self._translate_files_total = self._translate_lines_total
-                    # v2 批次进度："⏳ 批次 3/63"
-                    mb2 = re.search(r'批次 (\d+)/(\d+)', line)
-                    if mb2 and self._translate_lines_total:
-                        batch_no, batch_total = int(mb2.group(1)), int(mb2.group(2))
-                        per_batch = self._translate_lines_total / max(1, batch_total)
-                        self._translate_lines_done = min(
-                            int(per_batch * batch_no), self._translate_lines_total)
-                        _stage_label = self._translate_current_stage or "处理中"
-                        self._translate_current_file = (
-                            f"已翻译约 {self._translate_lines_done}"
-                            f"/{self._translate_lines_total} 行（{_stage_label}）")
-                    # refine 批次进度："Scene 1 batch 3: 17 lines and 0 untranslated."
-                    mb = re.search(
-                        r'Scene (\d+) batch (\d+): (\d+) lines and (\d+) untranslated',
-                        line)
-                    if mb:
-                        done = int(mb.group(3))
-                        untrans = int(mb.group(4))
-                        if untrans == 0:
-                            total = self._translate_lines_total
-                            self._translate_lines_done = min(self._translate_lines_done + done, total)
-                            _stage_label = self._translate_current_stage or f"场景 {mb.group(1)}"
-                            self._translate_current_file = (
-                                f"已翻译约 {self._translate_lines_done}"
-                                f"/{total or '?'} 行（{_stage_label} 批次 {mb.group(2)}）")
-                    # 检测 orchestrator 阶段标记："[STAGE] 阶段1 日译中翻译"
-                    ms = re.search(r'\[STAGE\]\s*(.+)', line)
-                    if ms:
-                        self._translate_current_stage = ms.group(1).strip()
-                        self._translate_lines_done = 0
-                    # Capture error messages for GUI display
-                    if 'TRANSLATION FAILED' in line:
-                        self._translate_error = 'Translation failed — no subtitles were translated'
-                    elif line.startswith('Failed:') and not self._translate_error:
-                        self._translate_error = line.strip()
-                    elif 'Batch processing finished with' in line and 'error' in line:
-                        self._translate_error = line.strip()
-                    elif '[refine] 执行失败' in line and not self._translate_error:
-                        self._translate_error = line.strip()
+            for line in proc.stdout:
+                try:
+                    event = parser.feed(line)
+                except Exception:
+                    _log_exc("_pump_stdout.feed")
+                    event = None
+                text = format_event_line(event) if event else None
+                self._translate_log_queue.put(text if text is not None else line)
         except Exception as e:
-            _log_exc("_stream_translation_output")
+            _log_exc("_pump_stdout")
             self._translate_log_queue.put(f"\n[ERROR] {e}\n")
         finally:
-            if proc:
+            with contextlib.suppress(Exception):
                 proc.wait()
 
-    def cancel_translation(self) -> Dict[str, Any]:
+    def _pump_stderr(self, proc: subprocess.Popen):
+        """stderr 守护线程：原样入日志队列。"""
+        try:
+            for line in proc.stderr:
+                self._translate_log_queue.put(line)
+        except Exception as e:
+            _log_exc("_pump_stderr")
+            self._translate_log_queue.put(f"\n[ERROR] {e}\n")
+
+    def cancel_translation(self) -> dict[str, Any]:
         """Cancel running translation process."""
         self._init_translation_state()
 
         with self._translate_lock:
             proc = self._translate_process
             if proc is None:
-                return {"success": False, "error": "No translation in progress"}
+                return {"success": False, "error": msg("no_translation_in_progress")}
             # Sentinel (True) means start_translation is still launching — cannot cancel yet
             if proc is True:
-                return {"success": False, "error": "Translation is still starting, try again"}
+                return {"success": False, "error": msg("translation_still_starting")}
 
         try:
             self._translate_status = "cancelled"
@@ -638,16 +680,17 @@ class TranslateAPI:
             except subprocess.TimeoutExpired:
                 proc.kill()
 
-            self._translate_log_queue.put("\n[CANCELLED] Translation cancelled.\n")
+            self._translate_log_queue.put(
+                f"\n[CANCELLED] {msg('log_cancelled')}\n")
             with self._translate_lock:
                 self._translate_process = None
 
-            return {"success": True, "message": "Translation cancelled"}
+            return {"success": True, "message": msg("translation_cancelled")}
         except Exception as e:
             _log_exc("cancel_translation")
             return {"success": False, "error": str(e)}
 
-    def get_translation_status(self) -> Dict[str, Any]:
+    def get_translation_status(self) -> dict[str, Any]:
         """Get current translation status."""
         self._init_translation_state()
 
@@ -658,6 +701,10 @@ class TranslateAPI:
         if proc is True:
             proc = None
 
+        parser = getattr(self, '_translate_parser', None)
+        snap = parser.snapshot() if parser is not None else {}
+        warning_level = None
+
         if proc is not None:
             poll = proc.poll()
             if poll is not None:
@@ -666,31 +713,66 @@ class TranslateAPI:
                     if self._translate_process is proc:
                         self._translate_process = None
 
+                risk_count = int(snap.get('risk_count') or 0)
+                majority = bool(snap.get('untranslated_majority'))
+
                 if self._translate_status != "cancelled":
-                    if exit_code == 0:
+                    if exit_code == 3:
+                        # CLI 约定：exit 3 = 完成但存在严重质量风险
                         self._translate_status = "completed"
-                        self._translate_log_queue.put("\n[SUCCESS] Translation completed.\n")
+                        warning_level = "critical"
+                        self._translate_log_queue.put(
+                            "\n[WARN] 翻译完成，但存在严重质量风险（exit 3），"
+                            "请检查风险清单。\n")
+                    elif exit_code == 0:
+                        self._translate_status = "completed"
+                        if majority:
+                            warning_level = "critical"
+                            self._translate_log_queue.put(
+                                "\n[WARN] 翻译完成，但检测到整段未翻译风险，"
+                                "请检查风险清单。\n")
+                        elif risk_count > 0:
+                            warning_level = "warning"
+                            self._translate_log_queue.put(
+                                f"\n[WARN] 翻译完成，但检测到 {risk_count} 条风险，"
+                                "请检查风险清单。\n")
+                        else:
+                            self._translate_log_queue.put(
+                                f"\n[SUCCESS] {msg('log_success')}\n")
                     else:
                         self._translate_status = "error"
                         if not self._translate_error:
-                            self._translate_error = f"Translation process exited with code {exit_code}"
-                        self._translate_log_queue.put(f"\n[ERROR] Exit code: {exit_code}\n")
+                            self._translate_error = (
+                                snap.get('error')
+                                or msg("process_exit_code", code=exit_code))
+                        self._translate_log_queue.put(
+                            f"\n[ERROR] {msg('log_exit_code', code=exit_code)}\n")
 
-        files_total = getattr(self, '_translate_files_total', 0)
-        lines_done = getattr(self, '_translate_lines_done', 0)
-        progress = int(100 * lines_done / max(files_total, 1)) if files_total > 0 else 0
+        risk_count = int(snap.get('risk_count') or 0)
+        majority = bool(snap.get('untranslated_majority'))
 
         return {
             "status": self._translate_status,
-            "progress": progress,
-            "current_file": getattr(self, '_translate_current_file', None),
+            "progress": int(snap.get('progress') or 0),
+            "current_file": snap.get('current_file'),
             "files_completed": getattr(self, '_translate_files_completed', 0),
-            "files_total": files_total,
+            "files_total": int(snap.get('total') or 0),
             "has_logs": not self._translate_log_queue.empty(),
-            "error": self._translate_error,
+            "error": self._translate_error or snap.get('error'),
+            # --- NDJSON 事件流扩展键（保留全部旧键） ---
+            "current_stage": snap.get('stage'),
+            "risks": snap.get('risks', []),
+            "risk_count": risk_count,
+            "untranslated_majority": majority,
+            "heartbeat_age": snap.get('heartbeat_age'),
+            "heartbeat_stale_s": float(
+                snap.get('heartbeat_stale_s') or HEARTBEAT_STALE_S_DEFAULT),
+            "degraded": risk_count > 0 or majority,
+            "warning_level": warning_level,
+            "ndjson_mode": bool(snap.get('ndjson_mode')),
         }
 
-    def get_translation_logs(self) -> List[str]:
+    def get_translation_logs(self) -> list[str]:
         """Get new translation log lines."""
         self._init_translation_state()
 
@@ -702,14 +784,39 @@ class TranslateAPI:
                 break
         return logs
 
+    def scan_resume_states(self, paths: list[str]) -> list[dict[str, Any]]:
+        """对用户本次会话选择的输入 srt 计算断点恢复状态。
+
+        - 有 ``{stem}_final_cn.srt`` → completed（整文件已完成）
+        - 有 ``{stem}_manifest.json`` 无终稿 → resumable（可复用已完成阶段）
+        - 否则 → none
+
+        信任边界：仅处理通过受信入口（文件对话框/文件夹扫描/拖放）登记过的
+        路径，未登记的路径直接跳过，不做任意路径解析。
+        """
+        results: list[dict[str, Any]] = []
+        for p in paths or []:
+            if not isinstance(p, str) or not p:
+                continue
+            try:
+                resolved = str(Path(p).resolve())
+            except (OSError, ValueError):
+                continue
+            if resolved not in SESSION_SELECTED_PATHS:
+                continue
+            try:
+                results.append(resume_state_for_path(resolved))
+            except Exception:
+                continue
+        return results
+
     # ================================================================
     # Refine UI 辅助 API（净语翻译两阶段界面）
     # ================================================================
-    def refine_default_paths(self) -> Dict[str, Any]:
+    def refine_default_paths(self) -> dict[str, Any]:
         """返回词库/角色卡目录的默认路径"""
         try:
-            from subtransjav.refine.config import (
-                default_glossary_path, default_templates_dir)
+            from subtransjav.refine.config import default_glossary_path, default_templates_dir
             return {
                 "success": True,
                 "templates_dir": default_templates_dir(),
@@ -719,16 +826,21 @@ class TranslateAPI:
             return {"success": False, "error": str(e)}
 
     def refine_list_models(self, provider: str, endpoint: str = None,
-                           api_key: str = None) -> Dict[str, Any]:
+                           api_key: str = None) -> dict[str, Any]:
         """在线拉取服务商可用模型列表（Zen 免费模型置顶）"""
         try:
             from openai import OpenAI
-            from subtransjav.refine.config import PROVIDER_ENDPOINT_DEFAULTS
+
+            from subtransjav.refine.config import (
+                DEEPSEEK_BASE_DEFAULT,
+                DEFAULT_TIMEOUT_HTTP,
+                PROVIDER_ENDPOINT_DEFAULTS,
+            )
             from subtransjav.refine.secrets import read_secret
 
             provider = (provider or "").lower()
             if provider == "deepseek":
-                base = "https://api.deepseek.com/v1"
+                base = DEEPSEEK_BASE_DEFAULT
                 key = api_key or os.environ.get("DEEPSEEK_API_KEY", "") \
                     or read_secret("deepseek")
             else:
@@ -747,10 +859,15 @@ class TranslateAPI:
                     key = api_key or read_secret("custom")
             if not base:
                 return {"success": False, "error": "缺少接口地址(endpoint)"}
+            # endpoint 与外部 URL 同源信任级别：仅放行 http/https
+            # （本地 LM Studio/Ollama 走 http://localhost 属核心功能，不放行私有地址拦截）
+            if not is_safe_url_scheme(base):
+                return {"success": False, "error": "接口地址仅支持 http/https"}
             if provider not in ("lmstudio", "ollama") and not key:
                 return {"success": False, "error": "缺少 API Key（请先在密钥区保存）"}
 
-            client = OpenAI(base_url=base, api_key=key or "none", timeout=30)
+            client = OpenAI(base_url=base, api_key=key or "none",
+                            timeout=DEFAULT_TIMEOUT_HTTP)
             models = sorted(m.id for m in client.models.list())
             if provider == "zen":
                 models.sort(key=lambda x: (not x.endswith("-free"), x))
@@ -760,7 +877,7 @@ class TranslateAPI:
             return {"success": False, "error": f"{type(e).__name__}: {e}",
                     "tip": _refine_error_tip(e)}
 
-    def list_local_models(self, endpoint: str = None) -> Dict[str, Any]:
+    def list_local_models(self, endpoint: str = None) -> dict[str, Any]:
         """获取本地 LM Studio 可用模型列表（已加载 + 已下载）"""
         try:
             import requests as _req
@@ -792,10 +909,12 @@ class TranslateAPI:
             return {"success": False, "error": str(e), "models": []}
 
     def refine_test_stage(self, provider: str, model: str,
-                          endpoint: str = None, api_key: str = None) -> Dict[str, Any]:
+                          endpoint: str = None, api_key: str = None) -> dict[str, Any]:
         """单阶段连通性测试：极小请求验证服务商+模型可用性"""
         try:
             from openai import OpenAI
+
+            from subtransjav.refine.config import DEEPSEEK_BASE_DEFAULT, DEFAULT_TIMEOUT_HTTP
             from subtransjav.refine.secrets import read_secret
 
             provider = (provider or "").lower()
@@ -803,7 +922,7 @@ class TranslateAPI:
             if not model:
                 return {"success": False, "error": "未填写模型名"}
             if provider == "deepseek":
-                base = "https://api.deepseek.com/v1"
+                base = DEEPSEEK_BASE_DEFAULT
                 key = api_key or os.environ.get("DEEPSEEK_API_KEY", "") \
                     or read_secret("deepseek")
             else:
@@ -823,8 +942,13 @@ class TranslateAPI:
                     key = api_key or read_secret("custom")
             if not base:
                 return {"success": False, "error": "缺少接口地址(endpoint)"}
+            # endpoint 与外部 URL 同源信任级别：仅放行 http/https
+            # （本地 LM Studio/Ollama 走 http://localhost 属核心功能，不放行私有地址拦截）
+            if not is_safe_url_scheme(base):
+                return {"success": False, "error": "接口地址仅支持 http/https"}
 
-            client = OpenAI(base_url=base, api_key=key or "none", timeout=60)
+            client = OpenAI(base_url=base, api_key=key or "none",
+                            timeout=DEFAULT_TIMEOUT_HTTP)
             r = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": "回复：OK"}],
@@ -845,13 +969,16 @@ class TranslateAPI:
         """每阶段 服务商/接口地址 持久化文件（config/refine_stage_settings.json）"""
         try:
             from subtransjav.refine.config import CONFIG_DIR
-            return os.path.join(CONFIG_DIR, "refine_stage_settings.json")
         except Exception:
             return os.path.join(os.getcwd(), "refine_stage_settings.json")
+        # 服务端固定资源：目录由 CONFIG_DIR 决定、文件名硬编码；
+        # 仍经安全锚点校验后返回，阻断环境/配置注入的越界路径直达 open() 汇点。
+        return str(_resolve_safe_path(
+            os.path.join(CONFIG_DIR, "refine_stage_settings.json")))
 
-    def refine_save_stage_settings(self, stages: List[Dict[str, Any]] = None,
-                                   keys: List[Dict[str, Any]] = None,
-                                   settings: Dict[str, Any] = None) -> Dict[str, Any]:
+    def refine_save_stage_settings(self, stages: list[dict[str, Any]] = None,
+                                   keys: list[dict[str, Any]] = None,
+                                   settings: dict[str, Any] = None) -> dict[str, Any]:
         """保存每阶段设置。
         stages: [{"stage":1, "provider":"zen", "endpoint":"https://..."}, ...]
         keys:   [{"stage":1, "provider":"zen", "key":"sk-..."}, ...]  -> DPAPI 密钥库
@@ -918,7 +1045,7 @@ class TranslateAPI:
             _log_exc("refine_save_stage_settings")
             return {"success": False, "error": str(e)}
 
-    def refine_get_stage_settings(self) -> Dict[str, Any]:
+    def refine_get_stage_settings(self) -> dict[str, Any]:
         """读取已保存的每阶段设置；密钥不回传明文，只返回 has_key 标记"""
         try:
             path = self._refine_stage_settings_path()
@@ -948,7 +1075,7 @@ class TranslateAPI:
             _log_exc("refine_get_stage_settings")
             return {"success": False, "error": str(e)}
 
-    def refine_get_glossary(self, path: str = None) -> Dict[str, Any]:
+    def refine_get_glossary(self, path: str = None) -> dict[str, Any]:
         """读取词库词条列表"""
         try:
             from subtransjav.refine.config import default_glossary_path
@@ -961,7 +1088,7 @@ class TranslateAPI:
             _log_exc("refine_get_glossary")
             return {"success": False, "error": str(e)}
 
-    def refine_save_glossary(self, rows: List[List[str]], path: str = None) -> Dict[str, Any]:
+    def refine_save_glossary(self, rows: list[list[str]], path: str = None) -> dict[str, Any]:
         """保存词库词条"""
         try:
             from subtransjav.refine.config import default_glossary_path
@@ -980,17 +1107,15 @@ class TranslateAPI:
             _log_exc("refine_save_glossary")
             return {"success": False, "error": str(e)}
 
-    def refine_get_template(self, stage_index, templates_dir: str = None) -> Dict[str, Any]:
+    def refine_get_template(self, stage_index, templates_dir: str = None) -> dict[str, Any]:
         """读取角色卡原文。stage_index: 'A'|'B'（v2 两阶段）。"""
         try:
             from subtransjav.refine.pipeline_v2 import V2_TEMPLATE_FILES
-            from subtransjav.refine.config import default_templates_dir
             tag = str(stage_index).upper()
             if tag not in V2_TEMPLATE_FILES:
                 return {"success": False,
                         "error": f"无效阶段标识：{stage_index}（应为 A 或 B）"}
-            d = templates_dir or default_templates_dir()
-            d = str(_resolve_safe_path(d))
+            d = _ensure_template_dir(templates_dir)
             p = os.path.join(d, V2_TEMPLATE_FILES[tag])
             if not os.path.isfile(p):
                 return {"success": False,
@@ -1005,17 +1130,15 @@ class TranslateAPI:
             return {"success": False, "error": str(e)}
 
     def refine_save_template(self, stage_index, text: str,
-                             templates_dir: str = None) -> Dict[str, Any]:
+                             templates_dir: str = None) -> dict[str, Any]:
         """保存角色卡文本（stage_index: 'A'|'B'）"""
         try:
             from subtransjav.refine.pipeline_v2 import V2_TEMPLATE_FILES
-            from subtransjav.refine.config import default_templates_dir
             tag = str(stage_index).upper()
             if tag not in V2_TEMPLATE_FILES:
                 return {"success": False,
                         "error": f"无效阶段标识：{stage_index}（应为 A 或 B）"}
-            d = templates_dir or default_templates_dir()
-            d = str(_resolve_safe_path(d))
+            d = _ensure_template_dir(templates_dir)
             os.makedirs(d, exist_ok=True)
             p = os.path.join(d, V2_TEMPLATE_FILES[tag])
             with open(p, "w", encoding="utf-8") as f:
@@ -1025,10 +1148,10 @@ class TranslateAPI:
             _log_exc("refine_save_template")
             return {"success": False, "error": str(e)}
 
-    def refine_pick_folder(self) -> Dict[str, Any]:
+    def refine_pick_folder(self) -> dict[str, Any]:
         return self.select_folder()
 
-    def refine_pick_csv_open(self) -> Dict[str, Any]:
+    def refine_pick_csv_open(self) -> dict[str, Any]:
         """打开词库 CSV/TXT 文件选择对话框"""
         try:
             windows = webview.windows
@@ -1043,7 +1166,7 @@ class TranslateAPI:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def refine_pick_csv_save(self) -> Dict[str, Any]:
+    def refine_pick_csv_save(self) -> dict[str, Any]:
         """词库导出保存对话框"""
         try:
             windows = webview.windows
@@ -1064,7 +1187,7 @@ class TranslateAPI:
     # 翻译记忆库 (Translation Memory) API
     # ================================================================
 
-    def tm_get_stats(self, db_path: str = None) -> Dict[str, Any]:
+    def tm_get_stats(self, db_path: str = None) -> dict[str, Any]:
         """获取翻译记忆库统计信息"""
         try:
             from subtransjav.refine.tm import TranslationMemory
@@ -1078,9 +1201,9 @@ class TranslateAPI:
             _log_exc("tm_get_stats")
             return {"success": False, "error": str(e)}
 
-    def tm_clear(self, stage: int = None, db_path: str = None) -> Dict[str, Any]:
+    def tm_clear(self, stage: int = None, db_path: str = None) -> dict[str, Any]:
         """清空翻译记忆库。
-        
+
         Args:
             stage: 指定阶段 (0/1/2)，None=清空全部
             db_path: 自定义数据库路径
@@ -1098,7 +1221,7 @@ class TranslateAPI:
             return {"success": False, "error": str(e)}
 
     def tm_export_csv(self, path: str = None,
-                      stage: int = None, db_path: str = None) -> Dict[str, Any]:
+                      stage: int = None, db_path: str = None) -> dict[str, Any]:
         """导出翻译记忆库为 CSV"""
         try:
             from subtransjav.refine.tm import TranslationMemory
@@ -1116,7 +1239,7 @@ class TranslateAPI:
             return {"success": False, "error": str(e)}
 
     def tm_import_csv(self, path: str = None,
-                      db_path: str = None) -> Dict[str, Any]:
+                      db_path: str = None) -> dict[str, Any]:
         """从 CSV 导入翻译记忆库"""
         try:
             from subtransjav.refine.tm import TranslationMemory
@@ -1134,7 +1257,7 @@ class TranslateAPI:
             _log_exc("tm_import_csv")
             return {"success": False, "error": str(e)}
 
-    def tm_pick_db(self) -> Dict[str, Any]:
+    def tm_pick_db(self) -> dict[str, Any]:
         """打开翻译记忆库数据库文件选择对话框"""
         try:
             windows = webview.windows
@@ -1153,7 +1276,7 @@ class TranslateAPI:
     # Cleanup
     # ================================================================
 
-    def cleanup_refine_tmp_dirs(self) -> Dict[str, Any]:
+    def cleanup_refine_tmp_dirs(self) -> dict[str, Any]:
         """手动清理 refine 临时目录（退出钩子亦调用此逻辑）"""
         import shutil
         cleaned = []

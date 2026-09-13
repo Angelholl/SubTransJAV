@@ -9,6 +9,58 @@
  */
 
 // ============================================================
+// User-Facing Strings（用户可见文案表）
+// 与后端 subtransjav/webview_gui/strings.py 的 MSG 字典对应；
+// JS 侧无法 import Python，故集中镜像于此（键名尽量保持一致）。
+// ============================================================
+const MSG = {
+    // 状态栏 / 流程
+    idle: '空闲',
+    starting: '正在启动...',
+    running: '运行中',
+    completed: '已完成',
+    cancelled: '已取消',
+    error: '错误',
+    ready: '就绪。',
+
+    // 文件列表
+    usingSourceOutput: '未获取默认输出目录，已切换为「保存到字幕同目录」',
+    addedViaDrop: n => `✓ 已通过拖放添加 ${n} 个 .srt 文件`,
+    skippedDuplicates: n => `ℹ 跳过 ${n} 个重复文件`,
+    skippedNonSrt: n => `ℹ 跳过 ${n} 个非 .srt 文件`,
+    addedFiles: n => `已添加 ${n} 个 .srt 文件`,
+    addedFilesFromFolder: n => `已从文件夹添加 ${n} 个 .srt 文件`,
+    fileSelectError: '文件选择出错',
+    folderSelectError: '文件夹选择出错',
+    removedItems: n => `已移除 ${n} 项`,
+    clearedItems: n => `已清空 ${n} 项`,
+
+    // 输出目录
+    outputDirSet: p => `输出目录：${p}`,
+    browseOutputError: '浏览输出目录出错',
+    noOutputDirTitle: '未设置输出目录',
+    noOutputDirHint: '请先指定输出目录。',
+    folderOpened: p => `已打开文件夹：${p}`,
+    openFolderFailed: '打开文件夹失败',
+    openFolderError: '打开文件夹出错',
+
+    // 翻译流程
+    noFilesTitle: '未添加文件',
+    translationStarted: pid => `翻译已启动（pid ${pid}）`,
+    startFailed: '启动翻译失败',
+    translationErrorLog: m => `翻译出错：${m}`,
+    translationErrorTitle: '翻译出错',
+    cancelledLog: '翻译已取消',
+    completedLog: '翻译完成',
+    translationFailedTitle: '翻译失败',
+    unknownError: '未知错误',
+
+    // 杂项
+    themeSwitched: k => `主题：${k}`,
+    bridgeConnected: 'PyWebView 桥接已连接',
+};
+
+// ============================================================
 // State Management
 // ============================================================
 const AppState = {
@@ -47,7 +99,7 @@ const AppState = {
             this._fallbackOutputDir = '';
             this.outputDir = 'source';
             document.getElementById('outputDir').value = 'source';
-            ConsoleManager.log('Using source output mode (default)', 'warning');
+            ConsoleManager.log(MSG.usingSourceOutput, 'warning');
         }
     }
 };
@@ -167,13 +219,13 @@ const FileListManager = {
 
         if (addedCount > 0) {
             this.render();
-            ConsoleManager.log(`✓ Added ${addedCount} SRT file(s) via drag-and-drop`, 'success');
+            ConsoleManager.log(MSG.addedViaDrop(addedCount), 'success');
         }
         if (duplicates > 0) {
-            ConsoleManager.log(`ℹ Skipped ${duplicates} duplicate(s)`, 'info');
+            ConsoleManager.log(MSG.skippedDuplicates(duplicates), 'info');
         }
         if (skipped > 0) {
-            ConsoleManager.log(`ℹ Skipped ${skipped} non-.srt file(s)`, 'warning');
+            ConsoleManager.log(MSG.skippedNonSrt(skipped), 'warning');
         }
     },
 
@@ -334,10 +386,10 @@ const FileListManager = {
                 });
 
                 this.render();
-                ConsoleManager.log(`Added ${result.paths.length} SRT file(s)`, 'info');
+                ConsoleManager.log(MSG.addedFiles(result.paths.length), 'info');
             }
         } catch (error) {
-            ErrorHandler.show('File Selection Error', error.toString());
+            ErrorHandler.show(MSG.fileSelectError, error.toString());
         } finally {
             UIHelpers.showLoadingState(btn, false);
         }
@@ -356,12 +408,12 @@ const FileListManager = {
                     }
                 });
                 this.render();
-                ConsoleManager.log(`Added ${result.paths.length} SRT file(s) from folder`, 'info');
+                ConsoleManager.log(MSG.addedFilesFromFolder(result.paths.length), 'info');
             } else if (result.message) {
                 ConsoleManager.log(result.message, 'warning');
             }
         } catch (error) {
-            ErrorHandler.show('Folder Selection Error', error.toString());
+            ErrorHandler.show(MSG.folderSelectError, error.toString());
         } finally {
             UIHelpers.showLoadingState(btn, false);
         }
@@ -377,7 +429,7 @@ const FileListManager = {
 
         AppState.selectedIndices.clear();
         this.render();
-        ConsoleManager.log(`Removed ${indicesToRemove.length} item(s)`, 'info');
+        ConsoleManager.log(MSG.removedItems(indicesToRemove.length), 'info');
     },
 
     clearAll() {
@@ -387,7 +439,7 @@ const FileListManager = {
         AppState.selectedFiles = [];
         AppState.selectedIndices.clear();
         this.render();
-        ConsoleManager.log(`Cleared ${count} item(s)`, 'info');
+        ConsoleManager.log(MSG.clearedItems(count), 'info');
     }
 };
 
@@ -415,7 +467,7 @@ const ConsoleManager = {
 
     clear() {
         const output = document.getElementById('consoleOutput');
-        output.innerHTML = '<div class="console-line">Ready.</div>';
+        output.innerHTML = `<div class="console-line">${MSG.ready}</div>`;
     },
 
     appendRaw(text) {
@@ -465,7 +517,7 @@ const ProgressManager = {
     reset() {
         this.setIndeterminate(false);
         this.setProgress(0);
-        this.setStatus('Idle');
+        this.setStatus(MSG.idle);
     }
 };
 
@@ -511,10 +563,10 @@ const DirectoryControls = {
             if (result.success && result.path) {
                 document.getElementById('outputDir').value = result.path;
                 AppState.outputDir = result.path;
-                ConsoleManager.log(`Output directory: ${result.path}`, 'info');
+                ConsoleManager.log(MSG.outputDirSet(result.path), 'info');
             }
         } catch (error) {
-            ErrorHandler.show('Browse Output Error', error.toString());
+            ErrorHandler.show(MSG.browseOutputError, error.toString());
         }
     },
 
@@ -522,7 +574,7 @@ const DirectoryControls = {
         let path = document.getElementById('outputDir').value;
 
         if (!path) {
-            ErrorHandler.showWarning('No Output Directory', 'Please specify an output directory first.');
+            ErrorHandler.showWarning(MSG.noOutputDirTitle, MSG.noOutputDirHint);
             return;
         }
 
@@ -540,12 +592,12 @@ const DirectoryControls = {
             const result = await pywebview.api.open_output_folder(path, true);
 
             if (result.success) {
-                ConsoleManager.log(`Opened folder: ${path}`, 'info');
+                ConsoleManager.log(MSG.folderOpened(path), 'info');
             } else {
-                ErrorHandler.show('Open Folder Failed', result.message);
+                ErrorHandler.show(MSG.openFolderFailed, result.message);
             }
         } catch (error) {
-            ErrorHandler.show('Open Folder Error', error.toString());
+            ErrorHandler.show(MSG.openFolderError, error.toString());
         }
     }
 };
@@ -581,7 +633,7 @@ const TranslatorManager = {
         if (AppState.isRunning) return;
 
         if (AppState.selectedFiles.length === 0) {
-            ErrorHandler.show('No Files', '请先在上方 Source 区添加 .srt 字幕文件。');
+            ErrorHandler.show(MSG.noFilesTitle, '请先在上方 Source 区添加 .srt 字幕文件。');
             return;
         }
 
@@ -593,30 +645,49 @@ const TranslatorManager = {
             this.state.isRunning = true;
             FileListManager.updateButtons();
             this.setProgress(0);
-            this.setStatus('Starting...');
+            this.setStatus(MSG.starting);
             ProgressManager.setIndeterminate(true);
+
+            // 断点恢复探测：把可恢复文件打到控制台（纯提示，不阻塞启动）
+            if (AppState.selectedFiles.length > 0) {
+                try {
+                    const states = await pywebview.api.scan_resume_states(
+                        AppState.selectedFiles.slice());
+                    const resumable = (states || [])
+                        .filter(s => s && s.state === 'resumable');
+                    if (resumable.length > 0) {
+                        ConsoleManager.log(
+                            `🔄 检测到可恢复 ${resumable.length} 个（将复用已完成阶段）`,
+                            'info');
+                        resumable.forEach(s =>
+                            ConsoleManager.log(`   ↺ ${s.stem}`, 'info'));
+                    }
+                } catch (e) {
+                    console.warn('scan_resume_states failed:', e);
+                }
+            }
 
             const result = await pywebview.api.start_translation(options);
 
             if (result.success) {
-                ConsoleManager.log(`Translation started (pid ${result.pid})`, 'info');
+                ConsoleManager.log(MSG.translationStarted(result.pid), 'info');
                 this.startStatusPolling();
             } else {
-                throw new Error(result.error || 'Failed to start translation');
+                throw new Error(result.error || MSG.startFailed);
             }
         } catch (error) {
-            ConsoleManager.log(`Translation error: ${error.message}`, 'error');
-            ErrorHandler.show('Translation Error', error.message);
-            this._finish('Error');
+            ConsoleManager.log(MSG.translationErrorLog(error.message), 'error');
+            ErrorHandler.show(MSG.translationErrorTitle, error.message);
+            this._finish(MSG.error);
         }
     },
 
     async cancelTranslation() {
         try {
             await pywebview.api.cancel_translation();
-            ConsoleManager.log('Translation cancelled', 'warning');
+            ConsoleManager.log(MSG.cancelledLog, 'warning');
             // 状态轮询会检测到进程退出并收尾；此处立即恢复按钮避免竞态窗口
-            this._finish('Cancelled');
+            this._finish(MSG.cancelled);
         } catch (error) {
             console.error('Error cancelling translation:', error);
         }
@@ -624,6 +695,7 @@ const TranslatorManager = {
 
     _finish(statusText) {
         this.stopStatusPolling();
+        this._reportedRiskCount = 0;
         this.state.isRunning = false;
         AppState.isRunning = false;
         FileListManager.updateButtons();
@@ -634,13 +706,47 @@ const TranslatorManager = {
     // ---- Status polling ----
 
     startStatusPolling() {
+        this._reportedRiskCount = 0;
         this.statusInterval = setInterval(async () => {
             try {
                 const status = await pywebview.api.get_translation_status();
 
-                if (status.current_file) {
-                    this.setStatus(`${status.current_file}`);
+                // 状态栏：阶段名（current_stage）优先，叠加当前文件（current_file）
+                let text = '';
+                if (status.current_stage) text = status.current_stage;
+                if (status.current_file &&
+                    (!text || !status.current_file.includes(text))) {
+                    text = text ? `${text} · ${status.current_file}` : status.current_file;
                 }
+                // 心跳超时且仍在运行：追加最近活动提示
+                // （阈值来自后端配置 heartbeat_stale_s 分层解析结果，缺省 45s ≈ 2.25×心跳间隔 20s）
+                const staleS = (typeof status.heartbeat_stale_s === 'number')
+                    ? status.heartbeat_stale_s : 45;
+                if (status.status === 'running' &&
+                    status.heartbeat_age != null && status.heartbeat_age > staleS) {
+                    const secs = Math.round(status.heartbeat_age);
+                    text = `${text || MSG.running}（仍在运行，最近活动 ${secs}s 前）`;
+                }
+                // 风险计数
+                if (status.risk_count > 0) {
+                    text = `${text || MSG.running}｜风险 ${status.risk_count}`;
+                }
+                if (text) this.setStatus(text);
+
+                // 风险明细：仅在数量增长时把新增条目追加到控制台
+                const reported = this._reportedRiskCount || 0;
+                if (status.risk_count > reported) {
+                    const risks = status.risks || [];
+                    const fresh = risks.slice(
+                        Math.max(0, risks.length - (status.risk_count - reported)));
+                    fresh.forEach(r => {
+                        const where = r.phase ? `（${r.phase}）` : '';
+                        ConsoleManager.log(
+                            `⚠️ ${where}${r.message || r.type || '风险'}`, 'warning');
+                    });
+                    this._reportedRiskCount = status.risk_count;
+                }
+
                 if (status.progress !== undefined && status.progress > 0) {
                     ProgressManager.setIndeterminate(false);
                     this.setProgress(status.progress);
@@ -650,15 +756,26 @@ const TranslatorManager = {
 
                 if (status.status === 'completed') {
                     this.setProgress(100);
-                    ConsoleManager.log('Translation completed successfully', 'success');
-                    ErrorHandler.showSuccess('翻译完成', '全部文件处理完毕，产物见输出目录。');
-                    this._finish('Completed');
+                    if (status.untranslated_majority) {
+                        ErrorHandler.show('⚠️ 整段未翻译',
+                            '大量条目保留了日文原文，请检查风险清单');
+                    } else if (status.warning_level) {
+                        const level = status.warning_level === 'critical' ? '严重风险' : '风险';
+                        ConsoleManager.log(
+                            `翻译完成，但检测到${level}（${status.risk_count || 0} 条），请检查风险清单`,
+                            'warning');
+                    } else {
+                        ConsoleManager.log(MSG.completedLog, 'success');
+                        ErrorHandler.showSuccess('翻译完成', '全部文件处理完毕，产物见输出目录。');
+                    }
+                    this._finish(MSG.completed);
                 } else if (status.status === 'error') {
-                    ConsoleManager.log(`Translation error: ${status.error}`, 'error');
-                    ErrorHandler.show('Translation Failed', status.error || 'Unknown error');
-                    this._finish('Error');
+                    ConsoleManager.log(MSG.translationErrorLog(status.error), 'error');
+                    ErrorHandler.show(MSG.translationFailedTitle,
+                        status.error || MSG.unknownError);
+                    this._finish(MSG.error);
                 } else if (status.status === 'cancelled') {
-                    this._finish('Cancelled');
+                    this._finish(MSG.cancelled);
                 }
             } catch (error) {
                 console.error('Status poll error:', error);
@@ -777,7 +894,7 @@ const ThemeManager = {
         const href = this.themes[key] || this.themes['default'];
         this.linkEl.setAttribute('href', href);
         this.saveTheme(key in this.themes ? key : 'default');
-        ConsoleManager.log(`Theme: ${key}`, 'info');
+        ConsoleManager.log(MSG.themeSwitched(key), 'info');
     }
 };
 
@@ -964,6 +1081,7 @@ function closeAbout() {
       fallback_local: !!($('refineFallbackLocal') || {}).checked,
       fallback_model: (($('refineFallbackModel') || {}).value || '').trim(),
       cleaner_config_dir: (($('refineCleanerConfig') || {}).value || '').trim(),
+      resume: !!($('resumeToggle') && $('resumeToggle').checked),
       verbose: !!($('debugLogging') || {}).checked
     };
   }
@@ -1513,7 +1631,7 @@ function RunControlsInit() {
 // PyWebView ready event — backend bridge is now available.
 window.addEventListener('pywebviewready', async () => {
     console.log('PyWebView API ready!');
-    ConsoleManager.log('PyWebView bridge connected', 'success');
+    ConsoleManager.log(MSG.bridgeConnected, 'success');
     window.__pywebviewReady = true;
 
     await AppState.loadDefaultOutputDir();

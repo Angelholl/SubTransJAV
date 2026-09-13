@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.coverage
 dist/
 build/
 models/
@@ -26,3 +27,8 @@ config/glossary_learned.csv
 
 # 快捷方式
 *.lnk
+
+# 发布传输工件（本地临时，不入库）
+subtransjav-d1-d5-commit.txt
+subtransjav-d1-d5.bundle
+subtransjav-d1-d5.patch

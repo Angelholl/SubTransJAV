@@ -20,6 +20,8 @@ from pathlib import Path
 from .pass_disagreement import (
     REVIEW_OPTIONAL_THRESHOLD,
     REVIEW_STRICT_THRESHOLD,
+)
+from .pass_disagreement import (
     _timing_span as _disagree_span,
 )
 
@@ -438,8 +440,8 @@ def build_quality_report(orig_entries: list, final_entries: list,
     lines.append(f"长度比中位数: {median_ratio:.2f}"
                  f"（离群<0.3 占比 {outlier_rate:.1f}%）")
     lines.append(
-        (f"敏感词行保留率: {sens_rate:.1f}%（{sens_kept}/{sens_total}）"
-         if sens_total > 0 else "敏感词行保留率: 无样本"))
+        f"敏感词行保留率: {sens_rate:.1f}%（{sens_kept}/{sens_total}）"
+         if sens_total > 0 else "敏感词行保留率: 无样本")
     lines.append(f"[未翻译] 残留: {len(untranslated)} 条 | "
                  f"对话标记泄漏: {dash_leak} 条")
     lines.append("=" * 60)

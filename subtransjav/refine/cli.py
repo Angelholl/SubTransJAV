@@ -3,6 +3,7 @@ subtransjav-refine 命令行入口
 """
 
 import argparse
+import contextlib
 import os
 
 
@@ -108,6 +109,14 @@ def build_parser():
                         help="本地模型上下文窗口（默认32768，用于批大小与max_tokens预算）")
     grp_v2.add_argument("--force", action="store_true",
                         help="忽略已有产物强制重跑（覆盖前自动备份）")
+    grp_v2.add_argument("--resume", action="store_true",
+                        help="断点续跑：校验输入/配置/词库/TM 指纹后复用上次中断任务已完成的阶段A产物")
+    grp_v2.add_argument("--force-resume", action="store_true",
+                        help="指纹校验不匹配时仍强制复用旧产物（隐含 --resume，无需单独传）")
+    p.add_argument("--event-format", choices=["text", "ndjson"], default="text",
+                   help="事件输出格式：text=人类可读（默认）| ndjson=结构化事件行（GUI 用，人类文本转 stderr）")
+    p.add_argument("--heartbeat-interval", type=float, default=20.0,
+                   help="ndjson 心跳间隔秒数（默认 20）")
 
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--clean-tmp-on-exit", action="store_true",
@@ -198,13 +207,17 @@ def config_from_args(args):
         v2_concurrency=args.v2_concurrency,
         v2_ctx_local=args.v2_ctx,
         force=args.force,
+        resume=args.resume,
+        force_resume=args.force_resume,
+        event_format=args.event_format,
+        heartbeat_interval=args.heartbeat_interval,
         tm_learn_gate=not args.no_tm_learn_gate,
     )
 
 
 def print_plan(cfg):
-    from .config import PROVIDER_TEXT
     from .batch import scan_summary
+    from .config import PROVIDER_TEXT
     print("📋 执行计划：")
     print(f"   输入: {len(cfg.inputs)} 个文件")
     summary = scan_summary(cfg.inputs)
@@ -239,15 +252,14 @@ def print_plan(cfg):
 
 def _handle_tm_commands(args):
     """处理翻译记忆库管理命令（执行后退出）。返回 True 表示已处理。"""
-    from .tm import TranslationMemory
     import sys as _sys
+
+    from .tm import TranslationMemory
 
     # Windows GBK 终端兼容：确保 UTF-8 输出
     if _sys.stdout.encoding and _sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
-        try:
+        with contextlib.suppress(Exception):
             _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
 
     tm = TranslationMemory(args.tm_db) if args.tm_db else TranslationMemory()
     try:
@@ -297,13 +309,13 @@ def main(argv=None):
     # ------------------------------------------------------------------
     import sys as _sys
     import time as _time
+
     from .config import LOGS_DIR
-    from .runlog import (TeeWriter, next_log_path, cleanup_old_logs,
-                         write_summary, archive_error_log, errors_dir)
+    from .runlog import TeeWriter, archive_error_log, cleanup_old_logs, errors_dir, next_log_path, write_summary
 
     cleanup_old_logs(LOGS_DIR)
     log_path = next_log_path(LOGS_DIR)
-    log_file = open(log_path, 'w', encoding='utf-8')
+    log_file = open(log_path, 'w', encoding='utf-8')  # noqa: SIM115  主流程长生命周期日志句柄，末尾统一 close
     shared_counts = {'error': 0, 'warn': 0, 'failover': 0}
     tee_out = TeeWriter(_sys.stdout, log_file, shared_counts)
     tee_err = TeeWriter(_sys.stderr, log_file, shared_counts)
@@ -313,12 +325,17 @@ def main(argv=None):
     exit_code = 0
 
     _orig_stdout, _orig_stderr = _sys.stdout, _sys.stderr
+    real_stdout = _orig_stdout    # ndjson 事件流的真实 stdout（Tee 之前捕获）
     _sys.stdout = tee_out
     _sys.stderr = tee_err
+    if cfg.event_format == "ndjson":
+        # 结构化事件独占 stdout：人类可读文本全部转走 stderr（Tee 照常进日志）
+        _sys.stdout = _sys.stderr
     try:
         if args.clean_tmp_on_exit:
             import atexit
-            from .orchestrator import cleanup_created_tmp_dirs
+
+            from .pipeline_support import cleanup_created_tmp_dirs
             atexit.register(cleanup_created_tmp_dirs)
 
         if args.dry_run:
@@ -326,10 +343,23 @@ def main(argv=None):
             status = "✅ 成功（dry-run）" if ok else "❌ 失败（dry-run 配置错误）"
             exit_code = 0 if ok else 2
         else:
+            summary = {}
             try:
                 from .pipeline_v2 import run_v2
-                out = run_v2(cfg)
-                status = "✅ 成功"
+                out = run_v2(cfg, summary_sink=summary,
+                             event_stream=(real_stdout if cfg.event_format == "ndjson"
+                                           else None))
+                for _line in summary.get("summary_lines") or []:
+                    print(_line)
+                n_ok = summary.get("files_ok", 0)
+                n_deg = summary.get("files_degraded", 0)
+                n_fail = summary.get("files_failed", 0)
+                if n_deg or n_fail or summary.get("risk_count", 0):
+                    status = (f"⚠️ 部分降级（成功{n_ok}/降级{n_deg}/失败{n_fail}）")
+                    exit_code = 3
+                else:
+                    status = "✅ 成功"
+                    exit_code = 0
                 print(f"\n✅ [refine-v2] 最终输出: {out}")
             except KeyboardInterrupt:
                 status = "⚠️ 用户中断"
@@ -339,8 +369,14 @@ def main(argv=None):
                 err_msg = str(e)
                 exit_code = 1
                 print(f"\n❌ [refine] 执行失败：{e}")
+                for _line in summary.get("summary_lines") or []:
+                    print(_line)
     finally:
         _sys.stdout, _sys.stderr = _orig_stdout, _orig_stderr
+        # D1：ndjson 模式下 stdout 是结构化事件流（GUI 逐行 json.loads），
+        # 此处收尾的人类可读页脚必须改走 stderr；text 模式保持 stdout 原行为。
+        _echo = (lambda msg: print(msg, file=_sys.stderr)) \
+            if cfg.event_format == "ndjson" else print
         try:
             tee_out.close()
             tee_err.close()
@@ -352,11 +388,11 @@ def main(argv=None):
         archived = archive_error_log(log_path, status, LOGS_DIR)
         if archived:
             cleanup_old_logs(errors_dir(LOGS_DIR))
-            print(f"❗ 错误日志已归档: {archived}")
+            _echo(f"❗ 错误日志已归档: {archived}")
 
-        print(f"\n📄 运行日志已保存: {log_path}")
+        _echo(f"\n📄 运行日志已保存: {log_path}")
         if err_msg:
-            print(f"   {err_msg}")
+            _echo(f"   {err_msg}")
         _sys.exit(exit_code)
 
 

@@ -17,21 +17,53 @@ v2 两阶段流水线编排
 角色卡：config/templates/角色-净语翻译.txt（阶段A）、角色-审校抛光.txt（阶段B）。
 """
 
+import contextlib
+import hashlib
 import logging
 import os
 import re
+import sqlite3
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-from .config import RefineConfig, ensure_language_support
-from .filters import parse_srt, build_srt
-from .glossary import match_glossary, format_glossary_block
-from .instructions import write_effective_instructions, hardened_suffix
-from .orchestrator import (
-    CREATED_TMP_DIRS, _tmp_dirs_lock, RefineError, _init_tm,
-    _resolve_stage_paths, load_glossary_merged, refine_tmp_dir,
-    learned_glossary_path,
+from .config import (
+    DEEPSEEK_BASE_DEFAULT,
+    DEFAULT_PREMERGE_MAX_GAP_S,
+    DEFAULT_PREMERGE_MAX_ITEMS,
+    RefineConfig,
+    ensure_language_support,
 )
+from .events import EventEmitter
+from .filters import build_srt, parse_srt
+from .glossary import format_glossary_block, match_glossary
+from .instructions import hardened_suffix, write_effective_instructions
+from .manifest import (
+    MANIFEST_VERSION,
+    TaskManifest,
+    compute_config_hash,
+    compute_file_sha1,
+    compute_glossary_sha1,
+    delete_resume_artifacts,
+    load_manifest,
+    manifest_path,
+    save_manifest,
+    validate_manifest,
+)
+from .pipeline_support import (
+    CREATED_TMP_DIRS,
+    RefineError,
+    _init_tm,
+    _resolve_stage_paths,
+    _tmp_dirs_lock,
+    learned_glossary_path,
+    load_glossary_merged,
+    refine_tmp_dir,
+)
+from .risk import SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_WARNING, RiskCollector
 from .tm import TranslationMemory
 
 logger = logging.getLogger(__name__)
@@ -76,8 +108,121 @@ V2_STAGE_PROMPTS = {
     ),
 }
 
-DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+# P1-5 配置单一来源：DeepSeek 地址收口到 config.DEEPSEEK_BASE_DEFAULT
+# （保留模块别名，历史引用不变）
+DEEPSEEK_BASE_URL = DEEPSEEK_BASE_DEFAULT
 UNTRANSLATED_PREFIX = "[未翻译] "
+
+# LLM 客户端 ⏳ 进度文本（"批次 3/63"）→ phase_progress 事件载荷的解析规则
+_BATCH_PROGRESS_RE = re.compile(r"批次\s*(\d+)\s*/\s*(\d+)")
+
+# ---------------------------------------------------------------------------
+# P1-6 语法提示跨阶段缓存：键 (sha1(条目文本), 阶段tag, profile)。
+# A/B 两阶段与多文件批次共享；同一文本（ASR 重复行极常见）只分析一次。
+# 容量满 50000 直接清空（防无限膨胀；负缓存 None 同样入缓存）。
+# ---------------------------------------------------------------------------
+_GRAMMAR_CACHE: dict = {}
+_GRAMMAR_CACHE_MAX = 50000
+_GRAMMAR_CACHE_LOCK = threading.Lock()
+
+
+def _grammar_cache_key(text: str, tag: str, profile: str) -> tuple:
+    return (hashlib.sha1((text or "").encode("utf-8")).hexdigest(),
+            tag, profile)
+
+
+def _emit_batch_progress(emitter, phase, message) -> None:
+    """把 LLM 客户端的 ⏳ 进度文本映射为 phase_progress 事件（ndjson 模式）。
+
+    无法解析的进度文本静默跳过（人类可读通道照常 print）。
+    """
+    if emitter is None:
+        return
+    m = _BATCH_PROGRESS_RE.search(message or "")
+    if not m:
+        return
+    done, total = int(m.group(1)), int(m.group(2))
+    emitter.emit("phase_progress", phase=phase,
+                 payload={"batch": done, "done": done, "total": total})
+
+
+def _glossary_fingerprint(cfg) -> str | None:
+    """词库指纹：人工词库与自动学习词库（glossary_learned.csv）联合 sha1。
+
+    两者都缺失 -> None（校验时跳过）；任一存在则参与联合指纹，
+    保证自动学习追加的词库变化也会让旧产物失效。
+    """
+    parts = [
+        compute_glossary_sha1(getattr(cfg, "glossary_path", "") or None),
+        compute_glossary_sha1(learned_glossary_path()),
+    ]
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+
+
+# TM 指纹参与的内容列（按 content_hash, stage 稳定排序，跨进程确定性）。
+# 刻意排除 hit_count / created_at 等簿记列（D5）：阶段A 每次精确命中都会
+# 自增 hit_count 并提交（tm.exact_map / lookup_exact），变更还可能滞留
+# WAL、被下一次连接打开时回放——若对整文件做 sha1，manifest 创建后 TM
+# 文件字节几乎必然变化，同配置 --resume 必拒绝复用阶段A。
+_TM_FINGERPRINT_COLUMNS = ("content_hash", "stage", "source_text", "target_text")
+
+
+def _tm_fingerprint(cfg, tm) -> str | None:
+    """翻译记忆库指纹：tm_entries 内容列按稳定排序的流式 sha1（D5）。
+
+    - 只取内容列（_TM_FINGERPRINT_COLUMNS），排除 hit_count/created_at
+      等簿记列：命中只改簿记、不改翻译结果，不应使已有阶段产物失效；
+      内容条目新增/修改则指纹必变。
+    - 未启用/文件缺失/无表/文件损坏 -> None（校验侧按"跳过"处理）。
+    """
+    db = getattr(tm, "db_path", None) if tm is not None else None
+    if not db:
+        db = getattr(cfg, "tm_db_path", "") or None
+    if not db or not Path(db).is_file():
+        return None
+    digest = hashlib.sha1()
+    try:
+        conn = sqlite3.connect(db)
+        try:
+            sql = (f"SELECT {', '.join(_TM_FINGERPRINT_COLUMNS)} "
+                   "FROM tm_entries ORDER BY content_hash, stage")
+            cursor = conn.execute(sql)      # 游标只建一次，fetchmany 顺序推进
+            while True:
+                rows = cursor.fetchmany(4096)
+                if not rows:
+                    break
+                for row in rows:
+                    digest.update(
+                        "\x1f".join(str(v) for v in row).encode("utf-8"))
+                    digest.update(b"\n")
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return digest.hexdigest()
+
+
+def _v2_models_payload(cfg: RefineConfig) -> dict:
+    """清单用模型信息：{"A": {provider,model,endpoint}, "B": {...}}。"""
+    models = {}
+    for tag in V2_STAGE_TAGS:
+        s = cfg.stages[V2_STAGE_SLOT[tag]]
+        models[tag] = {
+            "provider": s.provider,
+            "model": cfg.resolve_model(s) or "",
+            "endpoint": cfg.resolve_endpoint(s.provider) or "",
+        }
+    return models
+
+
+def _remove_tmp_dir(tmp_dir: str) -> None:
+    """删除本文件的流水线临时工作区（忽略错误，不抛异常）。"""
+    import shutil
+    if tmp_dir and Path(tmp_dir).is_dir():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 # ---------------------------------------------------------------------------
 # 代码层预合并（断句修复）：ASR 常把一句话切成多条碎片。
@@ -94,12 +239,22 @@ _PREMERGE_COMPLETE_END = re.compile(
     r"(?:です|ます|んだ|のだ|よね|ない|た|だ|か[。？?]?|[。！？?！])\s*$")
 # 省略号/波浪线收尾：刻意的戏剧停顿，不参与 ≤1.0s 强制合并档
 _PREMERGE_TRAILING = re.compile(r"(?:…|⋯|〜|~)\s*$")
-_PREMERGE_MAX_SPAN = 8.0       # 合并后总时长上限（秒）
-_PREMERGE_MAX_COUNT = 3        # 合并条数上限
+# P1-5：阈值收口到 config（模块常量仅为无 cfg 直调时保留历史默认值）
+_PREMERGE_MAX_SPAN = DEFAULT_PREMERGE_MAX_GAP_S   # 合并后总时长上限（秒）
+_PREMERGE_MAX_COUNT = DEFAULT_PREMERGE_MAX_ITEMS  # 合并条数上限
 
 
-def _premerge_entries(entries: list) -> list:
-    """断句修复：按角色卡预处理标准合并被 ASR 错误切割的相邻碎片。"""
+def _premerge_entries(entries: list, cfg: RefineConfig = None) -> list:
+    """断句修复：按角色卡预处理标准合并被 ASR 错误切割的相邻碎片。
+
+    cfg 提供时使用 cfg.premerge_max_gap_s / cfg.premerge_max_items
+    （用户可调）；缺省回退历史默认值（兼容无 cfg 的直调/单测）。
+    """
+    max_span = _PREMERGE_MAX_SPAN
+    max_count = _PREMERGE_MAX_COUNT
+    if cfg is not None:
+        max_span = float(getattr(cfg, "premerge_max_gap_s", _PREMERGE_MAX_SPAN))
+        max_count = int(getattr(cfg, "premerge_max_items", _PREMERGE_MAX_COUNT))
     if not entries:
         return entries
     merged = []
@@ -141,7 +296,7 @@ def _premerge_entries(entries: list) -> list:
             allow = False
         # 禁止：超长/超条数
         n_prev = prev.get("_merge_count", 1)
-        if merged_dur > _PREMERGE_MAX_SPAN or n_prev >= _PREMERGE_MAX_COUNT:
+        if merged_dur > max_span or n_prev >= max_count:
             allow = False
 
         if allow:
@@ -292,25 +447,25 @@ def _make_client(cfg: RefineConfig, tag: str):
         base_url = DEEPSEEK_BASE_URL
         api_key = cfg.resolve_api_key("deepseek")
         n_ctx = None
-        temperature = 0.5
+        temperature = cfg.temperature_cloud
         concurrency = max(1, cfg.v2_concurrency)
     elif provider == "lmstudio":
         base_url = cfg.resolve_endpoint("lmstudio") or "http://localhost:1234/v1"
         api_key = os.environ.get("LMSTUDIO_API_KEY", "lm-studio")  # 本地端点占位
         n_ctx = cfg.v2_ctx_local
-        temperature = 0.1   # 沿用本地实测最优低温
+        temperature = cfg.temperature_local   # 本地实测最优低温（config 收口）
         concurrency = max(1, cfg.v2_concurrency)
     elif provider == "ollama":
         base_url = cfg.resolve_endpoint("ollama") or "http://localhost:11434/v1"
         api_key = "ollama"   # 本地服务免密钥，占位即可
         n_ctx = cfg.v2_ctx_local
-        temperature = 0.1
+        temperature = cfg.temperature_local
         concurrency = max(1, cfg.v2_concurrency)
     else:
         base_url = cfg.resolve_endpoint(provider)
         api_key = cfg.resolve_api_key(provider)
         n_ctx = None
-        temperature = 0.5
+        temperature = cfg.temperature_cloud
         concurrency = max(1, cfg.v2_concurrency)
 
     if not base_url:
@@ -321,6 +476,7 @@ def _make_client(cfg: RefineConfig, tag: str):
     cc = ClientConfig(
         base_url=base_url, api_key=api_key or "", model=model,
         temperature=temperature, concurrency=concurrency, n_ctx=n_ctx,
+        timeout=cfg.timeout_llm,
     )
     return LLMClient(cc, log=print)
 
@@ -350,9 +506,10 @@ def _make_fallback_client(cfg: RefineConfig):
         base_url=cfg.resolve_endpoint("lmstudio") or "http://localhost:1234/v1",
         api_key=os.environ.get("LMSTUDIO_API_KEY", "lm-studio"),  # 本地端点占位
         model=cfg.fallback_model.strip(),
-        temperature=0.1,
+        temperature=cfg.temperature_local,
         concurrency=1,
         n_ctx=cfg.v2_ctx_local,
+        timeout=cfg.timeout_llm,
     )
     return LLMClient(cc, log=print)
 
@@ -366,16 +523,23 @@ def _fallback_enabled(cfg: RefineConfig, tag: str) -> bool:
 
 def _run_with_fallback(cfg: RefineConfig, tag: str, client,
                        todo: list, *, system_text: str, user_prompt: str,
-                       max_batch_size: int, allow_empty_deletions: bool):
+                       max_batch_size: int, allow_empty_deletions: bool,
+                       emitter=None):
     """云端阶段执行 + 故障接管：失败行（批失败/缺行）切换本地模型重跑一次。
 
     result.failed 中被本地接管修复的行移回 translations。
+    emitter 非 None 时，⏳ 批次进度同步映射为 phase_progress 事件。
     """
+
+    def _progress(m):
+        print(f"   ⏳ {m}")
+        _emit_batch_progress(emitter, tag, m)
+
     result = client.translate_entries(
         todo, system_text=system_text, user_prompt=user_prompt,
         max_batch_size=max_batch_size,
         allow_empty_deletions=allow_empty_deletions,
-        progress=lambda m: print(f"   ⏳ {m}"))
+        progress=_progress)
 
     failed_entries = [e for e in todo if e["index"] in result.failed]
     if failed_entries and _fallback_enabled(cfg, tag):
@@ -397,13 +561,32 @@ def _run_with_fallback(cfg: RefineConfig, tag: str, client,
 
 
 def _collect_grammar_hints(context_entries: list, targets: list,
-                           verbose: bool = True) -> dict:
+                           verbose: bool = True,
+                           collector=None, file_name: str = None,
+                           tag: str = "A", profile: str = "") -> dict:
     """对 targets 逐条生成语法提示（SudachiPy 句法分析，legacy 同款）。
 
     context_entries 提供条目上下文（前后条参与分析），targets 为需要
     提示的条目。未安装 sudachipy 或分析失败时返回空 dict（静默降级）。
+
+    P1-6：结果按 (sha1(条目文本), tag, profile) 缓存（模块级，A/B 两阶段
+    与多文件共享）；全部命中时跳过 build_srt 与逐条分析。
     """
     hints = {}
+    misses = []
+    with _GRAMMAR_CACHE_LOCK:
+        if len(_GRAMMAR_CACHE) >= _GRAMMAR_CACHE_MAX:
+            _GRAMMAR_CACHE.clear()
+        for e in targets:
+            key = _grammar_cache_key(e.get("text"), tag, profile)
+            if key in _GRAMMAR_CACHE:
+                hint = _GRAMMAR_CACHE[key]
+                if hint:
+                    hints[e["index"]] = hint
+            else:
+                misses.append((e, key))
+    if not misses:
+        return hints
     try:
         from .grammar_hint import generate_grammar_hints, is_grammar_hint_available
         if not is_grammar_hint_available():
@@ -411,20 +594,30 @@ def _collect_grammar_hints(context_entries: list, targets: list,
                 print("   ℹ️ 语法提示: 未安装 sudachipy，跳过句法分析")
             return hints
         srt_content = build_srt(context_entries)
-        for e in targets:
+        for e, key in misses:
             hint = generate_grammar_hints(
                 srt_content, e["index"], entries=context_entries)
+            with _GRAMMAR_CACHE_LOCK:
+                if len(_GRAMMAR_CACHE) >= _GRAMMAR_CACHE_MAX:
+                    _GRAMMAR_CACHE.clear()
+                _GRAMMAR_CACHE[key] = hint or None
             if hint:
                 hints[e["index"]] = hint
     except Exception as e:
         if verbose:
             print(f"   ⚠️ 语法提示注入失败（忽略）: {e}")
+        if collector is not None:
+            collector.add(stage="A", file=file_name,
+                          reason=f"语法提示生成失败: {e}",
+                          action="跳过语法提示",
+                          affected_count=len(targets),
+                          severity=SEVERITY_INFO)
         return {}
     return hints
 
 
 def _inject_stage_a_assists(cfg: RefineConfig, entries: list, todo: list,
-                            tm) -> list:
+                            tm, collector=None, file_name: str = None) -> list:
     """阶段A 输入辅助注入（只改发给 LLM 的文本，不影响 TM 键与产物）：
       1) 语法提示（SudachiPy 句法分析，legacy 同款；未安装则自动跳过）；
       2) TM 模糊命中参考（高阈值旧译文，标注仅供参考防照抄；不写库）。
@@ -433,7 +626,9 @@ def _inject_stage_a_assists(cfg: RefineConfig, entries: list, todo: list,
     todo = [dict(e) for e in todo]
 
     # 1) 语法提示
-    hints = _collect_grammar_hints(entries, todo)
+    hints = _collect_grammar_hints(entries, todo, collector=collector,
+                                   file_name=file_name,
+                                   tag="A", profile=cfg.v2_profile)
     if hints:
         print(f"   📝 语法提示已注入: {len(hints)}/{len(todo)} 条")
 
@@ -452,6 +647,11 @@ def _inject_stage_a_assists(cfg: RefineConfig, entries: list, todo: list,
                       f"（阈值 {cfg.tm_fuzzy_threshold}，仅供参考）")
         except Exception as e:
             print(f"   ⚠️ TM 模糊参考注入失败（忽略）: {e}")
+            if collector is not None:
+                collector.add(stage="A", file=file_name,
+                              reason=f"TM 模糊参考注入失败: {e}",
+                              action="跳过TM模糊参考",
+                              severity=SEVERITY_INFO)
 
     if not hints and not refs:
         return todo
@@ -469,17 +669,28 @@ def _inject_stage_a_assists(cfg: RefineConfig, entries: list, todo: list,
 
 
 def _run_stage_a(cfg: RefineConfig, entries: list, tm, tmp_dir: str,
-                 glossary: list) -> StageAResult:
+                 glossary: list, collector=None, file_name: str = None,
+                 emitter=None) -> StageAResult:
     # 协议标记：供 webview_gui 检测阶段切换，更新进度显示（勿删）
     print(f"[STAGE] {V2_STAGE_NAMES['A']}", flush=True)
     print("\n🔹 [阶段A 净语+翻译] 一次调用完成清洗与日译中")
 
-    # TM 精确命中替代：命中行零 LLM 调用（查阶段1 日→中 翻译对）
+    # TM 精确命中替代：命中行零 LLM 调用（查阶段1 日→中 翻译对）。
+    # P1-6：优先批量 exact_map（一次参数化 SQL）；无该接口的对象
+    # （如测试 FakeTM）回退逐条 lookup_exact，语义不变。
     exact = {}
     if tm:
+        batch_fn = getattr(tm, "exact_map", None)
+        raw = None
+        if batch_fn is not None:
+            try:
+                raw = batch_fn([(e["text"] or "").strip() for e in entries], 1)
+            except Exception as e:
+                print(f"   ⚠️ TM 批量查询失败，回退逐条（忽略）: {e}")
+                raw = None
         for e in entries:
             src = (e["text"] or "").strip()
-            hit = tm.lookup_exact(src, 1)
+            hit = raw.get(src) if raw is not None else tm.lookup_exact(src, 1)
             # 防御：译文与原文相同（ja→ja 残留对）不替代，避免日文漏进中文产物
             if hit and hit.strip() != src:
                 exact[e["index"]] = hit
@@ -490,7 +701,8 @@ def _run_stage_a(cfg: RefineConfig, entries: list, tm, tmp_dir: str,
     todo = [e for e in entries if e["index"] not in exact]
 
     # 辅助注入：语法提示（SudachiPy）+ TM 模糊命中参考
-    todo = _inject_stage_a_assists(cfg, entries, todo, tm)
+    todo = _inject_stage_a_assists(cfg, entries, todo, tm,
+                                   collector=collector, file_name=file_name)
 
     src_text = "\n".join(e["text"] for e in entries)
     gl_block = _v2_glossary_block(cfg, "A", src_text, glossary)
@@ -501,7 +713,7 @@ def _run_stage_a(cfg: RefineConfig, entries: list, tm, tmp_dir: str,
     result = _run_with_fallback(
         cfg, "A", client, todo, system_text=system_text,
         user_prompt=user_prompt, max_batch_size=cfg.batch_for(stage_cfg),
-        allow_empty_deletions=True)
+        allow_empty_deletions=True, emitter=emitter)
 
     out_entries = []
     for e in entries:
@@ -525,7 +737,8 @@ def _run_stage_a(cfg: RefineConfig, entries: list, tm, tmp_dir: str,
 
 
 def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
-                 tmp_dir: str, glossary: list) -> list:
+                 tmp_dir: str, glossary: list, collector=None,
+                 file_name: str = None, emitter=None) -> list:
     """阶段B：对照日文原文审校+抛光。返回最终条目列表。"""
     # 协议标记：供 webview_gui 检测阶段切换，更新进度显示（勿删）
     print(f"[STAGE] {V2_STAGE_NAMES['B']}", flush=True)
@@ -535,7 +748,7 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
     # 日文参照按时间轴双指针对齐（同起点多条不会错配）
     aligned_orig = _align_orig_by_timing(a_result.entries, orig_entries)
     b_entries = []
-    for ae, orig in zip(a_result.entries, aligned_orig):
+    for ae, orig in zip(a_result.entries, aligned_orig, strict=False):
         ja = (orig["text"] or "").strip() if orig else ""
         zh = ae["text"]
         if zh.startswith(UNTRANSLATED_PREFIX):
@@ -553,8 +766,9 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
     ja_entries = [
         {"index": ae["index"], "timing": ae["timing"],
          "text": (orig["text"] or "").strip() if orig else ""}
-        for ae, orig in zip(a_result.entries, aligned_orig)]
-    hints = _collect_grammar_hints(ja_entries, ja_entries, verbose=False)
+        for ae, orig in zip(a_result.entries, aligned_orig, strict=False)]
+    hints = _collect_grammar_hints(ja_entries, ja_entries, verbose=False,
+                                   tag="B", profile=cfg.v2_profile)
     if hints:
         print(f"   📝 语法提示已注入（审校）: {len(hints)}/{len(b_entries)} 条")
         for e in b_entries:
@@ -571,15 +785,17 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
     result = _run_with_fallback(
         cfg, "B", client, b_entries, system_text=system_text,
         user_prompt=user_prompt, max_batch_size=cfg.batch_for(stage_cfg),
-        allow_empty_deletions=True)
+        allow_empty_deletions=True, emitter=emitter)
 
     # 组装最终产物：B 结果优先 → 回退 A 译文 → 回退日文原文（宁多勿缺）
     # B 输入带【语法提示】段，LLM 若回显残留则在此兜底清理
     # （clean_grammar_hint_residue 的模式覆盖阶段B注入格式）。
     from .cleaner_rules import clean_grammar_hint_residue
     keep_untranslated = cfg.v2_keep_untranslated != "empty"
+    kept_a = []                  # B 缺译文 → 回退 A 译文的条目 [(index, text)]
+    kept_original = []           # A/B 双失败 → 保留日文原文的条目 [(index, 日文)]
     final = []
-    for ae, orig in zip(a_result.entries, aligned_orig):
+    for ae, orig in zip(a_result.entries, aligned_orig, strict=False):
         i = ae["index"]
         keep_flag = False
         if i in result.deleted:
@@ -588,6 +804,7 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
             text = clean_grammar_hint_residue(result.translations[i])
         elif not ae["text"].startswith(UNTRANSLATED_PREFIX):
             text = ae["text"]            # B 失败回退 A 译文
+            kept_a.append((i, text))
         elif keep_untranslated:
             # 回退日文原文（宁多勿缺）。打内部标记：后续语言白名单过滤
             # （zh）会把纯日文行判无效，带标记条目须跳过该过滤（见
@@ -595,6 +812,7 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
             # 该键不会影响产物。
             text = (orig["text"] or "").strip() if orig else ""  # 回退日文原文
             keep_flag = True
+            kept_original.append((i, text))
         else:
             continue                     # 配置为 empty：整条移除
         if not text:
@@ -603,11 +821,36 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
         if keep_flag:
             entry["_keep_original"] = True
         final.append(entry)
+
+    # ---- 回退链显式化：降级统计进风险收集器（事件流同步镜像）----
+    if collector is not None:
+        if kept_a:
+            collector.add(stage="B", file=file_name,
+                          reason="阶段B无译文（审校/补译失败）",
+                          action="回退A译文",
+                          affected_count=len(kept_a),
+                          samples=[t for _, t in kept_a],
+                          severity=SEVERITY_WARNING)
+        if kept_original:
+            collector.add(stage="B", file=file_name,
+                          reason="阶段B仍无译文（回退链末环）",
+                          action="保留日文原文",
+                          affected_count=len(kept_original),
+                          samples=[t for _, t in kept_original],
+                          severity=SEVERITY_WARNING)
+        # 整段未翻译判定：保留原文占非空条目 ≥80%，或阶段A整体失败
+        a_all_failed = bool(a_result.entries) and all(
+            e["text"].startswith(UNTRANSLATED_PREFIX) for e in a_result.entries)
+        ratio = (len(kept_original) / len(final)) if final else 0.0
+        if kept_original and (ratio >= 0.8 or a_all_failed):
+            collector.mark_untranslated_majority(
+                file=file_name, total=len(final), kept=len(kept_original))
     return final
 
 
 def _apply_fallback_rules(cfg: RefineConfig, entries: list,
-                          orig_entries: list) -> tuple:
+                          orig_entries: list,
+                          collector=None, file_name: str = None) -> tuple:
     """兜底规则层（profile 驱动）：
     local(strict) → cleaner_rules 清洗 + post_validate 误译拦截；
     cloud(lenient) → 跳过（仅保留语言白名单等零维护校验）。
@@ -633,6 +876,12 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
         validator_warnings = warnings
     except Exception as e:
         print(f"   ⚠️ 兜底拦截失败（忽略）: {e}")
+        if collector is not None:
+            collector.add(stage="A", file=file_name,
+                          reason=f"误译拦截失败: {e}",
+                          action="跳过post_validate误译拦截",
+                          affected_count=len(entries),
+                          severity=SEVERITY_WARNING)
 
     # cleaner_rules：规则清洗（删除残余噪音/碎片）
     clean_merged = 0
@@ -653,7 +902,7 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
         # （同起点多条按顺序消费，不会互相覆盖）。
         aligned = _align_orig_by_timing(cleaned_entries, orig_entries)
         restored = 0
-        for e, o in zip(cleaned_entries, aligned):
+        for e, o in zip(cleaned_entries, aligned, strict=False):
             if o is not None and e["index"] != o["index"]:
                 e["index"] = o["index"]
                 restored += 1
@@ -662,6 +911,12 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
         return cleaned_entries, validator_warnings, clean_merged, flagged_indexes
     except Exception as e:
         print(f"   ⚠️ 兜底清洗失败（忽略）: {e}")
+        if collector is not None:
+            collector.add(stage="A", file=file_name,
+                          reason=f"规则清洗失败: {e}",
+                          action="跳过规则清洗",
+                          affected_count=len(entries),
+                          severity=SEVERITY_WARNING)
         return entries, validator_warnings, 0, flagged_indexes
 
 
@@ -691,16 +946,15 @@ def _atomic_write_text(path: str, text: str):
             os.fsync(f.fileno())
         os.replace(tmp, path)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
 
 
 def filter_stage_output_srt(srt_content: str, stage_index: int,
                             target: str) -> tuple:
     """对条目列表（而非文件路径）执行语言白名单校验。"""
     import tempfile
+
     from .language_validator import filter_stage_output
     fd, tmp = tempfile.mkstemp(suffix=".srt")
     try:
@@ -710,49 +964,245 @@ def filter_stage_output_srt(srt_content: str, stage_index: int,
         kept_entries = parse_srt(Path(tmp).read_text(encoding="utf-8"))
         return kept_entries, dropped
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
 
+# P1-6：词库学习后台线程收尾 join 总预算（秒）；超时记 warning 后放行退出
+_LEARN_JOIN_TIMEOUT = 60.0
 
-def run_v2(cfg: RefineConfig):
-    """执行 v2 两阶段流水线。返回最后一个成功输出。"""
+
+def _file_parallel_enabled(cfg: RefineConfig) -> bool:
+    """云端多文件并行开关（P1-6，opt-in）。
+
+    cfg.v2_file_parallel=True 且 A/B 两阶段均为云端服务商时才启用；
+    本地服务商（LM Studio/Ollama 单并发）一律串行。
+    """
+    if not getattr(cfg, "v2_file_parallel", False):
+        return False
+    for tag in V2_STAGE_TAGS:
+        stage_cfg = cfg.stages[V2_STAGE_SLOT[tag]]
+        if stage_cfg.provider in ("lmstudio", "ollama"):
+            return False
+    return True
+
+
+def _finish_learn_threads(threads: list, collector) -> None:
+    """收尾词库学习后台线程：总预算内逐个 join；超时未完成的记 warning
+    后放行退出（daemon 线程随进程终止，不影响主流程产物）。"""
+    if not threads:
+        return
+    deadline = time.monotonic() + _LEARN_JOIN_TIMEOUT
+    for t in threads:
+        t.join(timeout=max(0.0, deadline - time.monotonic()))
+    if any(t.is_alive() for t in threads):
+        print(f"⚠️ 词库学习未完成（等待超时 {int(_LEARN_JOIN_TIMEOUT)}s），"
+              f"放行退出")
+        collector.add(stage="run", file=None,
+                      reason="词库学习后台线程超时未完成",
+                      action="词库学习未完成（等待超时）",
+                      severity=SEVERITY_WARNING)
+
+
+def run_v2(cfg: RefineConfig, *, summary_sink: dict | None = None,
+           event_stream=None):
+    """执行 v2 两阶段流水线。返回最后一个成功输出。
+
+    summary_sink 非 None 时（CLI 传入），结束时填入任务汇总：
+      {"files_ok","files_degraded","files_failed",
+       "untranslated_majority","risk_count","summary_lines"}
+    event_stream 非 None 时结构化事件写入该流（ndjson 模式）；text 模式
+    下 emitter 为无操作，所有 print 字符串原样保留（GUI 旧解析依赖）。
+    """
     errors = cfg.validate()
     if errors:
         raise RefineError("配置错误：\n  - " + "\n  - ".join(errors))
     if isinstance(cfg.inputs, str):
         cfg.inputs = [cfg.inputs]
 
+    collector = RiskCollector()
+    emitter = EventEmitter(
+        stream=event_stream,
+        enabled=(cfg.event_format == "ndjson"),
+        heartbeat_interval=cfg.heartbeat_interval)
+    collector.attach_emitter(emitter)
+
+    files_ok = files_degraded = files_failed = 0
     results, failures = [], []
     total = len(cfg.inputs)
-    for idx, path in enumerate(list(cfg.inputs), 1):
+    learn_threads: list = []    # P1-6：逐文件词库学习后台线程（run 级注册）
+
+    # P1-5 生效配置摘要：text 模式直接打印；ndjson 模式随 task_started 上报
+    config_summary = cfg.effective_summary()
+    if cfg.event_format != "ndjson":
+        print(config_summary)
+
+    def _finish_task(status: str) -> None:
+        """发 task_finished 事件并回填 summary_sink。"""
+        emitter.emit("task_finished", payload={
+            "status": status,
+            "files_ok": files_ok,
+            "files_degraded": files_degraded,
+            "files_failed": files_failed,
+            "untranslated_majority": collector.untranslated_majority,
+            "risk_count": len(collector.events),
+        })
+        if summary_sink is not None:
+            summary_sink.clear()
+            summary_sink.update({
+                "files_ok": files_ok,
+                "files_degraded": files_degraded,
+                "files_failed": files_failed,
+                "untranslated_majority": collector.untranslated_majority,
+                "risk_count": len(collector.events),
+                "summary_lines": collector.summary_lines(),
+            })
+
+    emitter.emit("task_started",
+                 payload={"files": total, "profile": cfg.v2_profile,
+                          "config_summary": config_summary})
+    emitter.start_heartbeat()
+
+    def _process_file(path):
+        """单文件处理；异常隔离进记录，不拖垮其他文件。"""
+        before = len(collector.events)
+        was_untrans = collector.untranslated_majority
         try:
-            out = _run_single_v2(cfg, path)
+            out = _run_single_v2(cfg, path, collector=collector,
+                                 emitter=emitter, learn_threads=learn_threads)
+            return (path, out, None, before, was_untrans)
+        except Exception as e:      # noqa: BLE001 单文件隔离
+            return (path, None, e, before, was_untrans)
+
+    def _absorb(record, idx: int) -> None:
+        """聚合单文件记录到任务计数（主线程串行执行，无竞态）。"""
+        nonlocal files_ok, files_degraded, files_failed
+        path, out, err, before, was_untrans = record
+        fname = Path(path).name
+        if err is None:
             results.append(out)
-            print(f"[refine-v2] 文件成功 ({idx}/{total})：{Path(path).name}")
-        except Exception as e:   # noqa: BLE001 单文件隔离
-            failures.append((path, e))
+            files_ok += 1
+            # 本文件是否发生内容降级（口径与 RiskCollector.content_degraded
+            # 一致：非 info 且有动作且有影响条数，或整段未翻译置位）
+            new_risk = any(e.severity != SEVERITY_INFO and e.action
+                           and e.affected_count > 0
+                           for e in collector.events[before:])
+            if new_risk or (collector.untranslated_majority
+                            and not was_untrans):
+                files_degraded += 1
+            print(f"[refine-v2] 文件成功 ({idx}/{total})：{fname}")
+        else:
+            failures.append((path, err))
+            files_failed += 1
+            collector.add(stage="run", file=fname, reason=str(err),
+                          action="该文件失败跳过",
+                          severity=SEVERITY_CRITICAL)
+            emitter.emit("error", file=fname, payload={"reason": str(err)})
             print(f"\n❌ [refine-v2] 文件失败 ({idx}/{total})："
-                  f"{Path(path).name}\n   原因: {e}")
+                  f"{fname}\n   原因: {err}")
 
-    if failures:
-        print(f"\n⚠️ [refine-v2] 批量完成：成功 {len(results)} / "
-              f"失败 {len(failures)} / 共 {total}")
-    if not results:
-        raise RefineError(f"全部 {len(failures)} 个文件均处理失败")
-    return results[-1]
+    try:
+        if _file_parallel_enabled(cfg) and total > 1:
+            # P1-6 云端多文件并行（opt-in）：max_workers=min(2, 文件数)
+            max_workers = min(2, total)
+            print(f"⚡ [refine-v2] 云端多文件并行：{max_workers} workers / "
+                  f"{total} 个文件")
+            with ThreadPoolExecutor(
+                    max_workers=max_workers,
+                    thread_name_prefix="refine-v2") as pool:
+                records = list(pool.map(_process_file, list(cfg.inputs)))
+            for idx, record in enumerate(records, 1):
+                _absorb(record, idx)
+        else:
+            for idx, path in enumerate(list(cfg.inputs), 1):
+                _absorb(_process_file(path), idx)
+
+        # P1-6：收尾词库学习后台线程（join 超时记 warning 放行）；
+        # task_finished 事件在其后的 _finish_task 中发出
+        _finish_learn_threads(learn_threads, collector)
+
+        if failures:
+            print(f"\n⚠️ [refine-v2] 批量完成：成功 {len(results)} / "
+                  f"失败 {len(failures)} / 共 {total}")
+        if not results:
+            _finish_task("failed")
+            raise RefineError(f"全部 {len(failures)} 个文件均处理失败")
+        _finish_task("success" if (files_degraded == 0 and files_failed == 0)
+                     else "partial")
+        return results[-1]
+    finally:
+        emitter.close()
 
 
-def _run_single_v2(cfg: RefineConfig, in_path: str) -> str:
+def _prepare_manifest(cfg: RefineConfig, in_path: str, out_dir: str,
+                      stem: str, tm) -> tuple:
+    """创建/加载任务清单并做指纹校验。返回 (manifest, trusted)。
+
+    trusted=True 表示清单指纹校验通过（或 force_resume 强制采信），
+    配合 cfg.resume 才允许复用已有阶段产物；不复用时新建清单覆盖。
+    """
+    m_path = manifest_path(out_dir, stem)
+    input_sha1 = compute_file_sha1(in_path)
+    config_hash = compute_config_hash(cfg)
+    gl_fp = _glossary_fingerprint(cfg)
+    tm_fp = _tm_fingerprint(cfg, tm)
+    manifest = load_manifest(m_path)
+    if manifest is not None:
+        reasons = validate_manifest(manifest, input_sha1=input_sha1,
+                                    config_hash=config_hash,
+                                    glossary_sha1=gl_fp, tm_sha1=tm_fp)
+        if not reasons:
+            return manifest, True
+        if cfg.force_resume:
+            # 外层前缀只描述"校验未通过"，具体变化明细以 reasons 为准，
+            # 避免出现"配置已变化：配置已变化"式重复（O4）。
+            print(f"⚠️ 强制复用（指纹校验不匹配：{'、'.join(reasons)}），"
+                  f"继续复用已有产物")
+            # 指纹刷新为当前值，保持清单自洽
+            manifest.input_sha1 = input_sha1
+            manifest.input_size = Path(in_path).stat().st_size
+            manifest.config_hash = config_hash
+            manifest.glossary_sha1 = gl_fp
+            manifest.tm_sha1 = tm_fp
+            save_manifest(m_path, manifest)
+            return manifest, True
+        print(f"⚠️ 不复用（{'、'.join(reasons)}），将重跑")
+        # D3：拒绝复用不得立即重写清单文件——否则上一轮中断现场（如
+        # stages.A=done）会被全新 pending 清单覆盖，--force-resume 随即
+        # 失去复用前提。此处仅在内存中刷新指纹、保留磁盘原文件；待阶段
+        # 实际重跑（mark_running -> save_manifest）时才落盘推进。
+        manifest.input_sha1 = input_sha1
+        manifest.input_size = Path(in_path).stat().st_size
+        manifest.config_hash = config_hash
+        manifest.glossary_sha1 = gl_fp
+        manifest.tm_sha1 = tm_fp
+        return manifest, False
+    now = datetime.now().isoformat(timespec="seconds")
+    manifest = TaskManifest(
+        manifest_version=MANIFEST_VERSION,
+        input_path=in_path, input_sha1=input_sha1,
+        input_size=Path(in_path).stat().st_size,
+        config_hash=config_hash, glossary_sha1=gl_fp, tm_sha1=tm_fp,
+        models=_v2_models_payload(cfg), out_dir=out_dir, stem=stem,
+        started_at=now, updated_at=now, run_pid=os.getpid())
+    save_manifest(m_path, manifest)
+    return manifest, False
+
+
+def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
+                   emitter=None, learn_threads: list | None = None) -> str:
+    if collector is None:
+        collector = RiskCollector()
+    if emitter is None:
+        emitter = EventEmitter(enabled=False)   # 直调模式：不发事件
     ensure_language_support()
 
     in_path, out_dir, stem = _resolve_stage_paths(cfg, in_path)
+    fname = Path(in_path).name
     tmp_dir = refine_tmp_dir(in_path, stem)
     with _tmp_dirs_lock:
         if tmp_dir not in CREATED_TMP_DIRS:
@@ -763,9 +1213,14 @@ def _run_single_v2(cfg: RefineConfig, in_path: str) -> str:
     force = bool(getattr(cfg, "force", False))
     if Path(out_final_path).is_file() and not force:
         print(f"\n🔹 [v2] 终稿已存在，跳过：{Path(out_final_path).name}")
+        _remove_tmp_dir(tmp_dir)    # 无事可做：顺手清掉刚建的临时工作区
+        emitter.emit("phase_started", phase="final", file=fname)
+        emitter.emit("phase_finished", phase="final", file=fname, payload={
+            "entries": 0, "degraded_count": 0, "reused": True})
         return out_final_path
     if force:
-        _backup_existing_outputs(out_dir, stem)
+        _backup_existing_outputs(out_dir, stem, collector=collector,
+                                 file_name=fname)
 
     glossary = load_glossary_merged(cfg)
     tm = _init_tm(cfg)
@@ -778,7 +1233,7 @@ def _run_single_v2(cfg: RefineConfig, in_path: str) -> str:
     premerge_merged = 0
     if cfg.premerge_enabled:
         n0 = len(orig_entries)
-        orig_entries = _premerge_entries(orig_entries)
+        orig_entries = _premerge_entries(orig_entries, cfg)
         premerge_merged = n0 - len(orig_entries)
         if premerge_merged:
             print(f"   🔗 断句预合并: {n0} → {len(orig_entries)} 条"
@@ -793,21 +1248,63 @@ def _run_single_v2(cfg: RefineConfig, in_path: str) -> str:
               f"批量{cfg.batch_for(stage_cfg)} | profile={cfg.v2_profile}")
     print("=" * 60)
 
+    # ---- 中断恢复：任务清单（创建/加载 + 指纹校验）----
+    manifest, manifest_trusted = _prepare_manifest(cfg, in_path, out_dir,
+                                                   stem, tm)
+    m_path = manifest_path(out_dir, stem)
+
     try:
-        # ---- 阶段A ----
-        a_result = _run_stage_a(cfg, orig_entries, tm, tmp_dir, glossary)
-        _atomic_write_text(out_a_path, build_srt(a_result.entries))
-        print(f"   ✅ 阶段A完成 -> {Path(out_a_path).name} "
-              f"({len(a_result.entries)} 条)")
+        # ---- 阶段A（--resume 时可复用上次已完成产物）----
+        reused_a = False
+        a_result = None
+        a_rec = manifest.stages.get("A")
+        if (cfg.resume and manifest_trusted and a_rec is not None
+                and a_rec.status in ("done", "degraded")
+                and Path(out_a_path).is_file()
+                and manifest.stages["final"].status != "done"):
+            a_entries = parse_srt(Path(out_a_path).read_text(encoding="utf-8"))
+            if a_entries:
+                print(f"🔹 [v2] 阶段A产物复用（--resume）："
+                      f"{Path(out_a_path).name}")
+                a_result = StageAResult(
+                    entries=a_entries, deleted=set(),
+                    failed={e["index"] for e in a_entries
+                            if e["text"].startswith(UNTRANSLATED_PREFIX)},
+                    exact_hits={})
+                reused_a = True       # 清单中阶段A记录沿用，不改写
+        if not reused_a:
+            emitter.emit("phase_started", phase="A", file=fname)
+            manifest.mark_running("A")
+            save_manifest(m_path, manifest)
+            a_result = _run_stage_a(cfg, orig_entries, tm, tmp_dir, glossary,
+                                    collector=collector, file_name=fname,
+                                    emitter=emitter)
+            _atomic_write_text(out_a_path, build_srt(a_result.entries))
+            print(f"   ✅ 阶段A完成 -> {Path(out_a_path).name} "
+                  f"({len(a_result.entries)} 条)")
+            manifest.mark_done("A", out_a_path, len(a_result.entries),
+                               degraded_count=len(a_result.failed))
+            if a_result.failed:
+                manifest.stages["A"].status = "degraded"
+            save_manifest(m_path, manifest)
+        emitter.emit("phase_finished", phase="A", file=fname, payload={
+            "entries": len(a_result.entries),
+            "degraded_count": len(a_result.failed),
+            "reused": reused_a})
 
         # ---- 兜底规则层（strict/lenient）----
         a_entries, validator_warnings, clean_merged, flagged_indexes = \
-            _apply_fallback_rules(cfg, a_result.entries, orig_entries)
+            _apply_fallback_rules(cfg, a_result.entries, orig_entries,
+                                  collector=collector, file_name=fname)
 
         # ---- 阶段B ----
         a_for_b = _wrap_as_result(a_entries, a_result)
+        emitter.emit("phase_started", phase="B", file=fname)
+        manifest.mark_running("B")
+        save_manifest(m_path, manifest)
         final_entries = _run_stage_b(cfg, a_for_b, orig_entries, tmp_dir,
-                                     glossary)
+                                     glossary, collector=collector,
+                                     file_name=fname, emitter=emitter)
         # ---- 语言白名单过滤 ----
         # 带 _keep_original 标记的回退日文原条目跳过 zh 白名单过滤
         # （否则 keep_untranslated 回退的日文原文会被误判删除），
@@ -817,9 +1314,24 @@ def _run_single_v2(cfg: RefineConfig, in_path: str) -> str:
         normal_entries = _filter_language(cfg, normal_entries, 3)
         final_entries = sorted(normal_entries + keep_entries,
                                key=lambda e: _timing_span(e["timing"])[0])
+        n_kept = len(keep_entries)
+        emitter.emit("phase_finished", phase="B", file=fname, payload={
+            "entries": len(final_entries), "degraded_count": n_kept,
+            "reused": False})
+
+        # ---- final 终稿落盘 ----
+        emitter.emit("phase_started", phase="final", file=fname)
         _atomic_write_text(out_final_path, build_srt(final_entries))
         print(f"   ✅ 完成 -> {Path(out_final_path).name} "
               f"({len(final_entries)} 条)")
+        manifest.mark_done("B", out_final_path, len(final_entries),
+                           degraded_count=n_kept)
+        manifest.mark_done("final", out_final_path, len(final_entries),
+                           degraded_count=n_kept)
+        save_manifest(m_path, manifest)
+        emitter.emit("phase_finished", phase="final", file=fname, payload={
+            "entries": len(final_entries), "degraded_count": n_kept,
+            "reused": False})
 
         # ---- TM 自学习（存阶段1 日→中 翻译对；终稿优先）----
         # 分歧采集提前到学习之前（collect_disagreement 纯读无副作用，
@@ -831,12 +1343,15 @@ def _run_single_v2(cfg: RefineConfig, in_path: str) -> str:
         disag = None
         if cfg.quality_report or tm:
             try:
-                from .pass_disagreement import (collect_disagreement,
-                                                probe_disagreement_mode)
+                from .pass_disagreement import collect_disagreement, probe_disagreement_mode
                 pass_mode = probe_disagreement_mode(in_path)
                 disag = collect_disagreement(in_path)
             except Exception as e:
                 print(f"   ⚠️ 双引擎分歧采集失败（忽略）: {e}")
+                collector.add(stage="final", file=fname,
+                              reason=f"双引擎分歧采集失败: {e}",
+                              action="跳过分歧采集（质量报告与必看门槛降级）",
+                              severity=SEVERITY_INFO)
         must_see_spans = None
         if tm and cfg.tm_learn_gate and disag:
             try:
@@ -847,26 +1362,32 @@ def _run_single_v2(cfg: RefineConfig, in_path: str) -> str:
                     _timing_span(r.get("timing", "")) for r in must_see}
             except Exception as e:
                 print(f"   ⚠️ 必看分歧行集合计算失败（忽略）: {e}")
+                collector.add(stage="final", file=fname,
+                              reason=f"必看分歧行集合计算失败: {e}",
+                              action="跳过必看分歧行门槛",
+                              severity=SEVERITY_INFO)
         if tm:
             _learn_to_tm(tm, orig_entries, final_entries,
                          flagged=flagged_indexes, gate=cfg.tm_learn_gate,
-                         must_see_spans=must_see_spans)
+                         must_see_spans=must_see_spans,
+                         collector=collector, file_name=fname)
 
         # ---- 自动词库学习（cfg.auto_glossary，含防幻觉核验）----
+        # P1-6：学习调用放入后台线程（daemon，注册到 run 级 learn_threads），
+        # 不阻塞主流程；run_v2 收尾统一 join。
         if cfg.auto_glossary:
-            _auto_learn_glossary(cfg, in_path, out_final_path)
+            _auto_learn_glossary(cfg, in_path, out_final_path,
+                                 collector=collector, file_name=fname,
+                                 threads=learn_threads)
 
         # ---- 自动质量报告（cfg.quality_report，落盘到输出目录）----
         if cfg.quality_report:
             try:
-                from .quality_report import (build_quality_report,
-                                             write_quality_report,
-                                             write_divergence_review_csv)
+                from .quality_report import build_quality_report, write_divergence_review_csv, write_quality_report
                 # pass_mode/disag 已在 TM 学习块前采集并共用
                 # （两者都关时此处保持 None，与原先 block 内采集等价）
                 if pass_mode is None and disag is None:
-                    from .pass_disagreement import (collect_disagreement,
-                                                    probe_disagreement_mode)
+                    from .pass_disagreement import collect_disagreement, probe_disagreement_mode
                     pass_mode = probe_disagreement_mode(in_path)
                     disag = collect_disagreement(in_path)
                 merge_stats = {"premerge_merged": premerge_merged}
@@ -890,17 +1411,32 @@ def _run_single_v2(cfg: RefineConfig, in_path: str) -> str:
                 print(f"📊 分歧复核 CSV 已生成: {Path(csv_path).name}")
             except Exception as e:
                 print(f"   ⚠️ 质量报告生成失败（忽略）: {e}")
+                collector.add(stage="final", file=fname,
+                              reason=f"质量报告生成失败: {e}",
+                              action="跳过质量报告",
+                              severity=SEVERITY_INFO)
+
+        # ---- 风险清单报告（有风险才写 {stem}_风险清单.md/.json）----
+        reports = collector.write_reports(out_dir, stem)
+        if reports:
+            print(f"\n📋 风险清单已生成: {Path(reports['md']).name}")
+
+        # ---- 任务成功完成：清理断点恢复类中间文件 ----
+        # （清单已完成使命；{stem}_manifest.json 与 {stem}_refine_A.srt
+        #   留着只会误导下一次 --resume；tmp_dir 中的指令副本同样不再需要）
+        delete_resume_artifacts(out_dir, stem)
+        _remove_tmp_dir(tmp_dir)
+        print("🧹 恢复类中间文件已清理")
     finally:
         if tm:
-            try:
+            with contextlib.suppress(Exception):
                 tm.close()
-            except Exception:
-                pass
 
     return out_final_path
 
 
-def _backup_existing_outputs(out_dir: str, stem: str) -> None:
+def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
+                             file_name: str = None) -> None:
     """--force 重跑前的产物备份（仅精确匹配文件名，存在才备份）。
 
     对输出目录中确切名为 ``{stem}_final_cn.srt``、``{stem}_质量报告.txt``、
@@ -922,28 +1458,56 @@ def _backup_existing_outputs(out_dir: str, stem: str) -> None:
             print(f"   💾 已备份: {p.name} -> {bak.name}")
         except Exception as e:
             print(f"   ⚠️ 备份失败（忽略）: {p.name} -> {e}")
+            if collector is not None:
+                collector.add(stage="force", file=file_name,
+                              reason=f"产物备份失败: {p.name} -> {e}",
+                              action="跳过备份直接覆盖",
+                              severity=SEVERITY_WARNING)
 
 
-def _auto_learn_glossary(cfg: RefineConfig, in_path: str, out_final_path: str):
+def _auto_learn_glossary(cfg: RefineConfig, in_path: str, out_final_path: str,
+                         collector=None, file_name: str = None,
+                         threads: list | None = None):
     """自动词库学习：从 原文↔终稿 中提取术语对追加到 glossary_learned.csv。
 
     防污染：glossary_learn 内部做子串核验（原文/译文中必须真实存在），
     幻觉造词不会入库；learned 词库仅通过 load_glossary_merged 追加注入。
+
+    P1-6 异步化：学习调用放入后台 daemon 线程（注册到 run 级 threads
+    列表，由 run_v2 收尾 join 超时 60s），不阻塞主流程；threads=None
+    （无 run 上下文的直调）保持同步语义。
     """
-    try:
-        from .glossary_learn import learn_from_s2_output
+    def _learn_once():
         try:
-            endpoint = cfg.resolve_endpoint("lmstudio") or "http://localhost:1234/v1"
-        except Exception:
-            endpoint = "http://localhost:1234/v1"
-        new_terms = learn_from_s2_output(
-            in_path, out_final_path, learned_glossary_path(),
-            endpoint=endpoint)
-        if new_terms:
-            print(f"   📚 词库学习：新增 {new_terms} 条术语 -> "
-                  f"config/glossary_learned.csv")
-    except Exception as e:
-        print(f"   ⚠️ 词库学习失败（不影响翻译结果）: {e}")
+            from .glossary_learn import learn_from_s2_output
+            try:
+                endpoint = (cfg.resolve_endpoint("lmstudio")
+                            or "http://localhost:1234/v1")
+            except Exception:
+                endpoint = "http://localhost:1234/v1"
+            new_terms = learn_from_s2_output(
+                in_path, out_final_path, learned_glossary_path(),
+                endpoint=endpoint,
+                timeout_http=getattr(cfg, "timeout_http", None),
+                timeout_probe=getattr(cfg, "timeout_probe", None))
+            if new_terms:
+                print(f"   📚 词库学习：新增 {new_terms} 条术语 -> "
+                      f"config/glossary_learned.csv")
+        except Exception as e:
+            print(f"   ⚠️ 词库学习失败（不影响翻译结果）: {e}")
+            if collector is not None:
+                collector.add(stage="final", file=file_name,
+                              reason=f"词库学习失败: {e}",
+                              action="跳过词库学习",
+                              severity=SEVERITY_INFO)
+
+    if threads is None:             # 直调模式：保持同步旧语义
+        _learn_once()
+        return
+    t = threading.Thread(target=_learn_once, name="subtransjav-learn",
+                         daemon=True)
+    t.start()
+    threads.append(t)
 
 
 def _wrap_as_result(entries: list, a_result: StageAResult) -> StageAResult:
@@ -959,7 +1523,7 @@ def _wrap_as_result(entries: list, a_result: StageAResult) -> StageAResult:
 
 def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
                  final_entries: list, flagged=None, gate=True,
-                 must_see_spans=None):
+                 must_see_spans=None, collector=None, file_name: str = None):
     """终稿学习：日文原文 → 最终中文。
 
     ⚠️ 双指针对齐（同起点多条按序消费），只学时间轴完全一致
@@ -1065,3 +1629,8 @@ def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
               f"/validator {skip_validator}/必看{skip_must_see}）")
     except Exception as e:
         print(f"   ⚠️ 翻译记忆库学习失败: {e}")
+        if collector is not None:
+            collector.add(stage="final", file=file_name,
+                          reason=f"翻译记忆库学习失败: {e}",
+                          action="跳过TM学习",
+                          severity=SEVERITY_INFO)

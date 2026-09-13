@@ -10,19 +10,21 @@ Requires the [gui] extra: pip install subtransjav[gui]
 # ===========================================================================
 # EARLY SETUP - Must be before any library imports
 # ===========================================================================
-import sys
-import subprocess
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from subtransjav.utils.console import (
-    setup_console,
     print_missing_extra_error,
+    setup_console,
 )
 
 setup_console()
 
 import platform  # noqa: E402
+
+from subtransjav.webview_gui.strings import msg  # noqa: E402  文案表零依赖
 
 
 def _deps_ok():
@@ -137,12 +139,39 @@ def _check_gui_dependencies():
 # Issue#1: _auto_setup() 必须在 _check_gui_dependencies() 之前执行，
 # 否则首次运行缺依赖时直接 sys.exit(1)，自动安装永远不可达。
 # ===========================================================================
-# Standard imports (after dependency check)
+# 命令行参数（在 venv 自举与依赖检查之前解析，--help/--version 直接退出）
 # ===========================================================================
 import json  # noqa: E402
 
-import webview  # noqa: E402
-from webview.dom import DOMEventHandler  # noqa: E402
+
+def _parse_args(argv=None):
+    """解析 GUI 命令行参数（中文 help）。
+
+    必须在 _auto_setup() / _check_gui_dependencies() 之前调用，
+    保证 ``--help`` / ``--version`` 不触发 venv 自举与依赖检查。
+    """
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="subtransjav-gui",
+        description="净语翻译 · SubTransJAV 桌面 GUI"
+                    "（两阶段字幕流水线：阶段A 净语+翻译 → 阶段B 审校+抛光）")
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="以调试模式启动 WebView（可打开开发者工具）")
+    parser.add_argument(
+        "--version", action="store_true",
+        help="打印程序版本号后退出")
+    return parser.parse_args(argv)
+
+
+def _print_version() -> str:
+    """返回版本展示字符串（无法加载版本信息时返回 unknown）。"""
+    try:
+        from subtransjav.__version__ import __version_display__
+        return __version_display__
+    except ImportError:
+        return "unknown"
+
 
 APP_TITLE = "净语翻译 · SubTransJAV Translate"
 
@@ -154,6 +183,7 @@ def on_drop_event(e):
     Uses PyWebView's pywebviewFullPath to get absolute file paths,
     bypassing browser security restrictions.
     """
+    import webview
     files = e.get('dataTransfer', {}).get('files', [])
     if len(files) == 0:
         return
@@ -167,24 +197,29 @@ def on_drop_event(e):
     if not paths:
         return
 
+    # 登记拖放路径，纳入 scan_resume_states 的会话信任边界
+    from .api import register_session_paths
+    register_session_paths(paths)
+
     try:
         window = webview.windows[0]
         paths_json = json.dumps(paths)
         window.evaluate_js(f"FileListManager.addDroppedFiles({paths_json})")
     except Exception as ex:
-        print(f"Error handling drop event: {ex}")
+        print(msg("drop_event_error", e=ex))
 
 
 def bind_dom_events(window):
     """Bind drag-drop events to window DOM after creation."""
+    from webview.dom import DOMEventHandler  # noqa: E402  延迟导入 GUI 依赖
     try:
         window.dom.document.events.dragenter += DOMEventHandler(lambda e: None, True, True)
         window.dom.document.events.dragover += DOMEventHandler(lambda e: None, True, True)
         window.dom.document.events.drop += DOMEventHandler(on_drop_event, True, True)
-        print("DOM drag-drop events bound successfully")
+        print(msg("dom_events_bound"))
     except Exception as ex:
-        print(f"Warning: Could not bind DOM events: {ex}")
-        print("Drag-drop may not work correctly. Please use Add Files button.")
+        print(msg("dom_events_bind_failed", e=ex))
+        print(msg("dom_events_fallback"))
 
 
 def get_asset_path(relative_path: str) -> Path:
@@ -223,7 +258,7 @@ def check_webview2_windows():
                 continue
         return False
     except Exception as e:
-        print(f"Warning: Could not check WebView2 status: {e}")
+        print(msg("webview2_check_failed", e=e))
         return True
 
 
@@ -250,6 +285,8 @@ def show_webview2_error():
 
 def create_window():
     """Create and configure the PyWebView window."""
+    import webview
+
     from .api import TranslateAPI
 
     html_path = get_asset_path("index.html")
@@ -290,19 +327,25 @@ def create_window():
 
 def main():
     """Entry point for subtransjav-gui."""
+    # --help / --version 在此直接退出，不触发 venv 自举与依赖检查
+    args = _parse_args()
+    if args.version:
+        print(_print_version())
+        return
+
     _auto_setup()
     _check_gui_dependencies()
 
+    # 延迟导入：--help/--version 路径不要求 GUI 依赖已安装
     import logging
-    try:
-        from subtransjav.__version__ import __version_display__ as version
-    except ImportError:
-        version = "unknown"
+
+    import webview  # noqa: E402
 
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
     logging.getLogger('bottle').setLevel(logging.ERROR)
 
-    print(f"SubTransJAV GUI v{version}")
+    version = _print_version()
+    print(msg("gui_banner", version=version))
     print("=" * 50)
 
     if not check_webview2_windows():
@@ -316,14 +359,16 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 'SubTransJAV.Translate.GUI.v1')
         except Exception as e:
-            print(f"Warning: Could not set AppUserModelID: {e}")
+            print(msg("appusermodelid_failed", e=e))
 
     try:
         window = create_window()
-        print("Window created successfully")
+        print(msg("window_created"))
 
-        debug_mode = os.getenv('SUBTRANSJAV_DEBUG', '').lower() in ('1', 'true', 'yes')
-        print(f"Starting PyWebView... (debug={debug_mode})")
+        # --debug 透传 webview.start；环境变量 SUBTRANSJAV_DEBUG 仍然有效
+        debug_mode = args.debug or os.getenv(
+            'SUBTRANSJAV_DEBUG', '').lower() in ('1', 'true', 'yes')
+        print(msg("starting_webview", debug=debug_mode))
 
         # private_mode=True avoids WebView2 disk-cache staleness;
         # all user settings persist via backend files, not localStorage.
@@ -331,11 +376,11 @@ def main():
                       func=lambda: bind_dom_events(window))
 
     except FileNotFoundError as e:
-        print("\nERROR: Asset file not found!")
+        print(f"\n{msg('asset_not_found')}")
         print(str(e))
         sys.exit(1)
     except Exception as e:
-        print("\nERROR: Failed to start GUI!")
+        print(f"\n{msg('gui_start_failed')}")
         print(f"{type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()

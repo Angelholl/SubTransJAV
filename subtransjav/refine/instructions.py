@@ -22,7 +22,7 @@ from .rules_loader import load_rules
 # ------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _get_rules() -> dict:
     return load_rules()
 

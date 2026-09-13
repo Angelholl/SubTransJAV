@@ -5,14 +5,34 @@
 自动追加到 learned 词库文件。
 """
 
+import contextlib
 import csv
-import os
 import logging
+import os
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlparse
+
+from .config import DEFAULT_TIMEOUT_HTTP, DEFAULT_TIMEOUT_PROBE
 
 logger = logging.getLogger(__name__)
+
+# LM Studio 官方约定占位密钥（非真实凭据）：本地端点不鉴权，
+# 仅因 OpenAI 兼容客户端要求非空 api_key 而存在。
+LMSTUDIO_PLACEHOLDER_KEY = "lm-studio"
+
+
+def _ensure_http_url(url: str) -> str:
+    """校验端点 URL：仅放行 http/https scheme（阻止 file: 等协议注入）。
+
+    本地 LM Studio / Ollama 走 http://localhost / 127.0.0.1 属核心功能，
+    因此只做 scheme 白名单，不拦截本地/私有地址。非法 scheme 抛 ValueError。
+    """
+    scheme = urlparse(url or "").scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"不支持的接口地址协议（仅允许 http/https）: {url!r}")
+    return url
 
 # 词库提取的 prompt
 EXTRACT_PROMPT = """你是一个术语提取专家。分析以下日中字幕翻译对照，提取专业术语、专有名词、固定译法。
@@ -37,9 +57,14 @@ EXTRACT_PROMPT = """你是一个术语提取专家。分析以下日中字幕翻
 
 def extract_glossary_from_pair(src_text: str, translated_text: str,
                                endpoint: str = "http://localhost:1234/v1",
-                               model: str = "") -> list:
+                               model: str = "",
+                               timeout_http: float = DEFAULT_TIMEOUT_HTTP,
+                               timeout_probe: float = DEFAULT_TIMEOUT_PROBE
+                               ) -> list:
     """从一对日中翻译文本中提取术语。
 
+    timeout_http / timeout_probe（P1-5 收口，默认值=历史现值 60/5）：
+    分别作用于 OpenAI 兼容客户端与本地模型列表探测 GET。
     返回 [(原文, 译文), ...] 列表。
     """
     if not src_text.strip() or not translated_text.strip():
@@ -53,13 +78,17 @@ def extract_glossary_from_pair(src_text: str, translated_text: str,
 
     try:
         from openai import OpenAI
-        client = OpenAI(base_url=endpoint, api_key="lm-studio", timeout=60)
+        client = OpenAI(base_url=_ensure_http_url(endpoint),
+                        api_key=LMSTUDIO_PLACEHOLDER_KEY,
+                        timeout=timeout_http)
 
         # 如果未指定模型，尝试获取已加载模型
         if not model:
             try:
                 import requests
-                r = requests.get(endpoint.replace("/v1", "") + "/v1/models", timeout=5)
+                probe_url = _ensure_http_url(
+                    endpoint.replace("/v1", "") + "/v1/models")
+                r = requests.get(probe_url, timeout=timeout_probe)
                 models = r.json().get("data", [])
                 if models:
                     model = models[0].get("id", "")
@@ -110,7 +139,7 @@ def load_learned_glossary(path: str) -> list:
     entries = []
     if path and os.path.isfile(path):
         try:
-            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            with open(path, encoding="utf-8-sig", newline="") as f:
                 for row in csv.reader(f):
                     if len(row) >= 2 and row[0].strip() and row[1].strip():
                         entries.append((row[0].strip(), row[1].strip()))
@@ -142,10 +171,8 @@ def save_learned_glossary(path: str, entries: list):
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.remove(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -181,18 +208,20 @@ def _acquire_glossary_lock(learned_path: str, timeout: float = 5.0,
 
 def _release_glossary_lock(lock_path):
     if lock_path:
-        try:
+        with contextlib.suppress(OSError):
             os.remove(lock_path)
-        except OSError:
-            pass
 
 
 def learn_from_s2_output(s2_input_path: str, s2_output_path: str,
                          learned_path: str,
                          endpoint: str = "http://localhost:1234/v1",
-                         model: str = "") -> int:
+                         model: str = "",
+                         timeout_http: float = DEFAULT_TIMEOUT_HTTP,
+                         timeout_probe: float = DEFAULT_TIMEOUT_PROBE) -> int:
     """从 S2 输入/输出中学习术语，追加到 learned 词库。
 
+    timeout_http / timeout_probe 透传给 extract_glossary_from_pair
+    （P1-5 配置单一来源，None 时回落函数默认值）。
     返回新追加的术语数量。
     """
     try:
@@ -203,7 +232,12 @@ def learn_from_s2_output(s2_input_path: str, s2_output_path: str,
         return 0
 
     # 提取术语
-    new_pairs = extract_glossary_from_pair(src_text, trans_text, endpoint, model)
+    new_pairs = extract_glossary_from_pair(
+        src_text, trans_text, endpoint, model,
+        timeout_http=DEFAULT_TIMEOUT_HTTP if timeout_http is None
+        else timeout_http,
+        timeout_probe=DEFAULT_TIMEOUT_PROBE if timeout_probe is None
+        else timeout_probe)
 
     # 防污染校验：术语对必须真实存在于源文与译文中（防 LLM 幻觉造词入库）
     # 幻觉词一旦入库会随词库注入后续所有任务的提示词，长期扩散

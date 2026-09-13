@@ -7,17 +7,18 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import httpx
 import pytest
 
 from subtransjav.translate.llm_client import (
     ClientConfig,
     LLMClient,
+    LLMError,
     cap_batch_size,
     compute_max_output_tokens,
     format_numbered_entries,
     parse_numbered_response,
 )
-
 
 # ---------------------------------------------------------------------------
 # 协议解析（纯函数）
@@ -373,3 +374,100 @@ def test_is_transient_auth_not_retried():
     assert LLMClient._is_transient(Err401("bad key")) is False
     assert LLMClient._is_transient(Err429("slow down")) is True
     assert LLMClient._is_transient(Exception("invalid API key provided")) is False
+
+
+# ---------------------------------------------------------------------------
+# O6：回环端点绕过系统代理 + 连接拒绝快速失败
+# ---------------------------------------------------------------------------
+
+def test_loopback_http_client_bypasses_env_proxy(monkeypatch):
+    """回环 base_url → trust_env=False 专用客户端（无视代理 env）；
+    非回环端点返回 None，保持 openai 默认行为不变。"""
+    from subtransjav.translate import llm_client as lc
+    for env in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(env, "http://proxy.example:7890")
+    cases = (
+        ("http://127.0.0.1:1234/v1", True),
+        ("http://localhost:11434", True),
+        ("http://[::1]:8080/v1", True),
+        ("https://api.deepseek.com/v1", False),
+        ("http://192.168.1.10:8000/v1", False),
+        ("", False),
+    )
+    for url, is_loopback in cases:
+        hc = lc._loopback_http_client(url, timeout=30.0)
+        if is_loopback:
+            assert hc is not None, url
+            assert hc.trust_env is False
+            hc.close()
+        else:
+            assert hc is None, url
+
+
+def test_openai_client_uses_trust_env_false_for_loopback(monkeypatch):
+    """回环端点构造的 OpenAI 客户端底层 httpx 客户端 trust_env=False；
+    非回环端点保持默认 trust_env=True 行为。"""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:7890")
+    cfg = ClientConfig(base_url="http://127.0.0.1:1234/v1", model="m")
+    client = LLMClient(cfg, log=lambda m: None)
+    oc = client._ensure_openai_client()
+    assert oc._client.trust_env is False      # openai 内部 httpx 客户端
+    oc.close()
+
+    cfg2 = ClientConfig(base_url="https://api.deepseek.com/v1", model="m")
+    client2 = LLMClient(cfg2, log=lambda m: None)
+    oc2 = client2._ensure_openai_client()
+    assert oc2._client.trust_env is True      # 保持默认（受 env 影响，原行为）
+    oc2.close()
+
+
+def test_is_transient_connection_refused_fast_fail():
+    """连接拒绝/代理不可达类（含 openai APIConnectionError 包装形态）
+    判为不可重试；服务端瞬态 5xx 与超时保持退避重试不变。"""
+    from openai import APIConnectionError
+    req = httpx.Request("POST", "http://127.0.0.1:1234/v1/chat/completions")
+
+    wrapped = APIConnectionError(request=req)
+    wrapped.__cause__ = httpx.ConnectError(
+        "[WinError 10061] 由于目标计算机积极拒绝，无法连接。")
+    assert LLMClient._is_connection_refused(wrapped) is True
+    assert LLMClient._is_transient(wrapped) is False
+
+    proxy_err = APIConnectionError(request=req)
+    proxy_err.__cause__ = httpx.ProxyError(
+        "Unable to connect to proxy", request=req)
+    assert LLMClient._is_transient(proxy_err) is False
+
+    assert LLMClient._is_transient(
+        httpx.ConnectError("connection refused")) is False
+
+    class Err503(Exception):                 # 服务端瞬态：退避策略不变
+        status_code = 503
+    assert LLMClient._is_transient(Err503("overloaded")) is True
+    assert LLMClient._is_transient(httpx.ConnectTimeout("timed out")) is True
+
+
+def test_connection_refused_fails_fast_without_backoff(monkeypatch):
+    """连接拒绝异常即使 max_retries=3 也不进入退避重试（0 次等待）。"""
+    sleeps = []
+    monkeypatch.setattr("subtransjav.translate.llm_client.time.sleep",
+                        lambda s: sleeps.append(s))
+    cfg = ClientConfig(base_url="http://127.0.0.1:1/v1", model="m",
+                       max_retries=3, backoff_time=5.0)
+    client = LLMClient(cfg, log=lambda m: None)
+
+    class RaisingCompletions:
+        @staticmethod
+        def create(**kw):
+            raise httpx.ConnectError(
+                "[WinError 10061] 由于目标计算机积极拒绝，无法连接。")
+
+    class RaisingClient:
+        class chat:
+            completions = RaisingCompletions()
+
+    client._openai_client = RaisingClient()
+    with pytest.raises(LLMError):
+        client._chat("sys", "user")
+    assert sleeps == []                      # 未发生任何退避等待

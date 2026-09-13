@@ -8,13 +8,10 @@ TM 学习第三层门槛测试
   → _split_disagreement_rows → 必看 span 集合 → _learn_to_tm 跳过。
 """
 
-from subtransjav.refine.pass_disagreement import (
-    collect_disagreement, probe_disagreement_mode)
-from subtransjav.refine.quality_report import (
-    _split_disagreement_rows)
 from subtransjav.refine import pipeline_v2 as pv
+from subtransjav.refine.pass_disagreement import collect_disagreement, probe_disagreement_mode
+from subtransjav.refine.quality_report import _split_disagreement_rows
 from subtransjav.refine.tm import TranslationMemory
-
 
 # ---------------------------------------------------------------------------
 # 工具

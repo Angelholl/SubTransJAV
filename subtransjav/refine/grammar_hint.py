@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from functools import lru_cache
 from typing import Any
 
@@ -17,21 +18,30 @@ from typing import Any
 
 _tokenizer_instance: Any = None
 _sudachi_available: bool | None = None
+# D4：SudachiPy 底层为 Rust 实现，Dictionary/Tokenizer 非线程安全——
+# 多线程并发冷缓存 miss 时同时初始化单例、或并发调用同一 Tok 实例的
+# tokenize，会抛 RuntimeError: Already borrowed。初始化与 tokenize 分别
+# 加锁（热路径 lru_cache 命中不经过锁，无明显劣化）。
+_init_lock = threading.Lock()
+_tokenize_lock = threading.Lock()
 
 
 def _get_tokenizer():
-    """懒加载 SudachiPy Dictionary 单例。"""
+    """懒加载 SudachiPy Dictionary 单例（双重检查锁，防并发重复初始化）。"""
     global _tokenizer_instance, _sudachi_available
     if _tokenizer_instance is not None:
         return _tokenizer_instance
-    try:
-        from sudachipy import Dictionary
-        _tokenizer_instance = Dictionary().create()
-        _sudachi_available = True
-    except Exception:
-        _tokenizer_instance = None
-        _sudachi_available = False
-    return _tokenizer_instance
+    with _init_lock:
+        if _tokenizer_instance is not None:   # 等锁期间可能已被其他线程初始化
+            return _tokenizer_instance
+        try:
+            from sudachipy import Dictionary
+            _tokenizer_instance = Dictionary().create()
+            _sudachi_available = True
+        except Exception:
+            _tokenizer_instance = None
+            _sudachi_available = False
+        return _tokenizer_instance
 
 
 def is_grammar_hint_available() -> bool:
@@ -51,7 +61,8 @@ def _tokenize_cached(text: str):
     tok = _get_tokenizer()
     if tok is None:
         return None
-    return list(tok.tokenize(text))
+    with _tokenize_lock:    # 同一 Tok 实例并发 tokenize 会 Already borrowed
+        return list(tok.tokenize(text))
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +73,7 @@ def _get_context_entries(
     entries: list[dict], current_pos: int, before: int = 3, after: int = 3
 ) -> tuple[list[dict], list[dict]]:
     """提取当前条目前后的上下文条目。
-    
+
     Parameters
     ----------
     entries : list[dict]
@@ -110,7 +121,7 @@ def _is_adjective(token) -> bool:
 
 def _is_connective_particle(token) -> bool:
     """检查 token 是否为接续助词（が/けど/けれども）。
-    
+
     关键：が 可以是格助词（主语标记）或接続助词（转折铺垫）。
     通过 pos[1] 区分：接続助詞 vs 格助詞。
     """
@@ -216,13 +227,12 @@ def _detect_rules(text: str, context_before: list[dict], context_after: list[dic
     has_predicate = any(_is_verb(t) or _is_adjective(t) for t in tokens)
     if not has_predicate:
         for i, tok in enumerate(tokens):
-            if _is_noun(tok) and i + 1 < len(tokens):
-                nxt = tokens[i + 1]
-                if _is_particle(nxt, "は") or _is_particle(nxt, "が"):
-                    # 检查后续是否有名词
-                    if i + 2 < len(tokens) and _is_noun(tokens[i + 2]):
-                        hints.append("Noun+は/が+Noun 结构，无谓语 → 补出\"是\"")
-                        break
+            # 检查后续是否有名词
+            if (_is_noun(tok) and i + 1 < len(tokens)
+                    and (_is_particle(tokens[i + 1], "は") or _is_particle(tokens[i + 1], "が"))
+                    and i + 2 < len(tokens) and _is_noun(tokens[i + 2])):
+                hints.append("Noun+は/が+Noun 结构，无谓语 → 补出\"是\"")
+                break
 
     # Rule 2: topic_marker - は 前有名词 → 主题标记
     for i, tok in enumerate(tokens):
@@ -246,12 +256,12 @@ def _detect_rules(text: str, context_before: list[dict], context_after: list[dic
 
     # Rule 5: possessive_no - XのY where X,Y are nouns
     for i, tok in enumerate(tokens):
-        if _is_particle(tok, "の") and i > 0 and i + 1 < len(tokens):
-            if _is_noun(tokens[i - 1]) and _is_noun(tokens[i + 1]):
-                x = tokens[i - 1].surface()
-                y = tokens[i + 1].surface()
-                hints.append(f"「{x}の{y}」→ {x}的{y}（修饰关系）")
-                break
+        if (_is_particle(tok, "の") and i > 0 and i + 1 < len(tokens)
+                and _is_noun(tokens[i - 1]) and _is_noun(tokens[i + 1])):
+            x = tokens[i - 1].surface()
+            y = tokens[i + 1].surface()
+            hints.append(f"「{x}の{y}」→ {x}的{y}（修饰关系）")
+            break
 
     # Rule 6: context_ellipsis - 无主语/主题标记 + 无格助词 + 不完整结尾
     has_wa_or_ga = any(

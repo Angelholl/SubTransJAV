@@ -3,11 +3,25 @@ v2 两阶段流水线测试：TM 命中替代 / 重试链 / 兜底档位 / 指�
 LLM 客户端以假实现注入（不联网）。
 """
 
+import io
+import json
 
-from subtransjav.refine.config import RefineConfig, StageConfig
+import pytest
+
 from subtransjav.refine import pipeline_v2 as pv
+from subtransjav.refine.config import RefineConfig, StageConfig
+from subtransjav.refine.events import parse_event_line
+from subtransjav.refine.manifest import (
+    MANIFEST_VERSION,
+    StageRecord,
+    TaskManifest,
+    compute_config_hash,
+    load_manifest,
+    manifest_path,
+    save_manifest,
+)
+from subtransjav.refine.tm import TranslationMemory
 from subtransjav.translate.llm_client import BatchResult
-
 
 # ---------------------------------------------------------------------------
 # 工具
@@ -70,6 +84,15 @@ class FakeClient:
                     translations[i] = f"译{i}"
         return BatchResult(translations=translations, deleted=deleted,
                            failed=failed)
+
+
+@pytest.fixture(autouse=True)
+def _reset_grammar_cache():
+    """P1-6 模块级语法缓存跨测试隔离：每个用例前后清空，防负缓存
+    短路后续用例 mock 的 generate_grammar_hints（不弱化任何断言）。"""
+    pv._GRAMMAR_CACHE.clear()
+    yield
+    pv._GRAMMAR_CACHE.clear()
 
 
 class FakeTM:
@@ -260,10 +283,13 @@ def test_run_single_v2_end_to_end(tmp_path, monkeypatch):
 
     out = pv._run_single_v2(cfg, str(in_srt))
     assert out.endswith("demo_final_cn.srt")
-    content = open(out, encoding="utf-8").read()
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
     assert "审1" in content and "审2" in content
-    # 阶段A中间产物存在
-    assert (tmp_path / "demo_refine_A.srt").exists()
+    # 任务成功完成：阶段A中间产物与恢复清单已自动清理（P0 新行为）
+    assert not (tmp_path / "demo_refine_A.srt").exists()
+    assert not (tmp_path / "demo_manifest.json").exists()
+    assert not (tmp_path / "work").exists()   # 临时工作区一并清理
     # 两次 LLM 调用（阶段A + 阶段B）
     assert len(fake.calls) == 2
 
@@ -292,7 +318,8 @@ def test_run_single_v2_fallback_original_survives_language_filter(
     monkeypatch.setattr(pv, "_init_tm", lambda c: None)
 
     out = pv._run_single_v2(cfg, str(in_srt))
-    content = open(out, encoding="utf-8").read()
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
     assert "あ" in content        # 回退日文原文保留（不被语言过滤删除）
     assert "审2" in content
 
@@ -702,7 +729,7 @@ def test_run_v2_multi_file_isolation(tmp_path, monkeypatch):
         f.write_text("1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n",
                      encoding="utf-8")
     calls = {"n": 0}
-    def fake_single(c, p):
+    def fake_single(c, p, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("模拟失败")
@@ -887,3 +914,444 @@ def test_premerge_ellipsis_then_incomplete_start_merges():
     out = pv._premerge_entries(entries)
     assert len(out) == 1
     assert out[0]["text"] == "なんか…えっと、その"
+
+
+# ---------------------------------------------------------------------------
+# P0：中断恢复（manifest）/ 事件流 / 风险收集
+# ---------------------------------------------------------------------------
+
+class InterruptingBClient(FakeClient):
+    """阶段B 批次调用时抛 KeyboardInterrupt（模拟用户 Ctrl+C）。"""
+
+    def __init__(self):
+        super().__init__()
+        self.interrupted = False
+
+    def translate_entries(self, entries, **kw):
+        if any("|||" in e["text"] for e in entries) and not self.interrupted:
+            self.interrupted = True
+            raise KeyboardInterrupt()
+        return super().translate_entries(entries, **kw)
+
+
+class ProgressClient(FakeClient):
+    """模拟 LLM 客户端的 ⏳ 批次进度回调。"""
+
+    def translate_entries(self, entries, *, progress=None, **kw):
+        if progress:
+            progress("批次 1/2")
+            progress("批次 2/2")
+        return super().translate_entries(entries, progress=progress, **kw)
+
+
+def _setup_e2e(tmp_path, monkeypatch, fake, name="demo"):
+    """端到端公共装配：输入 srt + 假客户端 + 固定 tmp_dir + 无 TM。"""
+    in_srt = tmp_path / f"{name}.srt"
+    in_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n"
+        "2\n00:00:10,000 --> 00:00:11,000\nさようなら\n",
+        encoding="utf-8")
+
+    def _fake_tmp(p, s):
+        d = tmp_path / "work"
+        d.mkdir(exist_ok=True)
+        return str(d)
+    monkeypatch.setattr(pv, "refine_tmp_dir", _fake_tmp)
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
+    monkeypatch.setattr(pv, "_init_tm", lambda c: None)
+    return in_srt
+
+
+def _run_interrupted(tmp_path, monkeypatch, cfg, name="demo"):
+    """第一次运行：阶段B 中断（恢复清单应保留阶段A完成状态）。"""
+    in_srt = _setup_e2e(tmp_path, monkeypatch, InterruptingBClient(), name=name)
+    cfg.inputs = [str(in_srt)]
+    with pytest.raises(KeyboardInterrupt):
+        pv.run_v2(cfg)
+    return in_srt
+
+
+def test_a_success_cleans_resume_artifacts(tmp_path, monkeypatch):
+    """场景a：任务成功完成后 manifest / _refine_A.srt / tmp_dir 全部清理。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _setup_e2e(tmp_path, monkeypatch, FakeClient())
+    cfg.inputs = [str(in_srt)]
+    summary = {}
+    out = pv.run_v2(cfg, summary_sink=summary)
+    assert out.endswith("demo_final_cn.srt")
+    assert (tmp_path / "demo_final_cn.srt").is_file()
+    assert not (tmp_path / "demo_manifest.json").is_file()
+    assert not (tmp_path / "demo_refine_A.srt").is_file()
+    assert not (tmp_path / "work").is_dir()
+    assert summary["files_ok"] == 1 and summary["files_degraded"] == 0
+    assert summary["files_failed"] == 0
+    assert summary["untranslated_majority"] is False
+    assert summary["risk_count"] == 0
+
+
+def test_b_interrupt_keeps_manifest_with_stage_a_done(tmp_path, monkeypatch):
+    """场景b：阶段B 中断 → manifest 保留且 stages["A"].status=="done"。"""
+    cfg = _make_cfg(tmp_path)
+    _run_interrupted(tmp_path, monkeypatch, cfg)
+    m = load_manifest(tmp_path / "demo_manifest.json")
+    assert m is not None
+    assert m.stages["A"].status == "done"
+    assert m.stages["B"].status == "running"
+    assert (tmp_path / "demo_refine_A.srt").is_file()   # 断点产物保留
+    assert not (tmp_path / "demo_final_cn.srt").is_file()
+
+
+def test_c_resume_reruns_only_stage_b(tmp_path, monkeypatch, capsys):
+    """场景c：--resume 重跑 → 只调用阶段B，最终产物正常，artifacts 清理。"""
+    cfg = _make_cfg(tmp_path)
+    _run_interrupted(tmp_path, monkeypatch, cfg)
+    fake2 = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake2)
+    cfg.resume = True
+    out = pv.run_v2(cfg)
+    assert out.endswith("demo_final_cn.srt")
+    assert "阶段A产物复用" in capsys.readouterr().out
+    # 仅阶段B 一次调用（B 输入带 ||| 标记）
+    assert len(fake2.calls) == 1
+    assert any("|||" in e["text"] for e in fake2.entry_log[0])
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
+    assert "审1" in content and "审2" in content
+    # 成功后恢复类产物清理
+    assert not (tmp_path / "demo_manifest.json").is_file()
+    assert not (tmp_path / "demo_refine_A.srt").is_file()
+    assert not (tmp_path / "work").is_dir()
+
+
+def test_d_resume_rejects_changed_config_unless_force(tmp_path, monkeypatch,
+                                                      capsys):
+    """场景d：指纹不匹配 → 默认重跑A；force_resume → 强制复用。"""
+    cfg = _make_cfg(tmp_path)
+    _run_interrupted(tmp_path, monkeypatch, cfg)
+
+    # 不带 force：配置变化 → 不复用，阶段A 重跑（A+B 两次调用）
+    fake2 = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake2)
+    cfg.resume = True
+    cfg.v2_concurrency = 3        # 参与 config_hash 但不影响行为
+    pv.run_v2(cfg)
+    assert "不复用" in capsys.readouterr().out
+    assert len(fake2.calls) == 2
+
+    # force_resume：配置变化仍复用阶段A（换名输入，避开终稿跳过分支；
+    # 中断时先把配置还原，重跑时再改，制造指纹不匹配）
+    cfg.resume = False
+    cfg.force_resume = False
+    cfg.v2_concurrency = 1
+    _run_interrupted(tmp_path, monkeypatch, cfg, name="demo2")
+    fake3 = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake3)
+    cfg.resume = True
+    cfg.force_resume = True
+    cfg.v2_concurrency = 3
+    pv.run_v2(cfg)
+    out = capsys.readouterr().out
+    assert "强制复用" in out
+    assert "阶段A产物复用" in out
+    assert len(fake3.calls) == 1
+    assert any("|||" in e["text"] for e in fake3.entry_log[0])
+
+
+def test_d2_force_resume_alone_implies_resume_and_reuses_a(tmp_path, monkeypatch,
+                                                           capsys):
+    """O4 回归：构造时仅传 force_resume（不传 resume）→ resume 隐含生效，
+    指纹不匹配时阶段A 仍被复用；文案只列一次实际变化明细。"""
+    cfg = _make_cfg(tmp_path, force_resume=True)
+    assert cfg.resume is True         # 构造期不变式：force_resume 隐含 resume
+    _run_interrupted(tmp_path, monkeypatch, cfg)
+
+    # 制造指纹不匹配（v2_concurrency 参与 config_hash）
+    fake = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
+    cfg.v2_concurrency = 3
+    pv.run_v2(cfg)
+    out = capsys.readouterr().out
+    assert "强制复用（指纹校验不匹配：配置已变化）" in out   # 去重后不再出现两次"配置已变化"
+    assert "阶段A产物复用" in out
+    assert len(fake.calls) == 1       # 只跑阶段B（阶段A 复用）
+
+
+def test_prepare_manifest_rejection_keeps_file_intact(tmp_path):
+    """D3 验收（单元）：拒绝复用那一刻不得触碰清单文件——中断现场
+    （A=done、旧指纹）原样保留；--force-resume 随后可采信并复用。"""
+    cfg = _make_cfg(tmp_path)
+    cfg.resume = True
+    in_srt = tmp_path / "demo.srt"
+    in_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n",
+                      encoding="utf-8")
+    out_a = tmp_path / "demo_refine_A.srt"
+    old = TaskManifest(
+        manifest_version=MANIFEST_VERSION,
+        input_path=str(in_srt),
+        input_sha1="0" * 40,                    # 旧输入指纹（必失配）
+        input_size=in_srt.stat().st_size,
+        config_hash="1" * 40,                   # 旧配置指纹（必失配）
+        out_dir=str(tmp_path), stem="demo",
+        stages={"A": StageRecord(status="done", output=str(out_a), entries=1,
+                                 degraded_count=0),
+                "B": StageRecord(), "final": StageRecord()})
+    m_path = manifest_path(tmp_path, "demo")
+    save_manifest(m_path, old)
+    before = m_path.read_text(encoding="utf-8")
+
+    # 不带 force 的 --resume：被拒，但磁盘清单一字不改（A=done 不丢）
+    manifest, trusted = pv._prepare_manifest(cfg, str(in_srt), str(tmp_path),
+                                             "demo", None)
+    assert trusted is False
+    assert m_path.read_text(encoding="utf-8") == before
+    on_disk = load_manifest(m_path)
+    assert on_disk.stages["A"].status == "done"
+    assert on_disk.config_hash == "1" * 40
+
+    # --force-resume：强制采信旧产物、指纹刷新为当前值（复用前提成立）
+    cfg.force_resume = True
+    manifest2, trusted2 = pv._prepare_manifest(cfg, str(in_srt), str(tmp_path),
+                                               "demo", None)
+    assert trusted2 is True
+    assert manifest2.stages["A"].status == "done"
+    refreshed = load_manifest(m_path)
+    assert refreshed.config_hash == compute_config_hash(cfg)
+    assert refreshed.stages["A"].status == "done"
+
+
+def test_resume_after_rejected_rerun_reuses_stage_a_without_force(
+        tmp_path, monkeypatch, capsys):
+    """D3 补充（场景续）：被拒的重跑在实际重跑阶段A时把新指纹落盘 →
+    下次同配置 --resume 无需 force 即可复用阶段A。"""
+    # 第一次运行：阶段B 中断（A=done，默认配置）
+    cfg = _make_cfg(tmp_path)
+    _run_interrupted(tmp_path, monkeypatch, cfg)
+
+    # 第二次运行：改配置（concurrency=3）→ 不复用被拒，A 重跑后 B 再次中断
+    cfg2 = _make_cfg(tmp_path)
+    cfg2.resume = True
+    cfg2.v2_concurrency = 3
+    _run_interrupted(tmp_path, monkeypatch, cfg2)
+    m = load_manifest(tmp_path / "demo_manifest.json")
+    assert m.stages["A"].status == "done"
+    assert m.config_hash == compute_config_hash(cfg2)   # 新指纹已落盘
+
+    # 第三次运行：同配置（concurrency=3）--resume → 直接复用A，仅调阶段B
+    fake3 = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake3)
+    cfg3 = _make_cfg(tmp_path)
+    cfg3.resume = True
+    cfg3.v2_concurrency = 3
+    cfg3.inputs = [str(tmp_path / "demo.srt")]
+    out = pv.run_v2(cfg3)
+    assert "阶段A产物复用" in capsys.readouterr().out
+    assert len(fake3.calls) == 1
+    assert out.endswith("demo_final_cn.srt")
+
+
+# ---------------------------------------------------------------------------
+# D5：TM 指纹不得被命中簿记（hit_count 自增 / WAL 回放）击穿
+# ---------------------------------------------------------------------------
+
+def test_tm_fingerprint_immune_to_hits_and_wal(tmp_path):
+    """D5 验收1（单元）：任意数量精确命中（hit_count 自增、WAL 回放）
+    后指纹不变。"""
+    db = tmp_path / "tm.db"
+    tm = TranslationMemory(str(db))
+    tm.store("こんにちは", "你好", 1)
+    tm.store("さようなら", "再见", 1)
+    cfg = _make_cfg(tmp_path, tm_db_path=str(db))
+    fp0 = pv._tm_fingerprint(cfg, tm)
+
+    # lookup_exact / exact_map 每次命中都会自增 hit_count 并提交
+    for _ in range(3):
+        assert tm.lookup_exact("こんにちは", 1) == "你好"
+    assert tm.exact_map(["さようなら", "こんにちは"], 1)["さようなら"] == "再见"
+    assert pv._tm_fingerprint(cfg, tm) == fp0
+
+    # 关闭连接、重新打开（WAL 回放 / 下次连接读取）后仍不变
+    tm.close()
+    assert pv._tm_fingerprint(cfg, None) == fp0
+    tm2 = TranslationMemory(str(db))
+    try:
+        assert pv._tm_fingerprint(cfg, tm2) == fp0
+    finally:
+        tm2.close()
+
+
+def test_tm_fingerprint_changes_on_content_change(tmp_path):
+    """D5 验收2（单元）：新增/修改内容条目 → 指纹必变（拒绝复用）。"""
+    db = tmp_path / "tm.db"
+    tm = TranslationMemory(str(db))
+    cfg = _make_cfg(tmp_path, tm_db_path=str(db))
+    fp0 = pv._tm_fingerprint(cfg, tm)
+
+    tm.store("こんにちは", "你好", 1)              # 新增内容条目
+    fp1 = pv._tm_fingerprint(cfg, tm)
+    assert fp1 != fp0
+
+    tm.store("こんにちは", "您早", 1)              # 同 hash+stage 覆盖译文
+    fp2 = pv._tm_fingerprint(cfg, tm)
+    assert fp2 != fp1
+
+    tm.store("こんにちは", "你好", 2)              # 新增 stage 维度条目
+    fp3 = pv._tm_fingerprint(cfg, tm)
+    assert fp3 != fp2
+    tm.close()
+
+
+def test_tm_fingerprint_edge_cases(tmp_path):
+    """D5 验收3（单元）：未启用/文件缺失/非法文件/空库均不崩。"""
+    assert pv._tm_fingerprint(_make_cfg(tmp_path), None) is None   # 无路径
+    cfg_missing = _make_cfg(tmp_path, tm_db_path=str(tmp_path / "nope.db"))
+    assert pv._tm_fingerprint(cfg_missing, None) is None           # 文件缺失
+    bad = tmp_path / "bad.db"
+    bad.write_bytes(b"definitely not a sqlite database")
+    cfg_bad = _make_cfg(tmp_path, tm_db_path=str(bad))
+    assert pv._tm_fingerprint(cfg_bad, None) is None               # 非法文件
+    empty_db = tmp_path / "empty.db"
+    TranslationMemory(str(empty_db)).close()                       # 空库（无行）
+    cfg_empty = _make_cfg(tmp_path, tm_db_path=str(empty_db))
+    fp = pv._tm_fingerprint(cfg_empty, None)
+    assert fp == pv._tm_fingerprint(cfg_empty, None)               # 稳定且不崩
+
+
+def test_resume_reuses_stage_a_after_tm_hits(tmp_path, monkeypatch, capsys):
+    """D5 验收1（端到端）：阶段A 的 TM 精确命中（hit_count 自增）后，
+    同配置 --resume 必须复用阶段A，不再报「翻译记忆库已变化」。"""
+    db = tmp_path / "tm.db"
+    seed = TranslationMemory(str(db))
+    seed.store("こんにちは", "你好", 1)
+    seed.store("さようなら", "再见", 1)
+    seed.close()
+
+    conns = []
+
+    def _fake_init_tm(cfg):
+        t = TranslationMemory(str(db))   # 每次运行新连接（模拟跨进程/WAL 回放）
+        conns.append(t)
+        return t
+
+    cfg = _make_cfg(tmp_path, tm_db_path=str(db))
+    in_srt = _setup_e2e(tmp_path, monkeypatch, InterruptingBClient())
+    monkeypatch.setattr(pv, "_init_tm", _fake_init_tm)
+    cfg.inputs = [str(in_srt)]
+    with pytest.raises(KeyboardInterrupt):
+        pv.run_v2(cfg)                       # 阶段A 命中 TM → hit_count 自增
+
+    fake2 = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake2)
+    cfg2 = _make_cfg(tmp_path, tm_db_path=str(db))
+    cfg2.resume = True
+    cfg2.inputs = [str(in_srt)]
+    out = pv.run_v2(cfg2)
+    for t in conns:
+        t.close()
+    assert "阶段A产物复用" in capsys.readouterr().out   # reused=true
+    assert len(fake2.calls) == 1                       # 仅阶段B 一次调用
+    assert out.endswith("demo_final_cn.srt")
+
+
+def test_e_fail_b_reports_degradation_and_risk_report(tmp_path, monkeypatch):
+    """场景e：阶段B 部分失败 → files_degraded=1 + 风险清单 + 回退A译文事件。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _setup_e2e(tmp_path, monkeypatch, FakeClient(fail_b={1}))
+    cfg.inputs = [str(in_srt)]
+    summary = {}
+    out = pv.run_v2(cfg, summary_sink=summary)
+    assert summary["files_ok"] == 1
+    assert summary["files_degraded"] == 1
+    assert summary["files_failed"] == 0
+    assert summary["risk_count"] >= 1
+    assert not summary["untranslated_majority"]
+    # B失败行回退A译文
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
+    assert "译1" in content and "审2" in content
+    # 风险清单文件生成，且包含 kept_a 降级语义
+    report_json = tmp_path / "demo_风险清单.json"
+    report_md = tmp_path / "demo_风险清单.md"
+    assert report_json.is_file() and report_md.is_file()
+    payload = json.loads(report_json.read_text(encoding="utf-8"))
+    actions = [e["action"] for e in payload["events"]]
+    assert "回退A译文" in actions
+    kept = [e for e in payload["events"] if e["action"] == "回退A译文"]
+    assert kept[0]["stage"] == "B"
+    assert kept[0]["affected_count"] == 1
+    assert len(kept[0]["samples"]) == 1
+
+
+def test_f_all_fail_marks_untranslated_majority(tmp_path, monkeypatch):
+    """场景f：A/B 全失败保留日文原文 → untranslated_majority 置位。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _setup_e2e(tmp_path, monkeypatch,
+                        FakeClient(fail_a={1, 2}, fail_b={1, 2}))
+    cfg.inputs = [str(in_srt)]
+    summary = {}
+    out = pv.run_v2(cfg, summary_sink=summary)
+    assert summary["untranslated_majority"] is True
+    assert summary["files_ok"] == 1 and summary["files_degraded"] == 1
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
+    assert "こんにちは" in content and "さようなら" in content
+
+
+def test_g_ndjson_events_parseable_and_progress_mapped(tmp_path, monkeypatch):
+    """场景g：ndjson 模式事件流每行可解析，批次进度映射为 phase_progress。"""
+    cfg = _make_cfg(tmp_path)
+    cfg.event_format = "ndjson"
+    in_srt = _setup_e2e(tmp_path, monkeypatch, ProgressClient())
+    cfg.inputs = [str(in_srt)]
+    buf = io.StringIO()
+    summary = {}
+    pv.run_v2(cfg, summary_sink=summary, event_stream=buf)
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert lines
+    events = [parse_event_line(ln) for ln in lines]
+    assert all(e is not None for e in events)     # 每行都是合法事件行
+    types = [e["type"] for e in events]
+    assert types[0] == "task_started" and types[-1] == "task_finished"
+    # 逐文件 A/B/final 三阶段 phase 事件
+    assert [e["phase"] for e in events
+            if e["type"] == "phase_started"] == ["A", "B", "final"]
+    # 批次进度映射（阶段A/B 各 2 批）
+    prog = [e for e in events if e["type"] == "phase_progress"]
+    assert [(e["phase"], e["payload"]["done"], e["payload"]["total"])
+            for e in prog] == [("A", 1, 2), ("A", 2, 2),
+                               ("B", 1, 2), ("B", 2, 2)]
+    # task_finished 汇总载荷
+    tf = events[-1]["payload"]
+    assert tf["status"] == "success"
+    assert tf["files_ok"] == 1 and tf["risk_count"] == 0
+    # 事件流不含人类可读文本（print 不进事件流）
+    assert "阶段A" not in buf.getvalue()
+    assert "refine-v2" not in buf.getvalue()
+
+
+def test_g_text_mode_stdout_has_no_json_lines(tmp_path, monkeypatch, capsys):
+    """场景g（对照）：text 模式 stdout 无 JSON 事件行，人类文本原样保留。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _setup_e2e(tmp_path, monkeypatch, FakeClient())
+    cfg.inputs = [str(in_srt)]
+    pv.run_v2(cfg)
+    out = capsys.readouterr().out
+    assert "阶段A 净语+翻译" in out
+    assert all(parse_event_line(line) is None for line in out.splitlines())
+
+
+def test_single_file_failure_counts_and_emits_error(tmp_path, monkeypatch):
+    """单文件异常隔离：files_failed 计数 + critical 风险 + error 事件。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _setup_e2e(tmp_path, monkeypatch, FakeClient())
+    bad = tmp_path / "empty.srt"
+    bad.write_text("", encoding="utf-8")
+    cfg.inputs = [str(bad), str(in_srt)]
+    summary = {}
+    pv.run_v2(cfg, summary_sink=summary)
+    assert summary["files_ok"] == 1
+    assert summary["files_failed"] == 1
+    assert summary["risk_count"] >= 1
+    payload = json.loads(
+        (tmp_path / "demo_风险清单.json").read_text(encoding="utf-8"))
+    failed = [e for e in payload["events"] if e["action"] == "该文件失败跳过"]
+    assert failed and failed[0]["severity"] == "critical"

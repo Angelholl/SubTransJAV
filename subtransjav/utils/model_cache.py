@@ -14,11 +14,8 @@ from pathlib import Path
 
 def project_models_root() -> Path:
     """模型缓存根目录：仓库根/models（源码运行）或可执行目录/models（打包）"""
-    if getattr(sys, "frozen", False):
-        root = Path(sys.executable).parent
-    else:
-        # subtransjav/utils/model_cache.py → 仓库根
-        root = Path(__file__).resolve().parents[2]
+    # frozen 打包 → 可执行目录；源码运行：subtransjav/utils/model_cache.py → 仓库根
+    root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
     return root / "models"
 
 

@@ -39,7 +39,13 @@ exit /b 1
 
 :done
 echo.
-echo [DONE] 安装完成！请使用桌面"净语翻译"快捷方式启动程序。
-if exist "%~dp0create_shortcut.py" "%PY%" "%~dp0create_shortcut.py"
+echo [DONE] 安装完成！请使用桌面"SubTransJAV"快捷方式启动程序。
+rem 创建桌面快捷方式（幂等：重复执行覆盖旧快捷方式；失败不中断安装）
+if exist "%~dp0create_shortcut.py" (
+    "%PY%" "%~dp0create_shortcut.py"
+    if errorlevel 1 (
+        echo [WARN] 桌面快捷方式创建失败，不影响使用！可手动运行: "%PY%" "%~dp0create_shortcut.py"
+    )
+)
 pause
 endlocal
