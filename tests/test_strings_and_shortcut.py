@@ -210,6 +210,10 @@ def test_bat_done_hint_matches_actual_shortcut_name(bat_text):
     assert '桌面"SubTransJAV"快捷方式' in bat_text
 
 
+@pytest.mark.skipif(
+    not (REPO_ROOT / "create_shortcut.py").exists(),
+    reason="create_shortcut.py 为内部仓安装辅助，不随公开仓发布（首次安装.bat 有 if exist 兜底）",
+)
 def test_create_shortcut_avoids_execv_and_sets_workdir():
     src = (REPO_ROOT / "create_shortcut.py").read_text(encoding="utf-8")
     assert "os.execv(" not in src                  # Windows 空格路径缺陷（不再调用）
