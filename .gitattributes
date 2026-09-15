@@ -1,0 +1,8 @@
+# 行尾与二进制策略：仓库内统一 LF，Windows 脚本保持 CRLF
+* text=auto eol=lf
+*.bat eol=crlf
+*.png binary
+*.ico binary
+*.db binary
+*.bin binary
+*.srt text
