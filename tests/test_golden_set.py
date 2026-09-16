@@ -61,7 +61,8 @@ def test_stats_script_smoke():
     import os
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     r = subprocess.run([sys.executable, str(SCRIPT_PATH)],
-                       capture_output=True, text=True, timeout=120,
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=120,
                        cwd=str(REPO_ROOT), env=env)
     assert r.returncode == 0, r.stderr
     assert "基线摘要" in r.stdout
