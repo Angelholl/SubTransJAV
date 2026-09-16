@@ -33,6 +33,9 @@ def build_parser():
                            help="最晚修改日期（YYYY-MM-DD）")
     grp_input.add_argument("--exclude", nargs="*", default=[],
                            help="排除的路径模式（如 *_raw.srt）")
+    grp_input.add_argument("--asr-meta", default="",
+                           help="上游 WhisperJAV 运行 manifest（可选，文件或目录）；"
+                                "未给时自动发现 SRT 同目录同名旁车文件 whisperjav_run.json")
 
     p.add_argument("-o", "--output-dir", default="", help="输出目录（默认与输入同目录）")
 
@@ -113,6 +116,9 @@ def build_parser():
                         help="断点续跑：校验输入/配置/词库/TM 指纹后复用上次中断任务已完成的阶段A产物")
     grp_v2.add_argument("--force-resume", action="store_true",
                         help="指纹校验不匹配时仍强制复用旧产物（隐含 --resume，无需单独传）")
+    grp_v2.add_argument("--source-filter", choices=["strict", "default", "off"],
+                        default="default",
+                        help="闸门0 送翻前源侧幻觉检测档位：strict=严格(叠加启发式删除) | default=标准(仅明确幻觉删除) | off=关闭")
     p.add_argument("--event-format", choices=["text", "ndjson"], default="text",
                    help="事件输出格式：text=人类可读（默认）| ndjson=结构化事件行（GUI 用，人类文本转 stderr）")
     p.add_argument("--heartbeat-interval", type=float, default=20.0,
@@ -206,6 +212,8 @@ def config_from_args(args):
         v2_profile=args.profile,
         v2_concurrency=args.v2_concurrency,
         v2_ctx_local=args.v2_ctx,
+        v2_source_filter=args.source_filter,
+        asr_meta=args.asr_meta,
         force=args.force,
         resume=args.resume,
         force_resume=args.force_resume,

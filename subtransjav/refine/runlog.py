@@ -100,14 +100,14 @@ def next_log_path(logs_dir: str) -> str:
 
 
 def cleanup_old_logs(logs_dir: str, retention_days: int = LOG_RETENTION_DAYS) -> int:
-    """删除超过保留期的 .txt 日志；返回删除数量（静默容错）。"""
+    """删除超过保留期的 .txt/.log 日志；返回删除数量（静默容错）。"""
     if not os.path.isdir(logs_dir):
         return 0
     cutoff = time.time() - retention_days * 86400
     removed = 0
     try:
         for name in os.listdir(logs_dir):
-            if not name.lower().endswith('.txt'):
+            if not name.lower().endswith(('.txt', '.log')):
                 continue
             path = os.path.join(logs_dir, name)
             try:

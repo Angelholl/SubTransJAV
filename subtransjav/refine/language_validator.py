@@ -161,19 +161,56 @@ def is_valid_stage_text(text: str, target: str = "ja") -> bool:
 
 
 class DroppedEntryLog:
-    """追加写入 Errors/dropped_entries.log，记录被剔除的幻觉条目。"""
+    """追加写入 Errors/dropped_entries.log，记录被剔除的幻觉条目。
+
+    大小阈值轮转：写入前检查主文件大小，超过 dropped_log_rotate_mb
+    （分层配置，默认 5MB）时把现有文件改名为 dropped_entries-<n>.log
+    （<n> 自 1 起取首个空位）后新建继续写，防止追加累积无限增长。
+    """
+
+    _DEFAULT_ROTATE_MB = 5  # 与 config.DEFAULT_DROPPED_LOG_ROTATE_MB 一致
 
     def __init__(self, errors_dir: str):
         self.errors_dir = errors_dir
         self.path = os.path.join(errors_dir, "dropped_entries.log")
+        self._rotate_bytes = self._resolve_rotate_mb() * 1024 * 1024
         self._ensure_dir()
+
+    @classmethod
+    def _resolve_rotate_mb(cls) -> int:
+        """读取轮转阈值（MB，分层配置）；配置非法（<=0）或解析失败时
+        静默回退默认 5MB，绝不抛异常（该日志链路一贯静默容错）。"""
+        try:
+            from .config import resolve_tunable
+            mb = int(resolve_tunable("dropped_log_rotate_mb"))
+        except Exception:
+            return cls._DEFAULT_ROTATE_MB
+        return mb if mb > 0 else cls._DEFAULT_ROTATE_MB
 
     def _ensure_dir(self):
         if self.errors_dir and not os.path.isdir(self.errors_dir):
             os.makedirs(self.errors_dir, exist_ok=True)
 
+    def _maybe_rotate(self):
+        """主文件超过阈值时轮转为 dropped_entries-<n>.log（静默容错）。"""
+        try:
+            if not os.path.isfile(self.path) \
+                    or os.path.getsize(self.path) < self._rotate_bytes:
+                return
+            seq = 1
+            while True:
+                candidate = os.path.join(
+                    self.errors_dir, f"dropped_entries-{seq}.log")
+                if not os.path.exists(candidate):
+                    break
+                seq += 1
+            os.replace(self.path, candidate)
+        except OSError:
+            pass
+
     def append(self, source: str, stage_index: int, number: int,
                text: str, reason: str):
+        self._maybe_rotate()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = (f"[{ts}] 来源={source} 阶段={stage_index + 1} "
                 f"编号={number} 原因={reason}\n    原文: {text!r}\n")

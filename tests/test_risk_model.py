@@ -147,6 +147,27 @@ def test_summary_lines_format_and_counts():
     assert "共 1 项" in lines[-1]
 
 
+def test_add_summary_line_is_info_only_channel():
+    """R8 信息行通道：随 summary_lines 输出，但不计入风险事件
+    （has_risks / to_payload / 风险清单落盘均不受影响）。"""
+    c = RiskCollector()
+    c.add_summary_line("🚪 闸门0：删除 1/原始 3，检出计数 1（default 档，保险阀未触发）")
+    lines = c.summary_lines()
+    assert lines == ["🚪 闸门0：删除 1/原始 3，检出计数 1（default 档，保险阀未触发）"]
+    assert c.has_risks is False
+    assert c.to_payload()["risk_count"] == 0
+    # 风险事件与信息行共存：风险行在前，信息行追加其后
+    c.add(stage="gate0", file="x.srt", reason="r", action="a", affected_count=1)
+    c.add_summary_line("第二行")
+    lines = c.summary_lines()
+    assert lines[-1] == "第二行" and lines[0].startswith("⚠️")
+    assert "共 1 项" in lines[1]
+    # 空行防御
+    c.add_summary_line("")
+    c.add_summary_line(None)
+    assert len(c.summary_lines()) == 4
+
+
 # ---------------------------------------------------------------------------
 # write_reports
 # ---------------------------------------------------------------------------

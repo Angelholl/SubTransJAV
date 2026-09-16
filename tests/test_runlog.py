@@ -1,4 +1,6 @@
 """refine.runlog 单元测试（P0 #6：TeeWriter.close 刷盘；P3-10 补薄）"""
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -105,3 +107,36 @@ def test_write_summary_appends_block(tmp_path):
     assert "日志   :" in text and "9-12.txt" in text
     assert "保留策略: 7 天自动清理" in text
     assert text.rstrip().endswith("=" * 52), "摘要块应以分隔条收尾"
+
+
+# ---------------------------------------------------------------------------
+# 1.2 H2：cleanup_old_logs 扩展 .log 清理（dropped_entries.log 及其轮转文件）
+# ---------------------------------------------------------------------------
+
+def test_cleanup_old_logs_removes_expired_txt_and_log(tmp_path):
+    """超期 .txt 与 .log 都删除；保留期内的两类文件都保留"""
+    logs = tmp_path / "Logs"
+    logs.mkdir()
+    old_txt = logs / "9-1.txt"
+    old_log = logs / "dropped_entries.log"
+    old_log_upper = logs / "ROTATED.LOG"       # 后缀大小写不敏感
+    keep_txt = logs / "9-12.txt"
+    keep_log = logs / "dropped_entries-1.log"
+    other = logs / "state.json"                # 非 .txt/.log 不受影响
+    for p in (old_txt, old_log, old_log_upper, keep_txt, keep_log, other):
+        p.write_text("x", encoding="utf-8")
+    expired = time.time() - 8 * 86400          # 保留期 7 天，伪造 8 天前
+    for p in (old_txt, old_log, old_log_upper):
+        os.utime(p, (expired, expired))
+
+    removed = runlog.cleanup_old_logs(str(logs), retention_days=7)
+
+    assert removed == 3
+    assert not old_txt.exists() and not old_log.exists()
+    assert not old_log_upper.exists(), ".log 大小写变体也应被清理"
+    assert keep_txt.exists() and keep_log.exists() and other.exists()
+
+
+def test_cleanup_old_logs_missing_dir_returns_zero(tmp_path):
+    """目录不存在：静默返回 0"""
+    assert runlog.cleanup_old_logs(str(tmp_path / "nope")) == 0

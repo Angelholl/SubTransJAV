@@ -1,0 +1,513 @@
+{
+  "version": "1.0",
+  "frozen": true,
+  "created": "2026-09-14",
+  "description": "闸门0 黄金样本回归集 v1.0（冻结版本）。expected 字段独立于实现代码写就：先按规则库 defaults/source_hallucination.yaml 的文档化阈值手工判定，再跑检测器核对（防循环验证，见 README.md）。",
+  "schema": {
+    "id": "样本唯一标识（GP-类别-序号）",
+    "text": "受检条目原文（focus）",
+    "timing": "可选，覆盖 focus 条目的时间轴（缺省由 harness 按每条 20s 间隔生成）",
+    "context": "可选，置于 focus 之前的支撑条目（重复循环/片尾窗口等跨条目类别需要）",
+    "context_after": "可选，置于 focus 之后的支撑条目（控制 focus 在片尾窗口内外的位置）",
+    "expected_category": "七类键之一（pure_punctuation/exclamation/unpronounceable/repeat_loop/end_meta/isolated_response/nonsense_syllables）或 null（负样本）",
+    "expected_action": "delete=default 档应删除 / count=应计数不删除 / keep=应零检出保留",
+    "origin": "constructed（构造样本；真实语料待用户提供后以 origin=real 追加）",
+    "annotator": "标注人",
+    "generated_by": "构造依据（引用规则阈值，供复核）"
+  },
+  "cases": [
+    {
+      "id": "GP-PP-001",
+      "text": "。。。",
+
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": "pure_punctuation",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "纯标点行：整条仅句点、无任何文字/数字内容（规则库 pure_punctuation.example 同型）"
+    },
+    {
+      "id": "GP-PP-002",
+      "text": "・・・・",
+      "context": ["また明日"],
+      "expected_category": "pure_punctuation",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "纯标点行：中点串无实义内容；中点属标点非假名（专名区 U+30FB）"
+    },
+    {
+      "id": "GP-PP-003",
+      "text": "……",
+      "context": ["寒いね"],
+      "expected_category": "pure_punctuation",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "纯标点行：省略号整条无文字内容"
+    },
+    {
+      "id": "GP-PP-004",
+      "text": "！？",
+      "context": ["そうだね"],
+      "expected_category": "pure_punctuation",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "边界：单个！不构成!串（min_run=2 要求连续），但整条纯标点由纯标点行兜底删除"
+    },
+    {
+      "id": "GP-PP-005",
+      "text": "？？？？？",
+      "context": ["こんにちは"],
+      "expected_category": "pure_punctuation",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "纯标点行：整条问号无文字内容"
+    },
+    {
+      "id": "GP-EX-001",
+      "text": "！！",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "exclamation",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "!串：连续！恰为 min_run=2 下限边界，且整条除标点空白外无实质内容"
+    },
+    {
+      "id": "GP-EX-002",
+      "text": "！！！",
+      "context": ["寒いね"],
+      "expected_category": "exclamation",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "!串：连续！超下限（exclamation.example 同型）"
+    },
+    {
+      "id": "GP-EX-003",
+      "text": "！！？？",
+      "context": ["そうだね"],
+      "expected_category": "exclamation",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "!串：混合标点以连续！！（≥min_run=2）起判定，其余为问号等标点填充"
+    },
+    {
+      "id": "GP-UN-001",
+      "text": "kkkk",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": "unpronounceable",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "不可发音辅音串：纯 ASCII 字母、长度≥min_len=2、无开元音 aeiou、非全大写"
+    },
+    {
+      "id": "GP-UN-002",
+      "text": "sssss",
+      "context": ["こんにちは"],
+      "expected_category": "unpronounceable",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "不可发音辅音串：sssss（unpronounceable.example 同型）"
+    },
+    {
+      "id": "GP-UN-003",
+      "text": "kk",
+      "timing": "00:00:42,000 --> 00:00:43,000",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": "unpronounceable",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "边界：规范化长度恰为 min_len=2 下限仍删除；timing 字段演示显式时间轴覆盖"
+    },
+    {
+      "id": "GP-UN-004",
+      "text": "thhrz",
+      "context": ["また明日"],
+      "expected_category": "unpronounceable",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "不可发音辅音串：辅音连缀无开元音（构造样本，模拟键盘乱敲）"
+    },
+    {
+      "id": "GP-RP-001",
+      "text": "みんな",
+      "context": ["こんにちは", "さようなら", "また明日", "寒いね", "そうだね", "水泳部の部長でエース", "みんな", "みんな", "みんな"],
+      "expected_category": "repeat_loop",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "重复循环：相邻同文 4 连恰为 min_run=4 下限边界（ASR 卡帧形态，repeat_loop.example 同型）；规范化长度 3≥min_norm_len=2。混入 6 条真实台词使待删占比 4/10=40% 低于保险阀阈值（50%），聚焦重复循环本身而非降级路径"
+    },
+    {
+      "id": "GP-RP-002",
+      "text": "水泳部の部長でエース",
+      "context": ["こんにちは", "さようなら", "また明日", "寒いね", "そうだね", "みんな、聞いて", "水泳部の部長でエース", "水泳部の部長でエース", "水泳部の部長でエース", "水泳部の部長でエース"],
+      "expected_category": "repeat_loop",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "重复循环：5 连长台词（超下限），验证长文本同样按同文连数删除；混入 6 条真实台词使待删占比 5/11≈45% 低于保险阀阈值"
+    },
+    {
+      "id": "GP-RP-003",
+      "text": "ねぇ",
+      "context": ["こんにちは", "さようなら", "また明日", "寒いね", "そうだね", "水泳部の部長でエース", "ねぇ", "ねぇ", "ねぇ"],
+      "expected_category": "repeat_loop",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "边界：规范化长度恰为 min_norm_len=2（ね+ぇ促音小写）仍构成重复循环；注意 ねぇ 与白名单词 ねえ（非促音）不同码位、不受白名单保护。混入 6 条真实台词使待删占比 4/10=40% 低于保险阀阈值"
+    },
+    {
+      "id": "GP-EM-001",
+      "text": "チャンネル登録お願いします",
+      "context": ["こんにちは", "さようなら", "また明日", "寒いね", "そうだね"],
+      "expected_category": "end_meta",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "片尾元信息：位于时间轴末 10% 窗口内（末条）且命中 words_ja 词根 チャンネル登録（双闸同过，end_meta.example 同型）"
+    },
+    {
+      "id": "GP-EM-002",
+      "text": "Thanks for watching!",
+      "context": ["こんにちは", "さようなら", "また明日", "寒いね", "そうだね"],
+      "expected_category": "end_meta",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "片尾元信息：窗口内命中 words_en（英语大小写不敏感子串）"
+    },
+    {
+      "id": "GP-EM-003",
+      "text": "ご視聴ありがとうございました",
+      "context": ["こんにちは", "さようなら", "また明日", "寒いね", "そうだね"],
+      "expected_category": "end_meta",
+      "expected_action": "delete",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "片尾元信息：窗口内命中 words_ja 词根 ご視聴"
+    },
+    {
+      "id": "GP-IR-001",
+      "text": "うん",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "isolated_response",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "孤立应答词：default 档只计数不删除（isolated_response.example 同型；strict 档叠加启发式才删，不在本集口径内）"
+    },
+    {
+      "id": "GP-IR-002",
+      "text": "えっ",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "isolated_response",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "孤立应答词：default 档只计数不删除"
+    },
+    {
+      "id": "GP-IR-003",
+      "text": "はい",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "isolated_response",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "白名单×计数类边界：はい 同时∈keep_list 与 isolated_response.words——白名单保护语义下不删除但照常计入检出统计"
+    },
+    {
+      "id": "GP-IR-004",
+      "text": "うん",
+      "context": ["うん", "うん", "うん"],
+      "expected_category": "isolated_response",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "白名单最高优先级边界：うん×4 连同时文（重复循环形态、isolated strict 删除形态）——但 うん∈keep_list，白名单分支先行放行，default 档 4 条全保留且逐条计入孤立应答词检出"
+    },
+    {
+      "id": "GP-IR-005",
+      "text": "あー",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "isolated_response",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "白名单×计数类边界：あー 同时∈keep_list 与 isolated_response.words，只计数不删除"
+    },
+    {
+      "id": "GP-IR-006",
+      "text": "うん！！！",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "isolated_response",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "白名单高于删除类边界：规范化后整条=うん∈keep_list，尽管原文携带！！！（!串形态）也不得触发删除，仅计入孤立应答词检出"
+    },
+    {
+      "id": "GP-NS-001",
+      "text": "あじゃあじゃあじゃあじゃ",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "nonsense_syllables",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "无意义音节连缀：2 字假名单元 あじゃ 整条平铺恰为 unit_repeat_min=4 下限（nonsense_syllables.example 同型）；default 档只计数"
+    },
+    {
+      "id": "GP-NS-002",
+      "text": "んああああああ",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "nonsense_syllables",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "无意义音节连缀：同一假名 あ 连续恰为 intra_repeat_min=6 下限（ん+あ×6）；default 档只计数"
+    },
+    {
+      "id": "GP-NS-003",
+      "text": "ぱにぱにぱにぱに",
+      "context": ["こんにちは", "さようなら", "また明日"],
+      "expected_category": "nonsense_syllables",
+      "expected_action": "count",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "无意义音节连缀：2 字单元 ぱに 平铺×4 达下限；default 档只计数"
+    },
+    {
+      "id": "GP-KN-001",
+      "text": "こんにちは",
+      "context": ["さようなら", "また明日"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "负样本：真实问候台词；纯假名但无重复/平铺信号"
+    },
+    {
+      "id": "GP-KN-002",
+      "text": "さようなら",
+      "context": ["こんにちは", "また明日"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "负样本：真实告别台词（5 字假名，长度为质数不构成单元平铺）"
+    },
+    {
+      "id": "GP-KN-003",
+      "text": "また明日",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "负样本：真实台词（含汉字）"
+    },
+    {
+      "id": "GP-KN-004",
+      "text": "寒いね",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "负样本：真实台词（含汉字）"
+    },
+    {
+      "id": "GP-KN-005",
+      "text": "そうだね",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "负样本：真实应答台词；纯假名但无条目内重复与单元平铺"
+    },
+    {
+      "id": "GP-KN-006",
+      "text": "はい、わかりました",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "白名单边界（负侧）：白名单词 はい 带句读后规范化整条=はいわかりました≠白名单任何词，不触发应答词计数；有实义内容应保留"
+    },
+    {
+      "id": "GP-KN-007",
+      "text": "！すごい！",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "!串边界（负侧）：单个！无连续（<min_run=2）且条目有实义内容，不构成!串/纯标点，应保留"
+    },
+    {
+      "id": "GP-KN-008",
+      "text": "TV",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "不可发音豁免边界（负侧）：全大写缩略词豁免（keep_acronyms），TV/CD/GPS 类缩略词不是辅音噪音"
+    },
+    {
+      "id": "GP-KN-009",
+      "text": "いいよ",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "白名单整条命中（非应答词表）：keep_list 命中且不在 isolated_response.words，静默放行、不计入检出"
+    },
+    {
+      "id": "GP-KN-010",
+      "text": "みんな、聞いて",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "重复循环边界（负侧）：真实台词带逗号，单条出现不构成相邻同文连数"
+    },
+    {
+      "id": "GP-KN-011",
+      "text": "アイスクリーム食べたい",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "负样本：片假名台词（含汉字）；无无意义音节连缀信号"
+    },
+    {
+      "id": "GP-KN-012",
+      "text": "えっ、本当？",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "应答词边界（负侧）：えっ 带句读后规范化整条≠白名单词，且含汉字非纯假名串，应保留"
+    },
+    {
+      "id": "GP-KN-013",
+      "text": "すごい",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "白名单整条命中（非应答词表）：静默放行、不计入检出"
+    },
+    {
+      "id": "GP-KN-014",
+      "text": "GPS",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "不可发音豁免边界（负侧）：全大写缩略词豁免（虽无开元音）"
+    },
+    {
+      "id": "GP-RK-001",
+      "text": "みんな",
+      "context": ["みんな", "みんな"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "重复循环边界（负侧）：3 连同文 <min_run=4，不删除不检出（与 GP-RP-001 成对）"
+    },
+    {
+      "id": "GP-RK-002",
+      "text": "わ",
+      "context": ["わ", "わ", "わ"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "重复循环边界（负侧）：4 连同文但规范化长度 1<min_norm_len=2，不构成重复；わ 非白名单词/应答词，零检出保留"
+    },
+    {
+      "id": "GP-RK-003",
+      "text": "ぱにぱにぱに",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "无意义音节连缀边界（负侧）：单元 ぱに 平铺×3 <unit_repeat_min=4（与 GP-NS-003 成对）"
+    },
+    {
+      "id": "GP-RK-004",
+      "text": "んあああああ",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "无意义音节连缀边界（负侧）：同一假名 あ 连续×5 <intra_repeat_min=6，且不构成单元平铺（与 GP-NS-002 成对）"
+    },
+    {
+      "id": "GP-RK-005",
+      "text": "あああああああ",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "无意义音节连缀豁免边界（负侧）：整条单假名重复（あ×7 拖长音）是本领域真实台词形态，规则明文豁免"
+    },
+    {
+      "id": "GP-EK-001",
+      "text": "チャンネル登録お願いします",
+      "context": ["こんにちは", "さようなら", "また明日", "寒いね", "そうだね", "水泳部の部長でエース", "アイスクリーム食べたい", "みんな、聞いて", "はい、わかりました"],
+      "context_after": ["また明日", "寒いね"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "片尾元信息双闸边界（负侧）：词根命中但位于时间轴 180s 处，末 10% 窗口起点为 198.9s（12 条×20s 间隔，max_end=221s）——窗口外不检出（与 GP-EM-001 成对）"
+    },
+    {
+      "id": "GP-EK-002",
+      "text": "チャンネル",
+      "context": ["こんにちは", "さようなら", "また明日", "寒いね", "そうだね"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "片尾元信息双闸边界（负侧）：位于窗口内（末条）但词未命中——words_ja 为 チャンネル登録 等完整词根，单说 チャンネル 不含任何词根"
+    },
+    {
+      "id": "GP-UK-001",
+      "text": "haha",
+      "context": ["こんにちは", "さようなら"],
+      "expected_category": null,
+      "expected_action": "keep",
+      "origin": "constructed",
+      "annotator": "code-Executor-batch3",
+      "generated_by": "不可发音边界（负侧）：含开元音 a，非辅音噪音（与 GP-UN-001 成对）"
+    }
+  ]
+}

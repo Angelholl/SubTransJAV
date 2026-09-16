@@ -49,11 +49,21 @@ class RiskCollector:
         self.events = []                 # list[RiskEvent]
         self._emitter = None             # EventEmitter（duck typing）
         self._untranslated_majority = False
+        self._info_lines = []            # 非风险信息行（闸门0 计数等），随 summary_lines 输出
 
     # ------------------------------------------------------------------
     def attach_emitter(self, emitter) -> None:
         """挂载事件发射器；此后每次 add() 同步发一条 warning/degraded 事件。"""
         self._emitter = emitter
+
+    def add_summary_line(self, line) -> None:
+        """追加一条非风险信息行（如 R8 的闸门0 计数行），随 summary_lines 聚合输出。
+
+        信息行不计入风险事件：不影响 risk_count / content_degraded /
+        风险清单落盘（write_reports 仍以 has_risks 为准）。
+        """
+        if line:
+            self._info_lines.append(str(line))
 
     def add(self, stage=None, file=None, entry_range=None, reason=None, action=None,
             affected_count=0, samples=None, suggestion=None, severity="warning") -> RiskEvent:
@@ -119,9 +129,9 @@ class RiskCollector:
 
     # ------------------------------------------------------------------
     def summary_lines(self) -> list:
-        """人类可读的风险摘要行（每行 "⚠️ ..." 风格，末行为计数汇总）；无风险返回 []。"""
-        if not self.has_risks:
-            return []
+        """人类可读的摘要行：风险行（每行 "⚠️ ..." 风格）+ 末行计数汇总，
+        再拼接 add_summary_line 追加的非风险信息行（闸门0 计数等）；
+        无风险且无信息行返回 []。"""
         lines = []
         for e in self.events:
             seg = f"⚠️ [{e.severity}] {e.stage or '-'}"
@@ -138,11 +148,13 @@ class RiskCollector:
             if e.suggestion:
                 seg += f" | 建议: {e.suggestion}"
             lines.append(seg)
-        n_info = sum(1 for e in self.events if e.severity == SEVERITY_INFO)
-        n_warn = sum(1 for e in self.events if e.severity == SEVERITY_WARNING)
-        n_crit = sum(1 for e in self.events if e.severity == SEVERITY_CRITICAL)
-        lines.append(f"⚠️ 风险汇总：共 {len(self.events)} 项"
-                     f"（info {n_info} / warning {n_warn} / critical {n_crit}）")
+        if self.has_risks:
+            n_info = sum(1 for e in self.events if e.severity == SEVERITY_INFO)
+            n_warn = sum(1 for e in self.events if e.severity == SEVERITY_WARNING)
+            n_crit = sum(1 for e in self.events if e.severity == SEVERITY_CRITICAL)
+            lines.append(f"⚠️ 风险汇总：共 {len(self.events)} 项"
+                         f"（info {n_info} / warning {n_warn} / critical {n_crit}）")
+        lines.extend(self._info_lines)
         return lines
 
     def to_payload(self) -> dict:

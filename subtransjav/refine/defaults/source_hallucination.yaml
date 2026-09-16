@@ -1,0 +1,266 @@
+# 闸门0——送翻前源侧幻觉检测 默认规则库
+# =====================================
+# 消费方：subtransjav/refine/source_hallucination.py（唯一实现）。
+# 用户覆盖：config/rules/source_hallucination.yaml 存在则整文件替换
+# 本默认库（仓库惯例：整文件替换，不做深层合并）。
+#
+# 规约（R7 评议结论）：
+# - schema_version：规则结构版本（结构不兼容变更时递增），当前为 1；
+# - 每个检测类别必须携带 example 证据样本字段（供测试与文档引用，
+#   防无据规则膨胀）；
+# - keep_list 与 language_validator._WHITELIST_JA 并集保持同一口径：
+#   命中 keep_list（规范化后整条精确匹配）的条目任何档位都不删不计数，
+#   优先级高于一切档位规则。
+
+schema_version: 1
+
+# 白名单（最高优先级）：与 language_validator._WHITELIST_JA 六集合并集
+# 逐词一致（tests/test_source_hallucination.py 有口径一致性测试钉住，
+# 白名单更新时须同步本列表）。
+keep_list:
+- OK
+- あ
+- ああ
+- あああ
+- あら
+- ありがとう
+- あれ
+- あー
+- いい
+- いいえ
+- いいの
+- いいよ
+- いや
+- ううう
+- ううん
+- うそ
+- うれしい
+- うわ
+- うん
+- うーん
+- ええ
+- えええ
+- ええと
+- えっ
+- おいしい
+- おう
+- おお
+- おきゃくさま
+- おはよう
+- おやすみ
+- お前
+- お前さん
+- お客様
+- かちょう
+- かな
+- かなしい
+- かわいい
+- きみ
+- きもい
+- こう
+- この
+- ごめん
+- ごめんね
+- さあ
+- さびしい
+- しゃちょう
+- すごい
+- すごいね
+- すみません
+- せんせい
+- せんぱい
+- そう
+- そうか
+- そうなんだ
+- そうね
+- そっか
+- たいちょう
+- たのしい
+- だめ
+- だめだ
+- だめだよ
+- だめよ
+- だよね
+- ちょっと
+- つらい
+- どうして
+- どうすんの
+- どうぞ
+- どうだ
+- なるほど
+- ねえ
+- ねん
+- はぁ
+- はい
+- はいはい
+- ひゃー
+- びっくり
+- ふん
+- ぶちょう
+- ほら
+- ほんと
+- ほんとに
+- まあ
+- まじ
+- まじで
+- まずい
+- まだまだ
+- みやした
+- もう
+- もうちょっと
+- もっと
+- やだ
+- やっぱり
+- やばい
+- やばいね
+- やめ
+- やめて
+- やめてよ
+- よい
+- りょうかい
+- わあ
+- わかった
+- わたくし
+- ん
+- んん
+- エロい
+- エース
+- キモい
+- ザク
+- ザコ
+- ジン
+- パパ
+- ベロ
+- マコ
+- マジか
+- マジで
+- ママ
+- 了解
+- 僕は
+- 先生
+- 先輩
+- 冗談
+- 君
+- 嘘
+- 嘘だ
+- 好き
+- 嫌い
+- 嬉しい
+- 宮下
+- 幸せ
+- 怖い
+- 思う
+- 思った
+- 思ってる
+- 悲しい
+- 感じた
+- 感じてる
+- 感じる
+- 最悪
+- 最高
+- 本当
+- 森田
+- 気持ちいい
+- 痛い
+- 社長
+- 私は
+- 翠名
+- 自分は
+- 課長
+- 部長
+- 隊長
+
+# ---- 类别 1：纯标点行（整条仅标点/符号/空白，default/strict 删）----
+pure_punctuation:
+  example: "。。。"
+
+# ---- 类别 2：!串（连续 ! ≥2 构成主要内容的行，default/strict 删）----
+exclamation:
+  min_run: 2              # 连续感叹号下限
+  example: "！！！"
+
+# ---- 类别 3：不可发音辅音串（无开元音的辅音连缀，default/strict 删）----
+# 仅对纯拉丁字母条目生效；对日文假名串不适用（假名皆开元音节）。
+unpronounceable:
+  min_len: 2              # 最短长度（kk、sss 级别）
+  # 全大写条目豁免（TV/CD/GPS 等缩略词不是辅音噪音）
+  keep_acronyms: true
+  example: "sssss"
+
+# ---- 类别 4：重复循环（相邻同文条目 ≥min_run 连，default/strict 删）----
+repeat_loop:
+  min_run: 4              # 相邻同文连数下限
+  min_norm_len: 2         # 规范化文本长度下限（去空白/标点）
+  example: "みんな"        # 证据：みんな×4 连（ASR 卡帧）
+
+# ---- 类别 5：片尾元信息（双闸：时间轴末 10% 区间 + 元信息词，default/strict 删）----
+end_meta:
+  window_ratio: 0.1       # 时间轴末尾区间比例（双闸之一）
+  # 日语元信息词（刻意避开 keep_list 词根，防白名单先行放行）
+  words_ja:
+  - チャンネル登録
+  - チャンネル登録お願いします
+  - 高評価
+  - ご視聴
+  - 登録お願い
+  - フォローお願い
+  - 次回お楽しみ
+  - 動画は以上
+  - 最新動画
+  # 英语元信息词（大小写不敏感子串匹配）
+  words_en:
+  - thanks for watching
+  - thank you for watching
+  - thanks for viewing
+  - please subscribe
+  - like and subscribe
+  - don't forget to subscribe
+  - check description
+  - see you in the next
+  example: "チャンネル登録お願いします"
+
+# ---- 类别 6：孤立应答词（单独成行，default 只计数 / strict 叠加启发式删）----
+isolated_response:
+  words:
+  - はい
+  - うん
+  - ああ
+  - ええ
+  - ううん
+  - えっ
+  - おう
+  - まあ
+  - あー
+  - うんうん
+  - えー
+  - んー
+  - おー
+  - ふーん
+  - へー
+  strict_min_run: 4       # strict 删：同词连续 ≥4
+  strict_max_ratio: 0.5   # strict 删：检出占比超过该比例（0-1）
+  example: "うんうん"      # 证据：うんうん×5 连（白名单内的 はい/うん 由 keep_list 保护）
+
+# ---- 类别 7：无意义音节连缀（default 只计数 / strict 叠加启发式删）----
+# 形态门槛：规范化后仅假名（含长音符）且非"整条单假名重复"——
+# あああ/ううう/えええ 等长假名重复是本领域真实台词形态，不触发；
+# 检出信号（strict 删除的叠加启发式同源）：
+#   1) 条目内重复：同一假名连续 ≥intra_repeat_min 次（如 "んああああああ"）；
+#   2) 单元重复：2-4 字假名单元整条平铺 ≥unit_repeat_min 次（如 あじゃ×4）。
+nonsense_syllables:
+  min_len: 3              # 规范化文本长度下限
+  intra_repeat_min: 6     # 条目内同一假名连续次数下限
+  unit_repeat_min: 4      # 单元平铺次数下限（单元长 2-4 字）
+  max_unit_len: 4         # 参与平铺判定的单元最大长度
+  example: "あじゃあじゃあじゃあじゃ"
+
+# ---- H4a：上游 ASR 信号收紧覆盖块（tighten=True 时仅作用于 default 档删五类）----
+# 上游 run 状态可疑（suspect/empty/failed）时，pipeline 以本块覆盖对应类别
+# 参数（只收语义阈值，见 source_hallucination.py 的 _cat_cfg 合并逻辑）；
+# 计数类 isolated_response / nonsense_syllables 刻意不设收紧项——任何信号
+# 下都不得解锁为删除（契约由 tests/test_source_hallucination.py 钉住）。
+tighten:
+  repeat_loop:
+    min_run: 3              # 4→3：可疑转写下 3 连同文即判重复循环
+  end_meta:
+    window_ratio: 0.2       # 0.1→0.2：可疑转写下片尾元信息窗口加倍

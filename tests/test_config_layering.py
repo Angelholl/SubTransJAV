@@ -19,8 +19,11 @@ from subtransjav.refine import config as rc
 from subtransjav.refine import pipeline_v2 as pv
 from subtransjav.refine.config import (
     DEEPSEEK_BASE_DEFAULT,
+    DEFAULT_PREMERGE_MAX_CHARS,
     DEFAULT_PREMERGE_MAX_GAP_S,
     DEFAULT_PREMERGE_MAX_ITEMS,
+    DEFAULT_PREMERGE_MAX_SPAN_MS,
+    DEFAULT_PREMERGE_MIN_FRAGMENT_CHARS,
     DEFAULT_TEMPERATURE_CLOUD,
     DEFAULT_TEMPERATURE_LOCAL,
     DEFAULT_TIMEOUT_HTTP,
@@ -65,6 +68,10 @@ def test_defaults_equal_legacy_hardcoded_values():
     assert cfg.temperature_local == 0.1 == DEFAULT_TEMPERATURE_LOCAL
     assert cfg.premerge_max_gap_s == 8.0 == DEFAULT_PREMERGE_MAX_GAP_S
     assert cfg.premerge_max_items == 3 == DEFAULT_PREMERGE_MAX_ITEMS
+    assert cfg.premerge_max_span_ms == 5000 == DEFAULT_PREMERGE_MAX_SPAN_MS
+    assert cfg.premerge_max_chars == 80 == DEFAULT_PREMERGE_MAX_CHARS
+    assert cfg.premerge_min_fragment_chars == 6 \
+        == DEFAULT_PREMERGE_MIN_FRAGMENT_CHARS
     assert cfg.v2_concurrency_max == 5 == DEFAULT_V2_CONCURRENCY_MAX
     assert cfg.timeout_llm == 900.0 == DEFAULT_TIMEOUT_LLM
     assert cfg.timeout_http == 60.0 == DEFAULT_TIMEOUT_HTTP
@@ -174,6 +181,8 @@ def test_effective_summary_lists_tunable_fields_and_profile():
     for token in ("profile=local", "lmstudio", "m1", "deepseek", "m2",
                   "temperature_cloud=0.5", "temperature_local=0.1",
                   "max_gap_s=8.0", "max_items=3", "v2_concurrency_max=5",
+                  "max_span_ms=5000", "max_chars=80",
+                  "min_fragment_chars=6",
                   "llm=900.0s", "http=60.0s", "probe=5.0s"):
         assert token in text
 
@@ -190,6 +199,8 @@ def _hash_cfg(**kw):
         batch_local=30, batch_cloud=30, batch_size_stable=True,
         v2_profile="local", v2_concurrency=1, v2_ctx_local=32768,
         v2_keep_untranslated="original", premerge_enabled=True,
+        premerge_max_span_ms=5000, premerge_max_chars=80,
+        premerge_min_fragment_chars=6,
         tm_enabled=True, tm_threshold=0.85, tm_fuzzy_inject=True,
         tm_fuzzy_threshold=0.98, tm_learn_gate=True,
         apply_glossary_stage1=True, apply_glossary_stage2=True,
@@ -206,6 +217,10 @@ def test_config_hash_sensitive_to_new_product_affecting_fields():
     assert _hash_cfg(temperature_local=0.2) != base
     assert _hash_cfg(premerge_max_gap_s=6.0) != base
     assert _hash_cfg(premerge_max_items=5) != base
+    # RC3 预合并硬上限：直接影响合并结果，必须参与 resume 指纹
+    assert _hash_cfg(premerge_max_span_ms=6000) != base
+    assert _hash_cfg(premerge_max_chars=100) != base
+    assert _hash_cfg(premerge_min_fragment_chars=8) != base
 
 
 def test_config_hash_insensitive_to_timeout_and_concurrency_max():

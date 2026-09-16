@@ -20,13 +20,20 @@ DEEPSEEK_BASE_DEFAULT = "https://api.deepseek.com/v1"
 
 DEFAULT_TEMPERATURE_CLOUD = 0.5      # 云端服务商采样温度
 DEFAULT_TEMPERATURE_LOCAL = 0.1      # 本地服务商采样温度（实测最优低温）
-DEFAULT_PREMERGE_MAX_GAP_S = 8.0     # 断句预合并：合并后总时长上限（秒）
+DEFAULT_PREMERGE_MAX_GAP_S = 8.0     # 断句预合并：gap 阈值占位（跨度上限职责已移交 premerge_max_span_ms）
 DEFAULT_PREMERGE_MAX_ITEMS = 3       # 断句预合并：合并条数上限
+DEFAULT_PREMERGE_MAX_SPAN_MS = 5000  # 断句预合并：合并后总时长硬上限，毫秒
+DEFAULT_PREMERGE_MAX_CHARS = 80      # 断句预合并：合并后文本字符上限
+DEFAULT_PREMERGE_MIN_FRAGMENT_CHARS = 6  # 断句预合并：语义断裂档下一行短碎片阈值，字符
 DEFAULT_V2_CONCURRENCY_MAX = 5       # 批间并发钳制上限
 DEFAULT_TIMEOUT_LLM = 900.0          # LLM 单批超时（秒；本地慢模型单批可达数分钟）
 DEFAULT_TIMEOUT_HTTP = 60.0          # OpenAI 兼容 HTTP 客户端超时（秒）
 DEFAULT_TIMEOUT_PROBE = 5.0          # 本地服务探测类 GET 超时（秒）
 DEFAULT_HEARTBEAT_STALE_S = 45.0     # GUI 心跳超时阈值（秒；≈2.25×心跳间隔 20s，超时提示"最近活动 Ns 前"）
+DEFAULT_DROPPED_LOG_ROTATE_MB = 5    # dropped_entries.log 轮转阈值（MB；超限轮转为 dropped_entries-<n>.log）
+DEFAULT_V2_SOURCE_FILTER_VALVE_PCT = 50  # 闸门0 保险阀：拦截率超过该百分比降级只计数（1-100）
+DEFAULT_V2_ASR_META_MIN_COVERAGE_PCT = 30  # 上游 ASR 语音覆盖率告警阈值（%，低于即记风险）
+DEFAULT_V2_ASR_META_STALE_MAX_HOURS = 24   # 上游运行 manifest 新鲜度上限（小时，R6）
 
 # 用户可调字段（config/user_settings.json / 环境变量 SUBTRANSJAV_<大写字段名>）。
 # 优先级：默认 < 用户配置文件 < 环境变量 < CLI/GUI 显式赋值（构造后赋值天然最高）。
@@ -35,11 +42,18 @@ TUNABLE_FIELD_TYPES = {
     "temperature_local": float,
     "premerge_max_gap_s": float,
     "premerge_max_items": int,
+    "premerge_max_span_ms": int,
+    "premerge_max_chars": int,
+    "premerge_min_fragment_chars": int,
     "v2_concurrency_max": int,
     "timeout_llm": float,
     "timeout_http": float,
     "timeout_probe": float,
     "heartbeat_stale_s": float,
+    "dropped_log_rotate_mb": int,
+    "v2_source_filter_valve_pct": int,
+    "v2_asr_meta_min_coverage_pct": int,
+    "v2_asr_meta_stale_max_hours": int,
 }
 
 # ---- 服务商预设 ----
@@ -238,6 +252,18 @@ class RefineConfig:
     v2_concurrency: int = 1         # 批间并发数（1-5，默认1为串行，对所有服务商生效）
     v2_ctx_local: int = 32768       # 本地模型上下文窗口（批大小/max_tokens 预算依据）
     v2_keep_untranslated: str = "original"   # 阶段B仍失败时: original=保留日文原文 | empty=删除
+    # 闸门0 送翻前源侧幻觉检测（预合并前对原始条目生效，两档 profile 均执行；
+    # 规则库见 refine/defaults/source_hallucination.yaml）
+    v2_source_filter: str = "default"       # strict | default | off（仿 v2_profile 档位声明）
+    # 保险阀：拦截率超过该百分比则全文件降级为只计数（1-100）
+    v2_source_filter_valve_pct: int = DEFAULT_V2_SOURCE_FILTER_VALVE_PCT
+    # 上游 WhisperJAV 运行 manifest（H4a 信号通道）：文件或目录路径，空=自动
+    # 发现 SRT 同目录 whisperjav_run.json。刻意不进 manifest._CONFIG_FIELDS
+    # （路径变化不应误失效；信号内容经 asr_meta_sha1 入指纹，R1）
+    asr_meta: str = ""
+    # 上游 ASR 信号阈值：覆盖率告警下限（%）/ 运行 manifest 新鲜度上限（小时）
+    v2_asr_meta_min_coverage_pct: int = DEFAULT_V2_ASR_META_MIN_COVERAGE_PCT
+    v2_asr_meta_stale_max_hours: int = DEFAULT_V2_ASR_META_STALE_MAX_HOURS
     force: bool = False             # v2: 忽略已有产物强制重跑（覆盖前自动备份）
     tm_learn_gate: bool = True      # TM 学习准入门槛总开关（False 用于 A/B 验证）
     # 断点续跑（清单指纹校验见 manifest 模块）
@@ -251,11 +277,15 @@ class RefineConfig:
     temperature_local: float = DEFAULT_TEMPERATURE_LOCAL
     premerge_max_gap_s: float = DEFAULT_PREMERGE_MAX_GAP_S
     premerge_max_items: int = DEFAULT_PREMERGE_MAX_ITEMS
+    premerge_max_span_ms: int = DEFAULT_PREMERGE_MAX_SPAN_MS
+    premerge_max_chars: int = DEFAULT_PREMERGE_MAX_CHARS
+    premerge_min_fragment_chars: int = DEFAULT_PREMERGE_MIN_FRAGMENT_CHARS
     v2_concurrency_max: int = DEFAULT_V2_CONCURRENCY_MAX
     timeout_llm: float = DEFAULT_TIMEOUT_LLM
     timeout_http: float = DEFAULT_TIMEOUT_HTTP
     timeout_probe: float = DEFAULT_TIMEOUT_PROBE
     heartbeat_stale_s: float = DEFAULT_HEARTBEAT_STALE_S
+    dropped_log_rotate_mb: int = DEFAULT_DROPPED_LOG_ROTATE_MB
     # ---- P1-6 云端多文件并行（opt-in，默认关；本地服务商一律串行）----
     # 休眠开关：暂无 env/CLI/GUI 开启通道（未列入 TUNABLE_FIELD_TYPES），
     # 预留 2.0，当前恒为关闭（O10）。
@@ -332,7 +362,10 @@ class RefineConfig:
             f"   temperature_cloud={self.temperature_cloud} "
             f"temperature_local={self.temperature_local}",
             f"   premerge: max_gap_s={self.premerge_max_gap_s} "
-            f"max_items={self.premerge_max_items}",
+            f"max_items={self.premerge_max_items} "
+            f"max_span_ms={self.premerge_max_span_ms} "
+            f"max_chars={self.premerge_max_chars} "
+            f"min_fragment_chars={self.premerge_min_fragment_chars}",
             f"   v2_concurrency_max={self.v2_concurrency_max}",
             f"   timeout: llm={self.timeout_llm}s http={self.timeout_http}s "
             f"probe={self.timeout_probe}s",
@@ -403,6 +436,28 @@ class RefineConfig:
             errors.append("已启用云端故障本地接管，但未指定接管模型(--fallback-model)")
         if self.event_format not in ("text", "ndjson"):
             errors.append(f"event_format 仅支持 text/ndjson，当前: {self.event_format}")
+        if self.v2_source_filter not in ("strict", "default", "off"):
+            errors.append(
+                f"v2_source_filter 仅支持 strict/default/off，"
+                f"当前: {self.v2_source_filter}")
+        try:
+            valve = int(self.v2_source_filter_valve_pct)
+        except (TypeError, ValueError):
+            valve = -1
+        if not 1 <= valve <= 100:
+            errors.append(
+                "v2_source_filter_valve_pct 取值范围 1-100，当前: "
+                f"{self.v2_source_filter_valve_pct}")
+        # 断句预合并硬上限：必须为正整数（跨度毫秒 / 字符数 / 碎片阈值）
+        for name in ("premerge_max_span_ms", "premerge_max_chars",
+                     "premerge_min_fragment_chars"):
+            try:
+                v = int(getattr(self, name))
+            except (TypeError, ValueError):
+                v = 0
+            if v <= 0:
+                errors.append(
+                    f"{name} 必须为正整数，当前: {getattr(self, name)}")
         return errors
 
 

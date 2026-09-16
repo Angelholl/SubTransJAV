@@ -157,7 +157,11 @@ def load_manifest(path):
 def delete_resume_artifacts(out_dir, stem) -> list:
     """删除断点续跑相关产物（存在才删），返回实际删除的文件名列表。"""
     removed = []
-    names = (manifest_path(out_dir, stem).name, f"{stem}_refine_A.srt")
+    names = (manifest_path(out_dir, stem).name, f"{stem}_refine_A.srt",
+             # H3：旧一轮的幻觉处置报告同属恢复类现场，重跑成功后按新报告重建
+             f"{stem}_幻觉处置报告.json",
+             # H5：上一轮的隔离区同属恢复类现场，本轮无存疑译文时不落文件
+             f"{stem}_隔离区.srt")
     for name in names:
         p = Path(out_dir) / name
         if p.is_file():
@@ -244,6 +248,35 @@ def _rules_yaml_path():
     return p if p and os.path.isfile(p) else None
 
 
+def _gate0_rules_sha1():
+    """闸门0 规则库语义内容 sha1（实际生效的那份：用户覆盖优先，包内回退）。
+
+    对解析后的规则对象做 json.dumps(sort_keys=True, ensure_ascii=False)
+    后哈希——不是原始文件字节 sha1，防路径/键序/非语义差异导致误失效；
+    keep_list 与 schema_version 在该对象内天然被覆盖。解析不可得时
+    返回 None 跳过（与 _rules_yaml_path 同款容错）。
+    """
+    try:
+        from .source_hallucination import gate0_rules_sha1
+        return gate0_rules_sha1()
+    except Exception:
+        return None
+
+
+def _asr_meta_sha1(cfg):
+    """上游 ASR 运行信号语义指纹（H4a/R1）：asr_meta.fingerprint 的结果。
+
+    - cfg.asr_meta 路径刻意不进 _CONFIG_FIELDS：路径变化不应误失效；
+      信号有无/内容变化经指纹自然使旧产物失效（这正是 R1 要的语义）。
+    - 解析不可得/无信号返回 None 跳过（与 _gate0_rules_sha1 同款容错）。
+    """
+    try:
+        from .asr_meta import fingerprint, load_asr_meta
+        return fingerprint(load_asr_meta(cfg, ""))
+    except Exception:
+        return None
+
+
 def instruction_source_files(cfg) -> list:
     """收集管线实际会读取的指令源文件（存在才收录），对齐加载侧
     pipeline_v2._load_v2_instruction 的读取集合：
@@ -285,6 +318,9 @@ _CONFIG_FIELDS = (
     "v2_concurrency",
     "v2_ctx_local",
     "v2_keep_untranslated",
+    # 闸门0：档位与保险阀阈值都直接影响送翻条目集合，必须参与指纹
+    "v2_source_filter",
+    "v2_source_filter_valve_pct",
     "premerge_enabled",
     # P1-5：影响产物内容的收口字段（温度/预合并阈值变化须使旧 manifest 失效）。
     # 刻意不加入：timeout_llm/timeout_http/timeout_probe/v2_concurrency_max——
@@ -293,6 +329,11 @@ _CONFIG_FIELDS = (
     "temperature_local",
     "premerge_max_gap_s",
     "premerge_max_items",
+    # 预合并硬上限（RC3）：跨度/字符/碎片阈值直接决定合并结果，
+    # 影响产物内容，必须参与指纹。
+    "premerge_max_span_ms",
+    "premerge_max_chars",
+    "premerge_min_fragment_chars",
     "tm_enabled",
     "tm_threshold",
     "tm_fuzzy_inject",
@@ -327,6 +368,8 @@ def compute_config_hash(cfg) -> str:
             "".join(compute_file_sha1(p) + "\n" for p in files).encode("ascii")
         ).hexdigest() if files else None)
     payload["cleaner_config_dir_hash"] = compute_dir_hash(getattr(cfg, "cleaner_config_dir", None))
+    payload["gate0_rules_sha1"] = _gate0_rules_sha1()
+    payload["asr_meta_sha1"] = _asr_meta_sha1(cfg)
     payload["stages"] = [
         {name: getattr(s, name, None) for name in _STAGE_FIELDS}
         for s in (getattr(cfg, "stages", None) or [])

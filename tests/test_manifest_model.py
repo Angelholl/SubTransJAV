@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import types
 
 from subtransjav.refine.config import StageConfig
@@ -40,6 +41,8 @@ def _make_cfg(**overrides) -> types.SimpleNamespace:
     cfg.v2_concurrency = 1
     cfg.v2_ctx_local = 32768
     cfg.v2_keep_untranslated = "original"
+    cfg.v2_source_filter = "default"
+    cfg.v2_source_filter_valve_pct = 50
     cfg.premerge_enabled = True
     cfg.tm_enabled = True
     cfg.tm_threshold = 0.85
@@ -285,6 +288,75 @@ def test_config_hash_sensitive_to_rules_yaml(tmp_path, monkeypatch):
     assert compute_config_hash(_make_cfg()) != h1
 
 
+# ---------------------------------------------------------------------------
+# 闸门0 指纹扩展：档位 / 保险阀阈值 / 规则库语义内容（R1）
+# ---------------------------------------------------------------------------
+
+# 满足全部必填键的最小闸门0 规则库
+_GATE0_RULES_YAML = """\
+schema_version: 1
+keep_list: [テスト]
+pure_punctuation: {example: "。。。"}
+exclamation: {min_run: 2, example: "！！！"}
+unpronounceable: {min_len: 2, example: sssss}
+repeat_loop: {min_run: 4, min_norm_len: 2, example: みんな}
+end_meta: {window_ratio: 0.1, words_ja: [チャンネル登録], \
+words_en: [subscribe], example: チャンネル登録}
+isolated_response: {words: [うんうん], strict_min_run: 4, \
+strict_max_ratio: 0.5, example: うんうん}
+nonsense_syllables: {min_len: 3, intra_repeat_min: 6, \
+unit_repeat_min: 4, example: あじゃあじゃ}
+"""
+
+
+def _rewrite_rules_bumping_mtime(path, text, stamp):
+    """重写规则文件并显式递增 mtime（绕开加载侧 (path, mtime) 缓存）。"""
+    path.write_text(text, encoding="utf-8")
+    os.utime(str(path), (stamp, stamp))
+
+
+def test_config_hash_sensitive_to_gate0_fields():
+    """闸门0 档位与保险阀阈值都参与 config_hash（任一变化即失效）。"""
+    base = compute_config_hash(_make_cfg())
+    assert compute_config_hash(_make_cfg(v2_source_filter="strict")) != base
+    assert compute_config_hash(_make_cfg(v2_source_filter="off")) != base
+    assert compute_config_hash(_make_cfg(v2_source_filter_valve_pct=60)) != base
+
+
+def test_config_hash_tracks_gate0_rules_semantic_content(tmp_path, monkeypatch):
+    """gate0_rules_sha1 是解析后语义内容哈希：内容变 → 指纹变；
+    路径不变、内容还原 → 指纹还原（非原始文件字节哈希）。"""
+    import subtransjav.refine.source_hallucination as sh
+    rules_file = tmp_path / "source_hallucination.yaml"
+    _rewrite_rules_bumping_mtime(rules_file, _GATE0_RULES_YAML,
+                                 1_700_000_000)
+    monkeypatch.setattr(sh, "_resolve_rules_path",
+                        lambda config_dir=None: str(rules_file))
+    h1 = compute_config_hash(_make_cfg())
+
+    # 语义内容变化（keep_list 增词）→ 指纹必变
+    changed = _GATE0_RULES_YAML.replace(
+        "keep_list: [テスト]", "keep_list: [テスト, 追加語]")
+    _rewrite_rules_bumping_mtime(rules_file, changed, 1_700_000_100)
+    assert compute_config_hash(_make_cfg()) != h1
+
+    # 路径不变、内容还原 → 指纹还原（文件被重写过，字节级时间不同也无妨）
+    _rewrite_rules_bumping_mtime(rules_file, _GATE0_RULES_YAML,
+                                 1_700_000_200)
+    assert compute_config_hash(_make_cfg()) == h1
+
+
+def test_config_hash_tolerates_missing_gate0_rules(tmp_path, monkeypatch):
+    """规则库解析不可得 → gate0_rules_sha1 记 None，指纹计算不崩。"""
+    import subtransjav.refine.source_hallucination as sh
+    rules_file = tmp_path / "source_hallucination.yaml"
+    rules_file.write_text("keep_list: [ broken", encoding="utf-8")
+    monkeypatch.setattr(sh, "_resolve_rules_path",
+                        lambda config_dir=None: str(rules_file))
+    h = compute_config_hash(_make_cfg())
+    assert len(h) == 40
+
+
 def test_v2_template_constants_pinned_to_pipeline():
     """契约：manifest 侧角色卡文件名/槽位必须与 pipeline_v2 加载侧一致（防漂移）。"""
     import subtransjav.refine.manifest as mf
@@ -340,6 +412,60 @@ def test_config_hash_tolerates_bare_namespace():
 
 
 # ---------------------------------------------------------------------------
+# H4a：上游 ASR 信号指纹（asr_meta_sha1 进 config_hash，R1）
+# ---------------------------------------------------------------------------
+
+def _write_run_meta(directory, payload):
+    directory.mkdir(parents=True, exist_ok=True)
+    p = directory / "whisperjav_run.json"
+    p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def test_config_hash_tolerates_missing_asr_meta_field():
+    """cfg 无 asr_meta 字段（简易 namespace）：指纹照常计算，信号记 None。"""
+    h = compute_config_hash(_make_cfg())
+    assert len(h) == 40
+
+
+def test_config_hash_tracks_asr_meta_signal_presence(tmp_path):
+    """信号从无到有 → 指纹变（旧产物失效，R1 语义）。"""
+    _write_run_meta(tmp_path / "run1", {"status": "ok", "mileage_pct": 42})
+    h0 = compute_config_hash(_make_cfg())
+    h1 = compute_config_hash(_make_cfg(asr_meta=str(tmp_path / "run1")))
+    assert h1 != h0
+
+
+def test_config_hash_asr_meta_same_content_different_path_stable(tmp_path):
+    """同内容不同路径 → 指纹不变（asr_meta 路径刻意不参与指纹，防误失效）。"""
+    _write_run_meta(tmp_path / "run1", {"status": "ok", "mileage_pct": 42})
+    _write_run_meta(tmp_path / "run2", {"coverage": 0.42, "state": "OK"})
+    h1 = compute_config_hash(_make_cfg(asr_meta=str(tmp_path / "run1")))
+    h2 = compute_config_hash(_make_cfg(asr_meta=str(tmp_path / "run2")))
+    assert h1 == h2
+
+
+def test_config_hash_asr_meta_content_change_invalidates(tmp_path):
+    """信号内容变化（status 漂移 / 覆盖率变化）→ 指纹必变。"""
+    meta = _write_run_meta(tmp_path / "run1", {"status": "ok"})
+    h1 = compute_config_hash(_make_cfg(asr_meta=str(meta)))
+    meta.write_text(json.dumps({"status": "suspect"}), encoding="utf-8")
+    assert compute_config_hash(_make_cfg(asr_meta=str(meta))) != h1
+    meta.write_text(json.dumps({"status": "ok", "mileage_pct": 10}),
+                    encoding="utf-8")
+    assert compute_config_hash(_make_cfg(asr_meta=str(meta))) != h1
+
+
+def test_config_hash_asr_meta_corrupt_file_tolerated(tmp_path):
+    """显式 manifest 损坏 → 无信号（None），指纹计算不崩。"""
+    meta = tmp_path / "run1"
+    meta.mkdir()
+    (meta / "whisperjav_run.json").write_text("{broken", encoding="utf-8")
+    h = compute_config_hash(_make_cfg(asr_meta=str(meta)))
+    assert len(h) == 40
+
+
+# ---------------------------------------------------------------------------
 # 指纹工具函数
 # ---------------------------------------------------------------------------
 
@@ -386,9 +512,16 @@ def test_delete_resume_artifacts_deletes_only_targets(tmp_path):
     assert delete_resume_artifacts(str(tmp_path), "ep01") == []   # 无文件可删
     manifest_file = tmp_path / "ep01_manifest.json"
     refine_a = tmp_path / "ep01_refine_A.srt"
+    gate0_report = tmp_path / "ep01_幻觉处置报告.json"
+    quarantine = tmp_path / "ep01_隔离区.srt"
     manifest_file.write_text("{}", encoding="utf-8")
     refine_a.write_text("1\n00:00:00,000 --> 00:00:01,000\n原\n", encoding="utf-8")
+    gate0_report.write_text("{}", encoding="utf-8")   # H3：旧报告同属恢复类现场
+    quarantine.write_text("1\n00:00:00,000 --> 00:00:01,000\n疑\n",
+                          encoding="utf-8")           # H5：旧隔离区同属恢复类现场
     removed = delete_resume_artifacts(str(tmp_path), "ep01")
-    assert sorted(removed) == ["ep01_manifest.json", "ep01_refine_A.srt"]
+    assert sorted(removed) == ["ep01_manifest.json", "ep01_refine_A.srt",
+                               "ep01_幻觉处置报告.json", "ep01_隔离区.srt"]
     assert not manifest_file.exists() and not refine_a.exists()
+    assert not gate0_report.exists() and not quarantine.exists()
     assert keep1.exists() and keep2.exists()               # 其余产物不动

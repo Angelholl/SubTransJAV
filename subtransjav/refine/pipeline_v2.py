@@ -19,6 +19,7 @@ v2 两阶段流水线编排
 
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import re
@@ -30,9 +31,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .asr_meta import SUSPECT_STATUSES, load_asr_meta
 from .config import (
     DEEPSEEK_BASE_DEFAULT,
-    DEFAULT_PREMERGE_MAX_GAP_S,
     DEFAULT_PREMERGE_MAX_ITEMS,
     RefineConfig,
     ensure_language_support,
@@ -64,6 +65,7 @@ from .pipeline_support import (
     refine_tmp_dir,
 )
 from .risk import SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_WARNING, RiskCollector
+from .source_hallucination import apply_source_filter, quarantine_review
 from .tm import TranslationMemory
 
 logger = logging.getLogger(__name__)
@@ -112,6 +114,9 @@ V2_STAGE_PROMPTS = {
 # （保留模块别名，历史引用不变）
 DEEPSEEK_BASE_URL = DEEPSEEK_BASE_DEFAULT
 UNTRANSLATED_PREFIX = "[未翻译] "
+
+# H3 幻觉处置报告：已删条目样本上限（防大文件撑爆报告体积）
+_GATE0_REPORT_SAMPLE_CAP = 50
 
 # LLM 客户端 ⏳ 进度文本（"批次 3/63"）→ phase_progress 事件载荷的解析规则
 _BATCH_PROGRESS_RE = re.compile(r"批次\s*(\d+)\s*/\s*(\d+)")
@@ -239,21 +244,39 @@ _PREMERGE_COMPLETE_END = re.compile(
     r"(?:です|ます|んだ|のだ|よね|ない|た|だ|か[。？?]?|[。！？?！])\s*$")
 # 省略号/波浪线收尾：刻意的戏剧停顿，不参与 ≤1.0s 强制合并档
 _PREMERGE_TRAILING = re.compile(r"(?:…|⋯|〜|~)\s*$")
+# 连续的尾部省略号/波浪线（可重叠多个）：剥离后使句末判定作用于真实句尾
+_PREMERGE_PAUSE_TAIL = re.compile(r"(?:…|⋯|〜|~)+\s*$")
 # P1-5：阈值收口到 config（模块常量仅为无 cfg 直调时保留历史默认值）
-_PREMERGE_MAX_SPAN = DEFAULT_PREMERGE_MAX_GAP_S   # 合并后总时长上限（秒）
+_PREMERGE_MAX_SPAN = 5.0              # 无 cfg 直调时的回退跨度上限（秒），与 premerge_max_span_ms 默认 5000ms 对齐；premerge_max_gap_s 不再兼任此职
+_PREMERGE_MAX_SPAN_MS = 5000          # 无 cfg 直调时的回退跨度硬上限（毫秒，= _PREMERGE_MAX_SPAN×1000）
 _PREMERGE_MAX_COUNT = DEFAULT_PREMERGE_MAX_ITEMS  # 合并条数上限
+_PREMERGE_MAX_CHARS = 80              # 无 cfg 直调时的回退合并文本字符上限
+_PREMERGE_MIN_FRAGMENT_CHARS = 6      # 无 cfg 直调时的回退语义断裂档短碎片阈值（字符）
+
+
+def _strip_trailing_pause(text):
+    """剥离尾部连续省略号/波浪线（戏剧停顿标记），使句末判定作用于真实句尾。"""
+    return _PREMERGE_PAUSE_TAIL.sub("", text)
 
 
 def _premerge_entries(entries: list, cfg: RefineConfig = None) -> list:
     """断句修复：按角色卡预处理标准合并被 ASR 错误切割的相邻碎片。
 
-    cfg 提供时使用 cfg.premerge_max_gap_s / cfg.premerge_max_items
-    （用户可调）；缺省回退历史默认值（兼容无 cfg 的直调/单测）。
+    cfg 提供时使用 cfg.premerge_max_span_ms / cfg.premerge_max_items /
+    cfg.premerge_max_chars / cfg.premerge_min_fragment_chars（用户可调）；
+    缺省回退模块常量（兼容无 cfg 的直调/单测）。premerge_max_gap_s
+    不再参与合并判定（跨度上限职责已移交 premerge_max_span_ms）。
     """
-    max_span = _PREMERGE_MAX_SPAN
+    max_span_ms = _PREMERGE_MAX_SPAN_MS
+    max_chars = _PREMERGE_MAX_CHARS
+    min_fragment = _PREMERGE_MIN_FRAGMENT_CHARS
     max_count = _PREMERGE_MAX_COUNT
     if cfg is not None:
-        max_span = float(getattr(cfg, "premerge_max_gap_s", _PREMERGE_MAX_SPAN))
+        max_span_ms = int(getattr(cfg, "premerge_max_span_ms",
+                                  _PREMERGE_MAX_SPAN_MS))
+        max_chars = int(getattr(cfg, "premerge_max_chars", _PREMERGE_MAX_CHARS))
+        min_fragment = int(getattr(cfg, "premerge_min_fragment_chars",
+                                   _PREMERGE_MIN_FRAGMENT_CHARS))
         max_count = int(getattr(cfg, "premerge_max_items", _PREMERGE_MAX_COUNT))
     if not entries:
         return entries
@@ -275,28 +298,39 @@ def _premerge_entries(entries: list, cfg: RefineConfig = None) -> list:
         if not prev_text or not cur_text:
             merged.append(dict(e))
             continue
+        # 剥离尾部戏剧停顿标记后再做句末/助词判定（RC1：行尾省略号曾使
+        # 「です/ます」句末判定失效，导致完整句被误判为断裂而合并）
+        prev_core = _strip_trailing_pause(prev_text)
 
         # 合并判定（角色卡标准）
         allow = False
-        if gap <= 1.0 and _PREMERGE_AUX_END.search(prev_text):
-            allow = True                       # 助词/省略号结尾 → ≤1.0s 强制
+        if gap <= 1.0 and _PREMERGE_AUX_END.search(prev_core):
+            allow = True                       # 助词结尾（剥离停顿后）→ ≤1.0s 强制
         elif gap <= 0.5 and (
                 _PREMERGE_INCOMPLETE_START.match(cur_text)
-                or not _PREMERGE_COMPLETE_END.search(prev_text)):
-            allow = True                       # 语义断裂 → ≤0.5s 合并
+                or (not _PREMERGE_COMPLETE_END.search(prev_core)
+                    and len(cur_text) < min_fragment)):
+            allow = True                       # 语义断裂 → ≤0.5s 合并（接续词档
+                                               # 不限长度；「上行未完成 + 下行短
+                                               # 碎片」档要求下行是短碎片）
         # 否决：前条以省略号/波浪线收尾（刻意的戏剧停顿），后条自身是
-        # 完整句 → 属独立字幕，不是 ASR 碎片（无论 gap 多小、走哪个档
-        # 都不合并；如「ボクたち、水泳部の部長で…」+「誰もが一目置くエース。」）
+        # 完整句、或同样以停顿收尾 → 属独立字幕，不是 ASR 碎片（无论
+        # gap 多小、走哪个档都不合并；如「ボクたち、水泳部の部長で…」+
+        # 「誰もが一目置くエース。」）
         if _PREMERGE_TRAILING.search(prev_text) \
-                and _PREMERGE_COMPLETE_END.search(cur_text):
+                and (_PREMERGE_COMPLETE_END.search(cur_text)
+                     or _PREMERGE_TRAILING.search(cur_text)):
             allow = False
         # 禁止：两条都是完整陈述句（各自语义完整）
         if allow and _PREMERGE_COMPLETE_END.search(prev_text) \
                 and _PREMERGE_COMPLETE_END.search(cur_text) and gap > 0.2:
             allow = False
-        # 禁止：超长/超条数
+        # 禁止：超长/超条数（RC3：独立硬跨度上限 ms；round() 防浮点毛刺，
+        # 精确边界"5000ms 过 / 5001ms 拒"；文本按合并双方字符数之和设上限）
         n_prev = prev.get("_merge_count", 1)
-        if merged_dur > max_span or n_prev >= max_count:
+        if round(merged_dur * 1000) > max_span_ms \
+                or len(prev_text) + len(cur_text) > max_chars \
+                or n_prev >= max_count:
             allow = False
 
         if allow:
@@ -950,6 +984,84 @@ def _atomic_write_text(path: str, text: str):
             os.unlink(tmp)
 
 
+def _atomic_write_json(path: str, payload: dict):
+    """原子写 JSON 报告：同目录临时文件 + os.replace（与 _atomic_write_text 同款）。"""
+    import tempfile
+    p = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+
+
+# ---------------------------------------------------------------------------
+# H3 幻觉处置报告 / H4a 上游 ASR 信号接线
+# ---------------------------------------------------------------------------
+
+def _asr_meta_min_coverage_pct(cfg) -> float:
+    """上游语音覆盖率告警阈值；非法值静默回退默认 30（该链路一贯容错）。"""
+    try:
+        return float(getattr(cfg, "v2_asr_meta_min_coverage_pct", 30))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def _build_gate0_report(source_name: str, stats: dict, upstream: dict,
+                        samples: list, quarantine: dict = None) -> dict:
+    """构造 {stem}_幻觉处置报告.json payload（schema 契约由
+    tests/test_pipeline_v2.py 钉住）。
+
+    gate0_ran 恒为 True：闸门0 在管线头部无条件执行（受信 resume 下
+    幂等——指纹校验保证规则/档位/信号语义与原次一致），报告如实
+    记录真实计数，不做归零处理（D2026-0914-01 追记裁决）。
+
+    quarantine 参数：隔离区结论（{"candidates", "quarantined", "file"}）。
+    省略时（直调/单测）为"回捞未执行"基线——candidates 按 stats 如实
+    计数，quarantined/file 记 null（final 回捞尚未判定）。报告另含
+    noise_left_empty（H5-7：计数类/候选类条目中被 LLM 留空删除的数量，
+    管线在阶段A 后回填 stats，本函数如实透传）。
+    """
+    tripped = bool(stats.get("valve_tripped"))
+    if quarantine is None:
+        quarantine = {"candidates": len(stats.get("quarantine_candidates")
+                                        or []),
+                      "quarantined": None, "file": None}
+    return {
+        "report_version": 1,
+        "source": source_name,
+        "gate0_ran": True,
+        "mode": stats.get("mode"),
+        "total": stats.get("total", 0),
+        "deleted": stats.get("deleted", 0),
+        "detected_total": stats.get("detected_total", 0),
+        "valve": {
+            "tripped": tripped,
+            "pct": stats.get("valve_pct"),
+            "message": ("拦截率超阈值，本文件降级为只计数模式" if tripped else None),
+        },
+        "categories": stats.get("categories") or {},
+        "samples": list(samples or []),
+        "upstream": upstream,
+        "quarantine": quarantine,
+        "noise_left_empty": stats.get("noise_left_empty", 0),
+    }
+
+
+def _gate0_summary_line(stats: dict) -> str:
+    """R8：每文件闸门0 计数行（经 collector.summary_lines 聚合输出）。"""
+    valve_word = "触发降级只计数" if stats.get("valve_tripped") else "保险阀未触发"
+    return (f"🚪 闸门0：删除 {stats.get('deleted', 0)}"
+            f"/原始 {stats.get('total', 0)}，"
+            f"检出计数 {stats.get('detected_total', 0)}"
+            f"（{stats.get('mode', 'default')} 档，{valve_word}）")
+
+
 def filter_stage_output_srt(srt_content: str, stage_index: int,
                             target: str) -> tuple:
     """对条目列表（而非文件路径）执行语言白名单校验。"""
@@ -1229,6 +1341,81 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
     if not orig_entries:
         raise RefineError("输入 SRT 无有效条目")
 
+    # H4a：上游 ASR 运行信号（whisperjav_run.json）——先于闸门0 加载；
+    # run 状态可疑时收紧闸门0（tighten），覆盖率过低仅告警。
+    # asr_meta 模块只出信号不 import risk：风险接线由本层完成，全程容错。
+    asr_meta = load_asr_meta(cfg, in_path)
+    upstream_block = {
+        "present": bool(asr_meta.get("present")),
+        "status": asr_meta.get("status"),
+        "mileage_pct": asr_meta.get("mileage_pct"),
+        "stale": bool(asr_meta.get("stale")),
+        "file": asr_meta.get("file"),
+        "warnings": list(asr_meta.get("warnings") or []),
+    }
+    tighten = False
+    status_signal = asr_meta.get("status")
+    if status_signal in SUSPECT_STATUSES:
+        tighten = True
+        print(f"⚠️ 上游 ASR 信号：run 状态={status_signal}，转写可信度低"
+              f"（闸门0 按收紧规则执行）")
+        collector.add(stage="gate0", file=fname,
+                      reason=f"上游 ASR 信号：run 状态={status_signal}，转写可信度低",
+                      action="闸门0 按收紧覆盖块执行（tighten）",
+                      severity=SEVERITY_WARNING)
+        upstream_block["warnings"].append(
+            f"run 状态={status_signal}，转写可信度低，闸门0 已收紧")
+    mileage = asr_meta.get("mileage_pct")
+    min_cov = _asr_meta_min_coverage_pct(cfg)
+    if mileage is not None and mileage < min_cov:
+        collector.add(stage="gate0", file=fname,
+                      reason=f"上游 ASR 语音覆盖率 {mileage:g}% "
+                             f"低于阈值 {min_cov:g}%",
+                      suggestion="建议检查上游转写质量或重跑上游 ASR",
+                      severity=SEVERITY_WARNING)
+        upstream_block["warnings"].append(
+            f"语音覆盖率 {mileage:g}% 低于阈值 {min_cov:g}%")
+
+    # 闸门0：送翻前源侧幻觉检测（预合并前对原始条目生效，两档 profile 均执行；
+    # gate0_stats 由幻觉处置报告与 gate0_summary 事件消费）。
+    # H5：候选 position 指向本次检测输入，先留快照供条目编号对齐。
+    gate0_input = orig_entries
+    orig_entries, gate0_stats = apply_source_filter(
+        orig_entries, cfg, source_name=fname, tighten=tighten,
+        samples_limit=_GATE0_REPORT_SAMPLE_CAP)
+    # H5：候选原始下标 → 条目编号 对齐表 + 计数类/候选类条目编号集合
+    # （隔离区回捞与 noise_left_empty 核对共用；候选仅保险阀降级路径非空）
+    _cands = gate0_stats.get("quarantine_candidates") or []
+    gate0_source_lookup = {
+        c["position"]: gate0_input[c["position"]].get("index")
+        for c in _cands if 0 <= c["position"] < len(gate0_input)}
+    _noise_pos = ({c["position"] for c in _cands}
+                  | set(gate0_stats.get("count_positions") or []))
+    gate0_noise_indexes = {gate0_input[p].get("index") for p in _noise_pos
+                           if 0 <= p < len(gate0_input)}
+
+    # 保险阀触发：第三种入风险清单的情形（warning 级）
+    if gate0_stats.get("valve_tripped"):
+        collector.add(stage="gate0", file=fname,
+                      reason=f"闸门0 保险阀触发（拦截率超过 "
+                             f"{gate0_stats.get('valve_pct')}%），降级为只计数",
+                      action="保留幻觉行送翻（只计数不删除）",
+                      affected_count=int(gate0_stats.get("detected_total") or 0),
+                      severity=SEVERITY_WARNING)
+    # R8：每文件闸门0 计数行，走 summary_lines 聚合输出
+    collector.add_summary_line(_gate0_summary_line(gate0_stats))
+    # NDJSON 只增：每文件闸门0 执行后发一次 gate0_summary
+    # （payload=报告去 samples 的摘要，含 valve；gate0 执行如实记 True；
+    #   quarantine 的 quarantined/file 在此时尚未回捞判定，如实记 null）
+    gate0_report_now = _build_gate0_report(
+        fname, gate0_stats, upstream_block,
+        samples=gate0_stats.get("samples") or [],
+        quarantine={"candidates": len(_cands), "quarantined": None,
+                    "file": None})
+    emitter.emit("gate0_summary", phase="gate0", file=fname,
+                 payload={k: v for k, v in gate0_report_now.items()
+                          if k != "samples"})
+
     # 断句预合并：修复 ASR 错误切割（代码层确定性步骤，两档 profile 均启用）
     premerge_merged = 0
     if cfg.premerge_enabled:
@@ -1238,6 +1425,12 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
         if premerge_merged:
             print(f"   🔗 断句预合并: {n0} → {len(orig_entries)} 条"
                   f"（修复 ASR 错误切割）")
+            if premerge_merged / n0 > 0.25:
+                collector.add(stage="premerge", file=fname,
+                              reason=f"预合并占比过高: {premerge_merged}/{n0} 条被合并（>25%）",
+                              action="如非预期，可调低 premerge_max_span_ms / "
+                                     "premerge_max_chars 或关闭 premerge_enabled",
+                              severity=SEVERITY_INFO)
 
     print("=" * 60)
     print(f"🚀 [refine-v2] 输入: {Path(in_path).name}")
@@ -1287,6 +1480,10 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
             if a_result.failed:
                 manifest.stages["A"].status = "degraded"
             save_manifest(m_path, manifest)
+        # H5-7：阶段A 留空执行率核对——计数类/候选类条目中被 LLM 留空
+        # 删除的数量（resume 复用阶段A 时 deleted 为空集，如实记 0）
+        gate0_stats["noise_left_empty"] = len(
+            gate0_noise_indexes & set(a_result.deleted))
         emitter.emit("phase_finished", phase="A", file=fname, payload={
             "entries": len(a_result.entries),
             "degraded_count": len(a_result.failed),
@@ -1314,6 +1511,14 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
         normal_entries = _filter_language(cfg, normal_entries, 3)
         final_entries = sorted(normal_entries + keep_entries,
                                key=lambda e: _timing_span(e["timing"])[0])
+        # ---- H5 翻译后回捞：源文高置信幻觉 × 译文流畅中文 → 隔离区 ----
+        # 只移动不删除（候选条目落盘 {stem}_隔离区.srt 供人工复核）；
+        # 无候选（default 正常删除 / off 档）时零开销跳过
+        quarantine_entries: list = []
+        if gate0_stats.get("quarantine_candidates"):
+            final_entries, quarantine_entries = quarantine_review(
+                final_entries, gate0_stats["quarantine_candidates"],
+                gate0_source_lookup)
         n_kept = len(keep_entries)
         emitter.emit("phase_finished", phase="B", file=fname, payload={
             "entries": len(final_entries), "degraded_count": n_kept,
@@ -1422,11 +1627,37 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
             print(f"\n📋 风险清单已生成: {Path(reports['md']).name}")
 
         # ---- 任务成功完成：清理断点恢复类中间文件 ----
-        # （清单已完成使命；{stem}_manifest.json 与 {stem}_refine_A.srt
-        #   留着只会误导下一次 --resume；tmp_dir 中的指令副本同样不再需要）
+        # （清单已完成使命；{stem}_manifest.json、{stem}_refine_A.srt 与
+        #   上一轮的 {stem}_幻觉处置报告.json 留着只会误导下一次 --resume；
+        #   tmp_dir 中的指令副本同样不再需要）
         delete_resume_artifacts(out_dir, stem)
         _remove_tmp_dir(tmp_dir)
         print("🧹 恢复类中间文件已清理")
+
+        # ---- H5 隔离区落盘 + H3 幻觉处置报告 ----
+        # （均置于恢复类清理之后一环，避免被本次运行的清理误删；
+        #   隔离区仅非空时写，空则不落文件——上一轮残留已随清理删除）
+        quarantine_file = None
+        if quarantine_entries:
+            quarantine_file = f"{stem}_隔离区.srt"
+            _atomic_write_text(str(Path(out_dir) / quarantine_file),
+                               build_srt(quarantine_entries))
+            line = (f"📪 隔离区：{len(quarantine_entries)} 条存疑译文已移出主稿，"
+                    f"见 {quarantine_file}")
+            print(f"   {line}")
+            # R8 口径：信息行走 summary_lines 聚合，不计入风险事件
+            collector.add_summary_line(line)
+        # H3 报告与 manifest 同目录口径，final 输出阶段原子写；
+        # resume 复用阶段A 的运行同样落报告：闸门0 在管线头部无条件执行
+        # （受信 resume 下幂等），报告如实记录真实计数（D2026-0914-01 追记裁决）
+        gate0_report = _build_gate0_report(
+            fname, gate0_stats, upstream_block,
+            samples=gate0_stats.get("samples") or [],
+            quarantine={"candidates": len(_cands),
+                        "quarantined": len(quarantine_entries),
+                        "file": quarantine_file})
+        _atomic_write_json(str(Path(out_dir) / f"{stem}_幻觉处置报告.json"),
+                           gate0_report)
     finally:
         if tm:
             with contextlib.suppress(Exception):

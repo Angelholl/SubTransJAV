@@ -2,6 +2,26 @@
 
 本项目的所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布 - 1.2.0]
+
+### 修复
+
+- **断句预合并过度合并**：行尾省略号使「です/ます」句末判定失效导致完整句被误合并、双省略号否决条款缺失、合并跨度复用 `premerge_max_gap_s`（8.0s）无独立硬上限——三处根因一并修复：句末判定前剥离尾部停顿标记、否决条款覆盖「前省略号+后省略号」、新增跨度（毫秒）与字符硬上限；新增 `premerge_max_span_ms`（默认 5000）/ `premerge_max_chars`（默认 80）/ `premerge_min_fragment_chars`（默认 6）三个配置并纳入 `--resume` 指纹。
+
+### 新增
+
+- **双幻觉防护·闸门0**：送翻前源侧幻觉检测（`--source-filter strict|default|off`，默认 default）。七类别分档：纯标点行/`!`串/不可发音辅音串/重复循环/片尾元信息在 default 档即删（白名单词任何档位不删除），孤立应答词/无意义音节连缀仅计数可见。规则库 `config/rules/source_hallucination.yaml` 可整文件覆盖。
+- **幻觉处置报告**：每文件生成 `{字幕名}_幻觉处置报告.json`（类别计数/样本/保险阀状态/上游信号/隔离区），运行摘要显式输出闸门0 计数；删除条目归档 `Errors/dropped_entries.log`（新增 `dropped_log_rotate_mb` 轮转，默认 5MB）。
+- **保险阀**：单文件拦截率超过 `v2_source_filter_valve_pct`（默认 50%）时降级为只计数，防 ASR 整体崩坏场景误删。
+- **上游信号通道**：`--asr-meta` 读取上游 WhisperJAV v1.9.2 运行清单（`whisperjav_run.json`，支持旁车自动发现与新鲜度校验）；suspect/empty/failed 信号触发显著警告、风险清单告警与闸门0 收紧（仅收紧高精确率类别，永不删除应答词类）；语义指纹参与 `--resume` 校验。
+- **隔离区**：保险阀降级/关闭闸门0 时，源文高置信幻觉但译文"通顺"的条目移入 `{字幕名}_隔离区.srt` 供人工复核，处置报告同步标注。
+- **NDJSON 事件只增**：新增 `gate0_summary` 事件（protocol_version 保持 1，原九类不变）。
+
+### 变更
+
+- **行为差异**：default 档下同一输入的成品条目数可能少于 1.1（源侧幻觉条目在送翻前被删除）；需要完整复现 1.1 行为请使用 `--source-filter off`。详见手册第 7 节"双幻觉防护"。
+- 上游信号通道要求上游 WhisperJAV v1.9.2+ 产出 manifest；旧版上游/whisper 系模式产物仍可正常精修（闸门0 同样生效）。
+
 ## [1.1.0] - 2026-09-12
 
 ### 新增

@@ -211,3 +211,54 @@ def test_cli_invalid_event_format_exits_2(tmp_path, monkeypatch):
     assert ei.value.code == 2
     # 不应产生运行日志（在解析阶段即终止）
     assert not list((tmp_path / "Logs").glob("*.txt"))
+
+
+# ---------------------------------------------------------------------------
+# 闸门0：--source-filter 三档
+# ---------------------------------------------------------------------------
+
+def test_cli_source_filter_modes(tmp_path):
+    """--source-filter 三档逐一解析落 cfg.v2_source_filter。"""
+    for value in ("strict", "default", "off"):
+        args = build_parser().parse_args([
+            "-i", str(tmp_path / "x.srt"), "--source-filter", value])
+        cfg = config_from_args(args)
+        assert cfg.v2_source_filter == value
+
+
+def test_cli_source_filter_default_keeps_std_gate(tmp_path):
+    """默认 default 档（闸门0 开启，仅明确幻觉删除）。"""
+    args = build_parser().parse_args(["-i", str(tmp_path / "x.srt")])
+    cfg = config_from_args(args)
+    assert cfg.v2_source_filter == "default"
+
+
+def test_cli_invalid_source_filter_exits_2(tmp_path, monkeypatch):
+    """--source-filter 非法值：argparse 报错并退出码 2（仿 --event-format）。"""
+    _isolate_logs(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit) as ei:
+        main(["-i", _write_input(tmp_path), "--source-filter", "bogus"])
+    assert ei.value.code == 2
+    assert not list((tmp_path / "Logs").glob("*.txt"))
+
+
+# ---------------------------------------------------------------------------
+# H4a：--asr-meta（上游 WhisperJAV 运行 manifest）
+# ---------------------------------------------------------------------------
+
+def test_cli_asr_meta_default_empty_means_auto_discovery(tmp_path):
+    """默认空串：自动发现 SRT 旁车 whisperjav_run.json 的语义。"""
+    args = build_parser().parse_args(["-i", str(tmp_path / "x.srt")])
+    cfg = config_from_args(args)
+    assert cfg.asr_meta == ""
+
+
+def test_cli_asr_meta_wired_to_config(tmp_path):
+    """--asr-meta 解析并接线到 cfg.asr_meta（文件/目录路径透传）。"""
+    meta_path = tmp_path / "run" / "whisperjav_run.json"
+    meta_path.parent.mkdir()
+    meta_path.write_text("{}", encoding="utf-8")
+    args = build_parser().parse_args([
+        "-i", str(tmp_path / "x.srt"), "--asr-meta", str(meta_path)])
+    cfg = config_from_args(args)
+    assert cfg.asr_meta == str(meta_path)

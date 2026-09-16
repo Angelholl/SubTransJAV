@@ -147,6 +147,64 @@ def test_invalid_event_type_raises_value_error():
 
 
 # ---------------------------------------------------------------------------
+# H3：gate0_summary 事件（只增不改：原九类与协议版本不变）
+# ---------------------------------------------------------------------------
+
+def test_gate0_summary_appended_without_touching_originals():
+    """EVENT_TYPES 追加 gate0_summary（第 10 类），原九类顺序内容不变，
+    PROTOCOL_VERSION 保持 1（字段布局未变，只增事件类型）。"""
+    assert EVENT_TYPES == (
+        "task_started",
+        "phase_started",
+        "phase_progress",
+        "phase_finished",
+        "warning",
+        "degraded",
+        "error",
+        "heartbeat",
+        "task_finished",
+        "gate0_summary",
+    )
+    assert PROTOCOL_VERSION == 1
+
+
+def test_gate0_summary_payload_roundtrip():
+    """gate0_summary 端到端：emit → 行解析 → payload 原样还原（含中文/嵌套结构）。"""
+    buf = io.StringIO()
+    em = EventEmitter(stream=buf, task_id="t")
+    payload = {
+        "report_version": 1,
+        "source": "demo.srt",
+        "gate0_ran": True,
+        "mode": "default",
+        "total": 10,
+        "deleted": 1,
+        "detected_total": 2,
+        "valve": {"tripped": False, "pct": 50, "message": None},
+        "categories": {"纯标点行": {"detected": 1, "deleted": 1}},
+        "upstream": {"present": True, "status": "ok", "mileage_pct": 45.0,
+                     "stale": False, "file": "whisperjav_run.json",
+                     "warnings": []},
+    }
+    em.emit("gate0_summary", phase="gate0", file="demo.srt", payload=payload)
+    lines = _lines(buf)
+    assert len(lines) == 1
+    ev = parse_event_line(lines[0])
+    assert ev is not None
+    assert ev["type"] == "gate0_summary"
+    assert ev["phase"] == "gate0" and ev["file"] == "demo.srt"
+    assert ev["payload"] == payload
+    # 原始行仍保证 ASCII 安全（GBK 控制台兼容）
+    assert lines[0].isascii()
+
+
+def test_invalid_type_still_rejected_after_gate0_summary_added():
+    em = EventEmitter(stream=io.StringIO(), task_id="t")
+    with pytest.raises(ValueError):
+        em.emit("gate0_summaryx")
+
+
+# ---------------------------------------------------------------------------
 # 心跳
 # ---------------------------------------------------------------------------
 

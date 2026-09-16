@@ -5,7 +5,11 @@ language_validator 回归测试
 """
 import pytest
 
-from subtransjav.refine.language_validator import is_valid_stage_text
+from subtransjav.refine import config as rc
+from subtransjav.refine.language_validator import (
+    DroppedEntryLog,
+    is_valid_stage_text,
+)
 
 
 class TestJaWhitelist:
@@ -195,3 +199,84 @@ class TestZhRulesUnchanged:
     def test_pipe_separator_unaffected_in_ja(self):
         """日文阶段不受该短路规则影响（" ||| "是阶段B合法输入格式）"""
         assert is_valid_stage_text("ほら ||| 中文参考", "ja") is True
+
+
+# ---------------------------------------------------------------------------
+# DroppedEntryLog 大小阈值轮转（1.2：修复追加累积无限增长）
+# ---------------------------------------------------------------------------
+
+_MB = 1024 * 1024
+
+
+class TestDroppedEntryLogRotation:
+    """dropped_entries.log 大小阈值轮转：超过 dropped_log_rotate_mb 时
+    旧内容轮转为 dropped_entries-<n>.log，主文件重新开始追加"""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_config(self, tmp_path, monkeypatch):
+        """配置隔离：真实 user_settings.json / 环境变量不干扰阈值解析。"""
+        monkeypatch.setattr(rc, "CONFIG_DIR", str(tmp_path))
+        monkeypatch.delenv("SUBTRANSJAV_DROPPED_LOG_ROTATE_MB",
+                           raising=False)
+
+    @staticmethod
+    def _make_log(tmp_path, size_bytes):
+        errors = tmp_path / "Errors"
+        errors.mkdir(parents=True, exist_ok=True)
+        (errors / "dropped_entries.log").write_text("x" * size_bytes,
+                                                    encoding="utf-8")
+        return errors
+
+    def test_rotate_above_threshold(self, tmp_path, monkeypatch):
+        """超过阈值：既有内容轮转到 -1.log，主文件重新开始"""
+        monkeypatch.setenv("SUBTRANSJAV_DROPPED_LOG_ROTATE_MB", "1")
+        errors = self._make_log(tmp_path, _MB + 1)
+        log = DroppedEntryLog(str(errors))
+
+        log.append("a.srt", 0, 1, "テスト", "乱码")
+
+        rotated = errors / "dropped_entries-1.log"
+        assert rotated.exists(), "旧内容必须轮转为 dropped_entries-1.log"
+        assert rotated.read_text(encoding="utf-8") == "x" * (_MB + 1)
+        main = (errors / "dropped_entries.log").read_text(encoding="utf-8")
+        assert main.startswith("["), "主文件应重新开始（仅含本次新写入）"
+        assert "テスト" in main and "a.srt" in main
+
+    def test_rotate_increments_seq_when_minus_one_exists(
+            self, tmp_path, monkeypatch):
+        """-1.log 已存在时轮转到 -2.log（序号取首个空位）"""
+        monkeypatch.setenv("SUBTRANSJAV_DROPPED_LOG_ROTATE_MB", "1")
+        errors = self._make_log(tmp_path, _MB + 1)
+        (errors / "dropped_entries-1.log").write_text("上一轮内容",
+                                                      encoding="utf-8")
+        log = DroppedEntryLog(str(errors))
+
+        log.append("a.srt", 0, 1, "テスト", "乱码")
+
+        assert (errors / "dropped_entries-2.log").read_text(
+            encoding="utf-8") == "x" * (_MB + 1)
+        assert (errors / "dropped_entries-1.log").read_text(
+            encoding="utf-8") == "上一轮内容", "既有轮转文件不得被覆盖"
+        assert "テスト" in (errors / "dropped_entries.log").read_text(
+            encoding="utf-8")
+
+    def test_no_rotate_below_threshold(self, tmp_path, monkeypatch):
+        """阈值以下：正常追加，不产生轮转文件"""
+        monkeypatch.setenv("SUBTRANSJAV_DROPPED_LOG_ROTATE_MB", "1")
+        errors = self._make_log(tmp_path, 1024)
+        log = DroppedEntryLog(str(errors))
+
+        log.append("a.srt", 0, 1, "テスト", "乱码")
+
+        assert not (errors / "dropped_entries-1.log").exists(), \
+            "阈值以下不得轮转"
+        main = (errors / "dropped_entries.log").read_text(encoding="utf-8")
+        assert main.startswith("x"), "既有内容必须保留（追加而非覆盖）"
+        assert "テスト" in main
+
+    def test_invalid_threshold_falls_back_to_default(self, monkeypatch):
+        """配置非法（<=0 / 类型非法）时回退默认 5MB，不抛异常"""
+        for bad in ("-3", "0", "abc"):
+            monkeypatch.setenv("SUBTRANSJAV_DROPPED_LOG_ROTATE_MB", bad)
+            assert DroppedEntryLog._resolve_rotate_mb() == \
+                rc.DEFAULT_DROPPED_LOG_ROTATE_MB, f"非法值 {bad!r} 应回退默认"

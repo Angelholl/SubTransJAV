@@ -5,6 +5,8 @@ LLM 客户端以假实现注入（不联网）。
 
 import io
 import json
+import types
+from pathlib import Path
 
 import pytest
 
@@ -859,15 +861,15 @@ def test_premerge_complete_sentences_not_merged():
 
 
 def test_premerge_respects_span_and_count_limits():
-    """合并后 >8s 或 >3 条 → 停止合并。"""
+    """合并后超跨度硬上限（5000ms）或 >3 条 → 停止合并。"""
     entries = [
-        {"index": 1, "timing": "00:00:00,000 --> 00:00:03,000", "text": "あの出."},
-        {"index": 2, "timing": "00:00:03,500 --> 00:00:06,000", "text": "そして"},
-        {"index": 3, "timing": "00:00:06,500 --> 00:00:09,000", "text": "そして"},
-        {"index": 4, "timing": "00:00:09,500 --> 00:00:12,000", "text": "そして"},
+        {"index": 1, "timing": "00:00:00,000 --> 00:00:01,000", "text": "あの出."},
+        {"index": 2, "timing": "00:00:01,200 --> 00:00:02,000", "text": "そして"},
+        {"index": 3, "timing": "00:00:02,200 --> 00:00:03,000", "text": "そして"},
+        {"index": 4, "timing": "00:00:03,200 --> 00:00:04,000", "text": "そして"},
     ]
     out = pv._premerge_entries(entries)
-    assert len(out) == 2          # 1+2+3 合并（6s, 3条），第4条超限独立
+    assert len(out) == 2          # 1+2+3 合并（3s/3000ms、3条），第4条超条数独立
 
 
 def test_premerge_large_gap_not_merged():
@@ -914,6 +916,160 @@ def test_premerge_ellipsis_then_incomplete_start_merges():
     out = pv._premerge_entries(entries)
     assert len(out) == 1
     assert out[0]["text"] == "なんか…えっと、その"
+
+
+# 真实回归 fixture：提取自 4k2.me@mfyd-074（一次测试）条目 9-12，逐字未改。
+# 旧行为曾把 9+10 合并为 42,679→50,479、11+12 合并为 51,259→57,039。
+_PREMERGE_FIXTURE = (Path(__file__).parent / "fixtures" / "premerge"
+                     / "overmerge_9_10_11_12.srt")
+
+
+def _premerge_fixture_entries():
+    return pv.parse_srt(_PREMERGE_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _premerge_cfg(**kw):
+    """轻量 cfg：仅携带预合并参数（直调 _premerge_entries 用）。"""
+    base = dict(premerge_max_span_ms=5000, premerge_max_items=3,
+                premerge_max_chars=80, premerge_min_fragment_chars=6)
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_premerge_fixture_real_overmerge_chain_not_merged():
+    """真实回归 fixture（4k2.me@mfyd-074 条目 9-12）：双省略号链
+    9+10 / 11+12 均不得合并（旧产物 42,679→50,479 与 51,259→57,039）。
+
+    三重防线：RC1 剥离行尾省略号后「です/になります」恢复句末判定；
+    RC2 双省略号否决；RC3 跨度 7800/5780ms 超出 5000ms 硬上限。
+    """
+    entries = _premerge_fixture_entries()
+    assert len(entries) == 4
+    out = pv._premerge_entries(entries)
+    assert len(out) == 4
+    # timing 与 text 逐字保持（未被拉长、未被拼接）
+    assert [e["timing"] for e in out] == [e["timing"] for e in entries]
+    assert [e["text"] for e in out] == [e["text"] for e in entries]
+    assert out[0]["timing"] == "00:00:42,679 --> 00:00:46,520"
+    assert out[2]["timing"] == "00:00:51,259 --> 00:00:53,679"
+
+
+def test_premerge_gap0_double_ellipsis_not_merged():
+    """gap=0 双省略号（剥离停顿后前条为完整句尾、后条也以停顿收尾）
+    → 不合并（RC2 回归：否决条款补「前省略号+后省略号」情形）。"""
+    entries = [
+        {"index": 1, "timing": _t(42.679, 46.52),
+         "text": "もうそろそろ3年になるところです…"},
+        {"index": 2, "timing": _t(46.52, 50.479),
+         "text": "…撮り始めて3年、になります…"},
+    ]
+    assert len(pv._premerge_entries(entries)) == 2
+
+
+def test_premerge_chain_within_hard_caps_still_merges():
+    """正确碎片不回退：3 连链在硬上限内（跨度≤5000ms、字符≤80）仍合并为 1 条。"""
+    entries = [
+        {"index": 1, "timing": _t(1, 2), "text": "僕たち水泳部の部長で"},
+        {"index": 2, "timing": _t(2, 3), "text": "みんなのエースで"},
+        {"index": 3, "timing": _t(3, 4.5), "text": "泳いでいる"},
+    ]
+    out = pv._premerge_entries(entries)
+    assert len(out) == 1
+    assert out[0]["timing"] == "00:00:01,000 --> 00:00:04,500"
+    assert out[0]["text"] == "僕たち水泳部の部長でみんなのエースで泳いでいる"
+
+
+def test_premerge_span_hard_cap_exact_boundary():
+    """跨度硬上限精确边界：5000ms 整过 / 5001ms 拒（round 防浮点毛刺）。"""
+    ok = [
+        {"index": 1, "timing": _t(10, 11), "text": "水泳部の部長で"},
+        {"index": 2, "timing": _t(11.2, 15), "text": "エースだよ"},
+    ]
+    out = pv._premerge_entries(ok, _premerge_cfg(premerge_max_span_ms=5000))
+    assert len(out) == 1                     # 合并跨度恰 5000ms → 放行
+    over = [
+        {"index": 1, "timing": _t(10, 11), "text": "水泳部の部長で"},
+        {"index": 2, "timing": _t(11.2, 15.001), "text": "エースだよ"},
+    ]
+    out = pv._premerge_entries(over, _premerge_cfg(premerge_max_span_ms=5000))
+    assert len(out) == 2                     # 5001ms → 拒
+
+
+def test_premerge_char_cap_rejects_overlong_text():
+    """字符上限：合并双方字符数之和（日文按字符数计）> premerge_max_chars → 拒。"""
+    ok = [
+        {"index": 1, "timing": _t(1, 2), "text": "あああああは"},   # 6 字
+        {"index": 2, "timing": _t(2.3, 3.5), "text": "そこで"},     # 3 字 → 合计 9
+    ]
+    assert len(pv._premerge_entries(
+        ok, _premerge_cfg(premerge_max_chars=10))) == 1
+    over = [
+        {"index": 1, "timing": _t(1, 2), "text": "あああああは"},   # 6 字
+        {"index": 2, "timing": _t(2.3, 3.5), "text": "そこでした"},  # 5 字 → 合计 11
+    ]
+    assert len(pv._premerge_entries(
+        over, _premerge_cfg(premerge_max_chars=10))) == 2
+
+
+def test_premerge_min_fragment_chars_threshold_gates_merge():
+    """语义断裂档「上行未完成+下行短碎片」受 premerge_min_fragment_chars 控制：
+    4 字碎片 < 默认阈值 6 → 合并；阈值调小到 4 后不再视为短碎片 → 不合并。"""
+    entries = [
+        {"index": 1, "timing": _t(1, 2), "text": "今日の天気はとっても"},
+        {"index": 2, "timing": _t(2.2, 3.2), "text": "良い感じ"},   # 4 字
+    ]
+    assert len(pv._premerge_entries(entries)) == 1        # 默认阈值 6：合并
+    cfg = _premerge_cfg(premerge_min_fragment_chars=4)
+    assert len(pv._premerge_entries(entries, cfg)) == 2   # 阈值 4：碎片不再合格
+
+
+def test_run_single_v2_real_fixture_no_overmerge(tmp_path, monkeypatch):
+    """端到端（真实 fixture）：终稿不得出现 42,679→50,479 / 51,259→57,039
+    过度合并条；阶段A 送翻条目数保持 4（未被预合并缩减）。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = tmp_path / "mfyd-074.srt"
+    in_srt.write_text(_PREMERGE_FIXTURE.read_text(encoding="utf-8"),
+                      encoding="utf-8")
+
+    def _fake_tmp(p, s):
+        d = tmp_path / "work"
+        d.mkdir(exist_ok=True)
+        return str(d)
+    monkeypatch.setattr(pv, "refine_tmp_dir", _fake_tmp)
+    fake = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
+    monkeypatch.setattr(pv, "_init_tm", lambda c: None)
+
+    out = pv._run_single_v2(cfg, str(in_srt))
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
+    assert "00:00:42,679 --> 00:00:50,479" not in content
+    assert "00:00:51,259 --> 00:00:57,039" not in content
+    assert len(fake.entry_log[0]) == 4
+
+
+def test_run_single_v2_premerge_disabled_passthrough(tmp_path, monkeypatch):
+    """premerge_enabled=False：本可合并的碎片原样透传（阶段A 收到原条数）。"""
+    cfg = _make_cfg(tmp_path)
+    cfg.premerge_enabled = False
+    in_srt = tmp_path / "demo.srt"
+    in_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\n僕たち水泳部の部長で\n\n"
+        "2\n00:00:02,200 --> 00:00:03,500\nエースだよ\n",
+        encoding="utf-8")
+
+    def _fake_tmp(p, s):
+        d = tmp_path / "work"
+        d.mkdir(exist_ok=True)
+        return str(d)
+    monkeypatch.setattr(pv, "refine_tmp_dir", _fake_tmp)
+    fake = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
+    monkeypatch.setattr(pv, "_init_tm", lambda c: None)
+
+    pv._run_single_v2(cfg, str(in_srt))
+    # 开关打开时这两条会被 ≤1.0s 助词档合并；关闭后原样透传
+    assert len(fake.entry_log[0]) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1150,6 +1306,74 @@ def test_resume_after_rejected_rerun_reuses_stage_a_without_force(
 
 
 # ---------------------------------------------------------------------------
+# 闸门0：送翻前源侧幻觉检测（预合并前剔除幻觉行，两档 profile 均执行）
+# ---------------------------------------------------------------------------
+
+def _write_gate0_srt(tmp_path):
+    """含一条纯标点幻觉行的输入（时间轴间隔 >8s，避开预合并干扰）。"""
+    in_srt = tmp_path / "demo.srt"
+    in_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n"
+        "2\n00:00:20,000 --> 00:00:21,000\n。。。。。\n\n"
+        "3\n00:00:40,000 --> 00:00:41,000\nさようなら\n",
+        encoding="utf-8")
+    return in_srt
+
+
+def _wire_gate0_e2e(tmp_path, monkeypatch, fake):
+    def _fake_tmp(p, s):
+        d = tmp_path / "work"
+        d.mkdir(exist_ok=True)
+        return str(d)
+    monkeypatch.setattr(pv, "refine_tmp_dir", _fake_tmp)
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
+    monkeypatch.setattr(pv, "_init_tm", lambda c: None)
+    # 归档目录隔离到临时目录（不污染仓库 Errors/）
+    import subtransjav.refine.source_hallucination as gate0
+    monkeypatch.setattr(gate0, "_default_errors_dir",
+                        lambda: str(tmp_path / "Errors"))
+
+
+def test_gate0_filters_hallucination_before_llm(tmp_path, monkeypatch):
+    """default 档：幻觉行在送翻前剔除（不进 LLM、归档、不进终稿）。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _write_gate0_srt(tmp_path)
+    fake = FakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+
+    out = pv._run_single_v2(cfg, str(in_srt))
+    # 阶段A 收到的条目不含幻觉行（闸门0 先于 LLM 与预合并执行）
+    assert all("。。。。。" not in e["text"] for e in fake.entry_log[0])
+    assert len(fake.entry_log[0]) == 2          # 3 条输入只送翻 2 条
+    assert len(fake.calls) == 2
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
+    assert "。。。。。" not in content
+    assert "审1" in content and "审3" in content
+    # 删除条目按「闸门0-类别名」归档
+    log = (tmp_path / "Errors" / "dropped_entries.log").read_text(
+        encoding="utf-8")
+    assert "原因=闸门0-纯标点行" in log
+
+
+def test_gate0_off_sends_hallucination_to_llm(tmp_path, monkeypatch):
+    """off 档（对照）：幻觉行照常送翻（走完整 A→B 链路被译出）。"""
+    cfg = _make_cfg(tmp_path)
+    cfg.v2_source_filter = "off"
+    in_srt = _write_gate0_srt(tmp_path)
+    fake = FakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+
+    out = pv._run_single_v2(cfg, str(in_srt))
+    assert any(e["text"] == "。。。。。" for e in fake.entry_log[0])
+    assert len(fake.entry_log[0]) == 3          # 幻觉行照常送翻
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
+    assert "审2" in content                     # 幻觉行被翻译（未在源头剔除）
+    assert not (tmp_path / "Errors" / "dropped_entries.log").exists()
+
+
+# ---------------------------------------------------------------------------
 # D5：TM 指纹不得被命中簿记（hit_count 自增 / WAL 回放）击穿
 # ---------------------------------------------------------------------------
 
@@ -1355,3 +1579,339 @@ def test_single_file_failure_counts_and_emits_error(tmp_path, monkeypatch):
         (tmp_path / "demo_风险清单.json").read_text(encoding="utf-8"))
     failed = [e for e in payload["events"] if e["action"] == "该文件失败跳过"]
     assert failed and failed[0]["severity"] == "critical"
+
+
+# ---------------------------------------------------------------------------
+# H3：幻觉处置报告 / R8 摘要行 / gate0_summary 事件 / H4a 上游信号接线
+# ---------------------------------------------------------------------------
+
+def _read_gate0_report(tmp_path, name="demo"):
+    return json.loads(
+        (tmp_path / f"{name}_幻觉处置报告.json").read_text(encoding="utf-8"))
+
+
+def test_gate0_report_generated_with_schema_contract(tmp_path, monkeypatch):
+    """final 输出阶段原子写 {stem}_幻觉处置报告.json，schema 契约钉死。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _write_gate0_srt(tmp_path)
+    fake = FakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+
+    out = pv._run_single_v2(cfg, str(in_srt))
+    assert out.endswith("demo_final_cn.srt")
+    report = _read_gate0_report(tmp_path)
+    # 顶层键集合（契约：缺一不可、不可增减；H5 只增 quarantine/noise_left_empty）
+    assert set(report) == {"report_version", "source", "gate0_ran", "mode",
+                           "total", "deleted", "detected_total", "valve",
+                           "categories", "samples", "upstream",
+                           "quarantine", "noise_left_empty"}
+    assert report["report_version"] == 1
+    assert report["source"] == "demo.srt"
+    assert report["gate0_ran"] is True
+    assert report["mode"] == "default"
+    assert report["total"] == 3
+    assert report["deleted"] == 1 and report["detected_total"] == 1
+    # valve 区块
+    assert set(report["valve"]) == {"tripped", "pct", "message"}
+    assert report["valve"] == {"tripped": False, "pct": 50, "message": None}
+    # categories：七类别中文 label 齐全
+    assert set(report["categories"]) == {
+        "!串", "纯标点行", "不可发音辅音串", "重复循环", "片尾元信息",
+        "孤立应答词", "无意义音节连缀"}
+    assert report["categories"]["纯标点行"] == {"detected": 1, "deleted": 1}
+    # samples：已删条目（编号/类别/原文）
+    assert report["samples"] == [
+        {"number": 2, "category": "纯标点行", "text": "。。。。。"}]
+    # upstream：无旁车文件 → 无信号
+    assert report["upstream"] == {
+        "present": False, "status": None, "mileage_pct": None,
+        "stale": False, "file": None, "warnings": []}
+    # H5：default 正常删除 → 无候选、无隔离区产物、无留空删除
+    assert report["quarantine"] == {"candidates": 0, "quarantined": 0,
+                                    "file": None}
+    assert report["noise_left_empty"] == 0
+    assert not (tmp_path / "demo_隔离区.srt").exists()
+    # 原子写不留 .tmp 残留
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_gate0_summary_line_in_summary_lines(tmp_path, monkeypatch):
+    """R8：每文件 summary_lines 增加一行闸门0 计数。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _write_gate0_srt(tmp_path)
+    fake = FakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+    cfg.inputs = [str(in_srt)]
+    summary = {}
+    pv.run_v2(cfg, summary_sink=summary)
+    gate_lines = [ln for ln in summary["summary_lines"] if "闸门0" in ln]
+    assert gate_lines == [
+        "🚪 闸门0：删除 1/原始 3，检出计数 1（default 档，保险阀未触发）"]
+    # 纯信息行不计入风险（risk_count 不因该行虚增）
+    assert summary["risk_count"] == 0
+
+
+def test_resume_rerun_reports_real_gate0_counts(tmp_path, monkeypatch):
+    """resume 复用阶段A：闸门0 在管线头部无条件执行（受信 resume 下幂等），
+    报告如实记录真实计数（gate0_ran=true、删除数保留），不归零。"""
+    cfg = _make_cfg(tmp_path)
+    # 自建含幻觉行的输入（_setup_e2e 的固定输入无可删条目，区分度不足）
+    in_srt = tmp_path / "demo.srt"
+    in_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\n。。。\n\n"
+        "2\n00:00:10,000 --> 00:00:11,000\nさようなら\n",
+        encoding="utf-8")
+
+    def _fake_tmp(p, s):
+        d = tmp_path / "work"
+        d.mkdir(exist_ok=True)
+        return str(d)
+    monkeypatch.setattr(pv, "refine_tmp_dir", _fake_tmp)
+    monkeypatch.setattr(pv, "_init_tm", lambda c: None)
+    monkeypatch.setattr(pv, "_make_client",
+                        lambda cfg, tag: InterruptingBClient())
+    cfg.inputs = [str(in_srt)]
+    with pytest.raises(KeyboardInterrupt):
+        pv.run_v2(cfg)
+    assert not (tmp_path / "demo_幻觉处置报告.json").exists()
+
+    fake2 = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake2)
+    cfg.resume = True
+    pv.run_v2(cfg)
+    report = _read_gate0_report(tmp_path)
+    assert report["gate0_ran"] is True
+    # 真实计数保留：纯标点行被闸门0 删除并归档，不因 resume 归零
+    assert report["total"] == 2 and report["deleted"] == 1
+    assert report["samples"] and report["samples"][0]["category"] == "纯标点行"
+
+
+def test_suspect_upstream_tightens_gate0_and_annotates_report(
+        tmp_path, monkeypatch, capsys):
+    """H4a 接线：上游 status=suspect → 显著警告 + RiskCollector warning +
+    tighten 传递给闸门0（3 连同文被收紧删除）+ 报告 upstream 标注。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = tmp_path / "demo.srt"
+    rows = []
+    for i, text in enumerate(["みんな", "みんな", "みんな", "こんにちは",
+                              "さようなら", "また明日", "寒いね", "そうだね"]):
+        s = 20 * i
+        rows.append(f"{i + 1}\n00:{s // 60:02d}:{s % 60:02d},000 --> "
+                    f"00:{(s + 1) // 60:02d}:{(s + 1) % 60:02d},000\n{text}\n")
+    in_srt.write_text("\n".join(rows), encoding="utf-8")
+    (tmp_path / "whisperjav_run.json").write_text(
+        json.dumps({"status": "suspect"}), encoding="utf-8")
+    fake = FakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+
+    pv._run_single_v2(cfg, str(in_srt))
+    # 显著警告（文本模式 print 到 stdout）
+    assert "⚠️ 上游 ASR 信号：run 状态=suspect，转写可信度低" in capsys.readouterr().out
+    # tighten 传递：3 连同文在送翻前删除（无信号时 default 档不删 3 连）
+    assert len(fake.entry_log[0]) == 5
+    assert all("みんな" not in e["text"] for e in fake.entry_log[0])
+    # 报告 upstream 标注
+    report = _read_gate0_report(tmp_path)
+    assert report["upstream"]["present"] is True
+    assert report["upstream"]["status"] == "suspect"
+    assert any("闸门0 已收紧" in w for w in report["upstream"]["warnings"])
+    # RiskCollector warning（风险清单落盘，stage=gate0）
+    risk = json.loads(
+        (tmp_path / "demo_风险清单.json").read_text(encoding="utf-8"))
+    gate0_risks = [e for e in risk["events"]
+                   if e["stage"] == "gate0" and "上游 ASR 信号" in e["reason"]]
+    assert gate0_risks and gate0_risks[0]["severity"] == "warning"
+
+
+def test_low_coverage_upstream_warns_without_tighten(tmp_path, monkeypatch):
+    """覆盖率低于阈值 → RiskCollector warning + 报告标注；不触发 tighten。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = tmp_path / "demo.srt"
+    rows = []
+    for i, text in enumerate(["みんな", "みんな", "みんな", "こんにちは",
+                              "さようなら", "また明日", "寒いね", "そうだね"]):
+        s = 20 * i
+        rows.append(f"{i + 1}\n00:{s // 60:02d}:{s % 60:02d},000 --> "
+                    f"00:{(s + 1) // 60:02d}:{(s + 1) % 60:02d},000\n{text}\n")
+    in_srt.write_text("\n".join(rows), encoding="utf-8")
+    (tmp_path / "whisperjav_run.json").write_text(
+        json.dumps({"status": "ok", "mileage_pct": 10}), encoding="utf-8")
+    fake = FakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+
+    pv._run_single_v2(cfg, str(in_srt))
+    # 无收紧：3 连同文照常送翻（default 档 min_run=4）
+    assert len(fake.entry_log[0]) == 8
+    # 报告标注覆盖率 + 警告
+    report = _read_gate0_report(tmp_path)
+    assert report["upstream"]["mileage_pct"] == 10.0
+    assert any("覆盖率" in w and "低于阈值" in w
+               for w in report["upstream"]["warnings"])
+    # 风险清单 warning（stage=gate0）
+    risk = json.loads(
+        (tmp_path / "demo_风险清单.json").read_text(encoding="utf-8"))
+    cov_risks = [e for e in risk["events"]
+                 if e["stage"] == "gate0" and "覆盖率" in e["reason"]]
+    assert cov_risks and cov_risks[0]["severity"] == "warning"
+
+
+def test_gate0_valve_trips_risk_and_report_message(tmp_path, monkeypatch):
+    """保险阀触发 → RiskCollector warning + 报告 valve.message。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = tmp_path / "demo.srt"
+    rows = []
+    for i, text in enumerate(["。。。", "！！", "kkkk", "。。。。。",
+                              "？？", "…", "こんにちは", "ありがとう",
+                              "さようなら", "また明日"]):   # 6/10 = 60% > 50%
+        s = 20 * i
+        rows.append(f"{i + 1}\n00:{s // 60:02d}:{s % 60:02d},000 --> "
+                    f"00:{(s + 1) // 60:02d}:{(s + 1) % 60:02d},000\n{text}\n")
+    in_srt.write_text("\n".join(rows), encoding="utf-8")
+    fake = FakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+
+    pv._run_single_v2(cfg, str(in_srt))
+    report = _read_gate0_report(tmp_path)
+    assert report["valve"]["tripped"] is True
+    assert report["valve"]["message"] == "拦截率超阈值，本文件降级为只计数模式"
+    assert report["deleted"] == 0 and report["detected_total"] >= 6
+    risk = json.loads(
+        (tmp_path / "demo_风险清单.json").read_text(encoding="utf-8"))
+    valve_risks = [e for e in risk["events"] if "保险阀触发" in e["reason"]]
+    assert valve_risks and valve_risks[0]["severity"] == "warning"
+
+
+def test_gate0_summary_ndjson_event_emitted(tmp_path, monkeypatch):
+    """ndjson 模式：每文件闸门0 执行后发一次 gate0_summary
+    （payload=报告去 samples 的摘要，含 valve）。"""
+    cfg = _make_cfg(tmp_path)
+    cfg.event_format = "ndjson"
+    in_srt = _write_gate0_srt(tmp_path)
+    fake = FakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+    cfg.inputs = [str(in_srt)]
+    buf = io.StringIO()
+    pv.run_v2(cfg, event_stream=buf)
+    events = [parse_event_line(ln) for ln in buf.getvalue().splitlines()
+              if ln.strip()]
+    summaries = [e for e in events if e["type"] == "gate0_summary"]
+    assert len(summaries) == 1                       # 每文件恰好一次
+    payload = summaries[0]["payload"]
+    assert set(payload) == {"report_version", "source", "gate0_ran", "mode",
+                            "total", "deleted", "detected_total", "valve",
+                            "categories", "upstream",
+                            "quarantine", "noise_left_empty"}   # 去 samples
+    assert payload["source"] == "demo.srt"
+    assert payload["gate0_ran"] is True
+    assert payload["valve"]["tripped"] is False
+    # H5：事件时点隔离区尚未回捞判定——quarantined/file 如实记 null
+    assert payload["quarantine"] == {"candidates": 0, "quarantined": None,
+                                     "file": None}
+    assert "samples" not in payload
+
+
+# ---------------------------------------------------------------------------
+# H5：翻译后回捞（隔离区）——保险阀降级 × 流畅中文 → 移出主稿落隔离区
+# ---------------------------------------------------------------------------
+
+class ZhFakeClient(FakeClient):
+    """译文固定为多字流畅中文的假客户端（触发 H5 流畅中文判定）。"""
+
+    def translate_entries(self, entries, *, system_text, user_prompt,
+                          max_batch_size=30, allow_empty_deletions=False,
+                          scene_threshold=60.0, progress=None):
+        self.calls.append([e["index"] for e in entries])
+        self.entry_log.append([dict(e) for e in entries])
+        is_stage_b = any("|||" in e["text"] for e in entries)
+        translations = {}
+        for e in entries:
+            i = e["index"]
+            translations[i] = (f"审校好的中文{i}" if is_stage_b
+                               else f"初译的中文{i}")
+        return BatchResult(translations=translations, deleted=set(),
+                           failed=[])
+
+
+def _write_valve_srt(tmp_path):
+    """3 条删五类幻觉行 + 7 条真实台词（3/10=30% > 20% 阈值触发降级）。"""
+    in_srt = tmp_path / "demo.srt"
+    texts = ["。。。", "！！", "kkkk", "こんにちは", "さようなら",
+             "また明日", "寒いね", "そうだね", "ほんとに", "部長でエースで"]
+    rows = []
+    for i, text in enumerate(texts):
+        s = 20 * i
+        rows.append(f"{i + 1}\n00:{s // 60:02d}:{s % 60:02d},000 --> "
+                    f"00:{(s + 1) // 60:02d}:{(s + 1) % 60:02d},000\n{text}\n")
+    in_srt.write_text("\n".join(rows), encoding="utf-8")
+    return in_srt
+
+
+def test_quarantine_moves_fluent_zh_on_valve_trip(tmp_path, monkeypatch):
+    """H5 e2e：保险阀降级 → 幻觉行进 LLM 被译出流畅中文 → final 移入
+    隔离区（主稿移除、隔离区 SRT 原子写、报告/摘要行接线）。"""
+    cfg = _make_cfg(tmp_path)
+    cfg.v2_source_filter_valve_pct = 20
+    in_srt = _write_valve_srt(tmp_path)
+    fake = ZhFakeClient()
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+    cfg.inputs = [str(in_srt)]
+    summary = {}
+    out = pv.run_v2(cfg, summary_sink=summary)
+    # 隔离区产物：3 条候选被译成流畅中文 → 移出主稿落盘
+    q_path = tmp_path / "demo_隔离区.srt"
+    assert q_path.is_file()
+    q_content = q_path.read_text(encoding="utf-8")
+    assert "审校好的中文1" in q_content and "审校好的中文2" in q_content \
+        and "审校好的中文3" in q_content
+    assert "审校好的中文4" not in q_content       # 真实台词不进隔离区
+    with open(out, encoding="utf-8") as f:
+        content = f.read()
+    # "中文1\n" 带 SRT 行尾比对，避免与条目 10 的 "中文10" 子串误判
+    assert "审校好的中文1\n" not in content        # 已移出主稿
+    assert "审校好的中文4" in content              # 真实台词照常在主稿
+    # 报告接线：候选 3、隔离 3、产物文件名
+    report = _read_gate0_report(tmp_path)
+    assert report["quarantine"] == {"candidates": 3, "quarantined": 3,
+                                    "file": "demo_隔离区.srt"}
+    # R8 摘要行：隔离区信息行（不计入风险），闸门0 计数行仍恰一条
+    q_lines = [ln for ln in summary["summary_lines"] if "隔离区" in ln]
+    assert q_lines == ["📪 隔离区：3 条存疑译文已移出主稿，见 demo_隔离区.srt"]
+    # R8 闸门0 计数行仍恰一条（降级风险行以 ⚠️ 前缀另计，不属信息行）
+    assert sum(ln.startswith("🚪 闸门0") for ln in summary["summary_lines"]) == 1
+
+
+def test_quarantine_skipped_when_translation_not_fluent(tmp_path, monkeypatch):
+    """H5 守卫：候选条目译文非流畅中文（单字译文）→ 留在主稿、不落隔离区
+    文件；上一轮残留隔离区随恢复类清理删除（空则不落文件）。"""
+    cfg = _make_cfg(tmp_path)
+    cfg.v2_source_filter_valve_pct = 20
+    in_srt = _write_valve_srt(tmp_path)
+    # 上一轮残留的隔离区文件：本轮无存疑译文 → 随清理删除且不重建
+    (tmp_path / "demo_隔离区.srt").write_text("stale", encoding="utf-8")
+    fake = FakeClient()              # 译N/审N：单汉字，不判流畅
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+
+    out = pv._run_single_v2(cfg, str(in_srt))
+    assert not (tmp_path / "demo_隔离区.srt").exists()
+    with open(out, encoding="utf-8") as f:
+        assert "审1" in f.read()     # 候选条目留在主稿
+    report = _read_gate0_report(tmp_path)
+    assert report["quarantine"] == {"candidates": 3, "quarantined": 0,
+                                    "file": None}
+
+
+def test_noise_left_empty_counts_stage_a_deletions(tmp_path, monkeypatch):
+    """H5-7：计数类/候选类条目中被阶段A 留空删除的数量进报告；被留空删除
+    的候选无译文可回捞 → 隔离区为空不落文件。"""
+    cfg = _make_cfg(tmp_path)
+    cfg.v2_source_filter_valve_pct = 20
+    in_srt = _write_valve_srt(tmp_path)
+    fake = FakeClient(delete_a=(1, 2, 3))    # 阶段A 留空删除 3 条候选
+    _wire_gate0_e2e(tmp_path, monkeypatch, fake)
+
+    pv._run_single_v2(cfg, str(in_srt))
+    report = _read_gate0_report(tmp_path)
+    assert report["noise_left_empty"] == 3
+    assert report["quarantine"]["candidates"] == 3
+    assert report["quarantine"]["quarantined"] == 0
+    assert not (tmp_path / "demo_隔离区.srt").exists()

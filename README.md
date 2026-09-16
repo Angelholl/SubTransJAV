@@ -143,7 +143,7 @@ subtransjav-refine -i 字幕.srt ... --resume --force-resume
 ## 声明
 
 - 本项目仅供成年人学习研究字幕翻译技术使用，请遵守所在地区法律法规。
-- 上游转写工具：[WhisperJAV](https://github.com/meizhong986/WhisperJAV)——分工：转写归上游，翻译+精修归本仓库（项目名由此而来）。
+- 上游转写工具：[WhisperJAV](https://github.com/meizhong986/WhisperJAV)——分工：转写归上游，翻译+精修归本仓库（项目名由此而来）。上游 v1.9.2+ 的运行清单（`whisperjav_run.json`）可通过 `--asr-meta` 接入本仓库双幻觉防护（转写可信度信号驱动精修侧自适应过滤）；旧版上游产物同样支持。
 
 ## 许可证
 
