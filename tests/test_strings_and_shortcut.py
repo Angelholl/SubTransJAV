@@ -221,3 +221,49 @@ def test_create_shortcut_avoids_execv_and_sets_workdir():
     assert "shortcut.WorkingDirectory = str(project_root)" in src
     assert 'desktop / "SubTransJAV.lnk"' in src     # 幂等：固定名覆盖保存
     assert "shortcut.save()" in src
+
+
+# ---------------------------------------------------------------------------
+# uninstall.bat 卸载脚本（GBK 编码；全部可选清理，不删安装文件夹本身）
+# ---------------------------------------------------------------------------
+
+# create_shortcut.py 中清理的历史遗留快捷方式名（照抄源码精确字符串，
+# 第二项中的分隔符为 U+00B7 中点，与源码一致）
+LEGACY_LNK_NAMES = [
+    "净语翻译.lnk",
+    "净语翻译 · WhisperJAV Translate.lnk",
+    "WhisperJAV Translate.lnk",
+    "wjtranslate-gui.lnk",
+]
+
+
+@pytest.fixture(scope="module")
+def uninstall_bat_text() -> str:
+    """uninstall.bat 为 GBK 编码（无 BOM），按 GBK 解码。"""
+    return (REPO_ROOT / "uninstall.bat").read_bytes().decode("gbk")
+
+
+def test_uninstall_bat_exists():
+    assert (REPO_ROOT / "uninstall.bat").is_file()
+
+
+def test_uninstall_bat_is_gbk_decodable(uninstall_bat_text):
+    """对齐首次安装.bat 的断言口径：read_bytes().decode("gbk") 可解码。"""
+    assert uninstall_bat_text.startswith("@echo off")
+
+
+def test_uninstall_bat_covers_all_desktop_shortcuts(uninstall_bat_text):
+    assert "SubTransJAV.lnk" in uninstall_bat_text
+    for name in LEGACY_LNK_NAMES:
+        assert name in uninstall_bat_text, f"缺少历史遗留快捷方式名: {name}"
+
+
+def test_uninstall_bat_mentions_cleanup_and_backup_targets(uninstall_bat_text):
+    assert "numba_cache" in uninstall_bat_text
+    assert "api_keys.bin" in uninstall_bat_text
+    assert "tm.db" in uninstall_bat_text
+
+
+def test_uninstall_bat_keeps_pause_for_backup_notice(uninstall_bat_text):
+    """结尾必须 pause，保证用户能看到备份提醒。"""
+    assert "pause" in uninstall_bat_text
