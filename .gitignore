@@ -20,6 +20,8 @@ Temp/
 # 敏感数据（严禁入库）
 config/api_keys.bin
 config/glossary_learned.csv
+config/glossary.csv
+create_shortcut.py
 
 # 本地工具数据
 .zcode/
