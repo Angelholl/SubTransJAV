@@ -88,6 +88,8 @@ def test_validate_user_directory_allows_non_executable_file(tmp_path):
 
 def test_norm_case_key_is_case_insensitive():
     """归一化键显式大小写不敏感（不依赖 Path.is_relative_to 的版本语义）。"""
+    if os.name != "nt":
+        pytest.skip("normcase 大小写归一仅 Windows 文件系统语义")
     from subtransjav.webview_gui.security import _norm_case_key
     assert _norm_case_key(Path("C:/Windows")) == _norm_case_key(Path("c:/windows"))
     assert _norm_case_key(Path("C:/Windows")) == _norm_case_key(Path("C:\\Windows"))
