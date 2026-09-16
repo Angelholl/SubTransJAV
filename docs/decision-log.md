@@ -122,7 +122,7 @@ keep-list 白名单优先级最高，高于任何档位；H6 黄金集对两个�
 
 **状态**：修复与复验通过，未 commit/未发布，等用户验收指令。
 
-## [2026-09-16] D2026-0916-01 两仓合并：公开仓收编为唯一开发仓（方案 B'）[已拍板待执行]
+## [2026-09-16] D2026-0916-01 两仓合并：公开仓收编为唯一开发仓（方案 B'）[已拍板·已执行（收尾见 D2026-0916-02）]
 
 ### 背景
 - 用户意愿：两仓合一。内部仓 WhisperJAV-traslate（单 master、无 remote、50 commits、121 tracked，历史含敏感内容 sexual_terms.csv / 真实 glossary / 方案2试点归档；工作区在途 1.2 第三批双幻觉专项 + 预合并修复，零备份）并入公开仓 SubTransJAV（origin=GitHub 公开，main，100 tracked，HEAD=cebafda 测试修复已 commit 且 0/0 已 push）。
@@ -161,3 +161,15 @@ keep-list 白名单优先级最高，高于任何档位；H6 黄金集对两个�
 - **主模型最终决定**：采纳（3/3）。
 - **是否 [PRESSURE-OVERRIDE]**：否。
 - **条件闭环状态**：决策层面闭环；执行期验证（sync 后 pytest + CI 矩阵、备份核验、自动化实弹）待执行。
+
+## [2026-09-16] D2026-0916-02 双仓归并收尾执行与旧仓退役准备 [已拍板·已执行]
+
+### 执行记录（工单 MIG-20260916-01，闲时自动化 2026-09-16 16:29 受理，16:5x 完成）
+
+- **D2026-0916-01（方案 B'）执行状态**：1.2 内容已改由公开仓直提交完成（009f398 全量 + 70b2eca 修复），sync_release --apply 未执行即退役（重跑只会回退公开侧修复）；本条记录剩余收尾的落地。
+- **备份（HRO-3 落地）**：既有全量 bundle `git bundle verify` 通过（完整历史，HEAD e41090d，51 提交）；试克隆抽查 SHA 6/6 一致、pytest 冒烟 38 passed；三份 MD5 一致副本：原址、`D:\SubTransJAV-internal-archive`、`E:\SubTransJAV-internal-archive`。**修订**：bundle 历史含敏感词表，原"可选云备份"不执行，双副本均为本地第二介质，严禁上云。
+- **出树归档（约 61MB）**：internal_docs、translation_memory 全链（备份链/测试库/A-B库）、api_keys.bin、sexual_terms.csv、真实 glossary（37 行）、方案2试点归档、.analysis_tmp、测试文件、项目介绍稿；内部仓 5 个未提交文件散件 + `git diff` 补丁归档（其内容已在公开仓，散件仅为保险）；归档副本 sync_release.py 头部加"已退役，禁止 --apply"警告。内部仓 git 状态零改动（Mimosa 约束下免 commit 设计）。
+- **公开仓资产落位**：tm.db 换库（旧 24KB 库备份为 tm.db.bak-pre-migration-20260916；PRAGMA quick_check ok、24121 行、app 加载器 stage=1 lookup_exact HIT——全库条目 stage=1 系内部管线写入口径，schema 与加载代码两仓一致）；api_keys.bin 解密 3/3；glossary.csv `git rm --cached` + 真实 37 行转本地维护；.gitignore 契约段补 config/glossary.csv 与 create_shortcut.py（commit 4354961，不 push）。
+- **卸载脚本**：新增 uninstall.bat（GBK 无 BOM、CRLF、风格对齐首次安装.bat；清理桌面 SubTransJAV.lnk + 4 个历史遗留名 + %LOCALAPPDATA% numba_cache；备份提醒 文档 output 与项目内 api_keys.bin/tm.db；不删安装文件夹本身）；test_strings_and_shortcut.py 追加 6 项断言。验收：pytest 全量 **753 passed / 1 skipped**（基线 747 + 新增 6，只增不减）、行尾守卫与 ruff 通过、GUI 启动冒烟存活至超时、TM 命中与密钥解密冒烟通过。
+- **旧仓处置**：`D:\WhisperJAV-traslate` 留给用户手动删除（前置=四项验证通过 + bundle 三副本就位，均已满足）；删除后队列文件随之消失，轮询自动化按"文件不存在静默结束"设计自然失效。
+- **遗留**：1.3 立项（词表覆盖层 + 加载优先级、guard 脚本可选、Mimosa 21 项甄别、1.2 定版 tag）见归档 internal_docs 交接文档；公开仓 push 由用户单独拍板。
