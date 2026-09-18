@@ -11,6 +11,7 @@
   char_count   原文字符数（用于快速过滤）
   created_at   创建时间戳
   hit_count    命中次数（自学习排序）
+  source_name  来源 srt 文件名 stem（v1.2.2 起；旧行为 NULL 不回填）
 
 匹配策略：
   精确匹配（O(1) 哈希查找）→ 返回完全一致的译文
@@ -47,6 +48,36 @@ def _simhash(text: str) -> str:
     return hashlib.sha256(_normalize(text).encode("utf-8")).hexdigest()[:32]
 
 
+def ensure_source_name_column(db_path: str) -> bool:
+    """幂等迁移：tm_entries 缺 source_name 列时补加（v1.2.2 批次 A2）。
+
+    - 已存在（或表尚未创建）→ 什么都不做，可安全重复调用（幂等）；
+    - 旧行保持 NULL，不回填（历史行无来源信息，回填即造假）；
+    - 在 TranslationMemory 初始化/打开路径自动调用，旧库打开即自动迁移。
+    返回是否实际执行了加列。
+
+    schema 变化对 TM 指纹/manifest 的影响（只说明，不改指纹逻辑）:
+    - 加列本身不影响 TM 指纹：pipeline_v2._tm_fingerprint 只哈希内容列
+      _TM_FINGERPRINT_COLUMNS = (content_hash, stage, source_text,
+      target_text)，source_name 属 provenance 簿记列、不参与指纹——
+      迁移前后 manifest.tm_sha1 不变，既有 --resume 清单不因本次迁移失效；
+    - source_name 的写入/更新同样不改指纹（指纹列集合未变）；真正使指纹
+      变化的是 TM 内容行的新增/修改/删除（如 tools/tm_purge.py --yes
+      清洗删行）——指纹必变，旧 resume 清单校验失败，须按 tm_purge
+      风险声明 1 处置（删旧 resume 产物，禁止复用）。
+    """
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(tm_entries)")}
+        if not cols or "source_name" in cols:
+            return False
+        conn.execute("ALTER TABLE tm_entries ADD COLUMN source_name TEXT")
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 class TranslationMemory:
     """SQLite 翻译记忆库"""
 
@@ -75,6 +106,7 @@ class TranslationMemory:
                 char_count   INTEGER NOT NULL DEFAULT 0,
                 hit_count    INTEGER NOT NULL DEFAULT 0,
                 created_at   REAL NOT NULL,
+                source_name  TEXT,
                 UNIQUE(content_hash, stage)
             );
             CREATE INDEX IF NOT EXISTS idx_tm_hash
@@ -83,6 +115,8 @@ class TranslationMemory:
                 ON tm_entries(char_count);
         """)
         conn.commit()
+        # v1.2.2：旧库打开即自动补 source_name 列（幂等迁移，新建库无操作）
+        ensure_source_name_column(self.db_path)
 
     def close(self):
         if self._conn:
@@ -93,8 +127,13 @@ class TranslationMemory:
     # 存储
     # ------------------------------------------------------------------
 
-    def store(self, source: str, target: str, stage: int = 0) -> bool:
+    def store(self, source: str, target: str, stage: int = 0,
+              source_name: str | None = None) -> bool:
         """存入翻译对。已存在（同 hash + stage）则更新译文。返回是否新增。
+
+        source_name：来源 srt 文件名 stem（provenance，v1.2.2 起）。
+        新插入时写入；覆盖已有条目时仅在该值非 None 时更新
+        （COALESCE 保留旧 provenance，None 不回填）。
 
         无竞态实现：INSERT OR IGNORE 的 rowcount 直接区分 新插入(1)/
         已存在(0)，无需前置 SELECT（消除 SELECT 与写入之间的竞态窗口；
@@ -110,24 +149,29 @@ class TranslationMemory:
         conn = self._get_conn()
         cur = conn.execute(
             "INSERT OR IGNORE INTO tm_entries "
-            "(content_hash, source_text, target_text, stage, char_count, hit_count, created_at) "
-            "VALUES (?, ?, ?, ?, ?, 0, ?)",
-            (h, src, tgt, stage, len(src), time.time()))
+            "(content_hash, source_text, target_text, stage, char_count, "
+            "hit_count, created_at, source_name) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+            (h, src, tgt, stage, len(src), time.time(), source_name))
         if cur.rowcount == 1:
             conn.commit()
             return True
         conn.execute(
-            "UPDATE tm_entries SET source_text=?, target_text=?, char_count=? "
+            "UPDATE tm_entries SET source_text=?, target_text=?, char_count=?, "
+            "source_name=COALESCE(?, source_name) "
             "WHERE content_hash=? AND stage=?",
-            (src, tgt, len(src), h, stage))
+            (src, tgt, len(src), source_name, h, stage))
         conn.commit()
         return False
 
-    def store_batch(self, pairs: list[tuple[str, str, int]]) -> int:
-        """批量存入。pairs = [(source, target, stage), ...]。返回新增条数。"""
+    def store_batch(self, pairs: list[tuple[str, str, int]],
+                    source_name: str | None = None) -> int:
+        """批量存入。pairs = [(source, target, stage), ...]。返回新增条数。
+
+        source_name 为本批统一来源标识（srt 文件名 stem），写入每个条目。
+        """
         added = 0
         for src, tgt, stg in pairs:
-            if self.store(src, tgt, stg):
+            if self.store(src, tgt, stg, source_name=source_name):
                 added += 1
         return added
 

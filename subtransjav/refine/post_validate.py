@@ -17,12 +17,14 @@ logger = logging.getLogger(__name__)
 # 规则由 YAML 的 validator_rules 段驱动：
 #   dewei_mistranslation: で误译（"作为"误用）→ 自动修正
 #   subject_misjudge:     主语误判（僕たち→"我"）→ 仅告警
+#   antonym_*:            反义误译（やめて→"别停"等）→ 仅告警（批次 B2，
+#                         双侧锚定：源文命中指定形态 且 译文命中目标集）
 # 动作由各规则的 warn_only 字段决定（YAML 单一数据源）：
 #   warn_only=true  → 告警加入 warnings 列表，不改动译文；
 #   warn_only=false → 升级为"硬性告警"：warnings 中加 [硬性] 前缀并
 #                     logger.error 记录；可安全自动修正的规则（dewei）
-#                     仍自动修正，无可靠自动修正手段的规则（subject）
-#                     只告警，绝不发明自动改写逻辑。
+#                     仍自动修正，无可靠自动修正手段的规则（subject/
+#                     antonym）只告警，绝不发明自动改写逻辑。
 # ------------------------------------------------------------------
 
 
@@ -49,6 +51,19 @@ def _compile_validator_rules():
         "target": re.compile(s["target_pattern"]),
         "warn_only": bool(s.get("warn_only", True)),
     }
+    # 双侧锚定 warn_only 规则（批次 B2 antonym_* + 批次 B 闭环
+    # body_part_kubi / climax_iku_variant）：按统一"双侧锚定"结构编译
+    # （source_pattern + target_pattern + warn_only），新增同前缀规则
+    # 无需改检测代码。规则仅 local/strict 档生效（_apply_fallback_rules
+    # 既有执行条件，lenient 档整层跳过）。
+    for name, r in rules.items():
+        if not name.startswith(("antonym_", "body_part_", "climax_")):
+            continue
+        compiled[name] = {
+            "source": re.compile(r["source_pattern"]),
+            "target": re.compile(r["target_pattern"]),
+            "warn_only": bool(r.get("warn_only", True)),
+        }
     return compiled
 
 
@@ -119,17 +134,41 @@ def check_and_fix_translation_errors(
                 f"'{dewei['replacement']}' | 源: {src_text[:30]}",
                 dewei["warn_only"])
 
-        # 检测 2：主语误判（僕たち→"我"）—— 主语推断需上下文，没有
+        # 检测 2：主语误判（僕たち→单数"我"）—— 主语推断需上下文，没有
         # 可靠的自动修正手段，无论 warn_only 取值都不改动译文；
         # warn_only=false 时仅升级为硬性告警。
+        # 告警文案动态引用实际命中的译文开头（前 6 字），并保留"主语误判"
+        # 四字（quality_report 按 `"主语误判" in w` 单独归类）。
         if subject["source"].search(src_text) \
                 and subject["target"].match(tgt_text):
             flagged_indexes.add(idx)
             _emit_warning(
                 warnings,
-                f"⚠️ #{idx} 主语误判待复核: 源含'僕たち/我们'但目标以'我是'开头 | "
-                f"源: {src_text[:30]}",
+                f"⚠️ #{idx} 主语误判待复核: 源含'僕たち/我们'但目标以"
+                f"'{tgt_text[:6]}'开头 | 源: {src_text[:30]}",
                 subject["warn_only"])
+
+        # 检测 3：双侧锚定误译（批次 B2 antonym_* + 批次 B 闭环
+        # body_part_*/climax_*）—— 源文命中指定形态 且 译文命中目标集才告警
+        # （如源含 やめて 且译文出现"别停/不要停"）。
+        # 误译判断依赖语境，没有可靠的自动修正手段，无论 warn_only 取值
+        # 都不改动译文；warn_only=false 时仅升级为硬性告警。
+        # 告警文案含规则名标识（antonym_* 等），供测试与质量报告归类。
+        # flagged_indexes 经既有机制阻断该翻译对进入 TM 学习（零新代码）。
+        for name, rule in rules.items():
+            if not name.startswith(("antonym_", "body_part_", "climax_")):
+                continue
+            if rule["source"].search(src_text) \
+                    and rule["target"].search(tgt_text):
+                flagged_indexes.add(idx)
+                head = ("反义误译待复核" if name.startswith("antonym_")
+                        else "误译待复核")
+                _emit_warning(
+                    warnings,
+                    f"⚠️ #{idx} {head}[{name}]: 源文命中该形态"
+                    f"但译文出现'{rule['target'].pattern}'"
+                    f" | 源: {src_text[:30]}",
+                    rule["warn_only"])
 
     return fixes, warnings, flagged_indexes
 

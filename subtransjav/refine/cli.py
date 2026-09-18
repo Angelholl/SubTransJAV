@@ -119,6 +119,8 @@ def build_parser():
     grp_v2.add_argument("--source-filter", choices=["strict", "default", "off"],
                         default="default",
                         help="闸门0 送翻前源侧幻觉检测档位：strict=严格(叠加启发式删除) | default=标准(仅明确幻觉删除) | off=关闭")
+    grp_v2.add_argument("--no-auto-synopsis", action="store_true",
+                        help="关闭剧情自摘要（Beta：默认开启；摘要仅注入翻译提示词，不产生任何输出内容）")
     p.add_argument("--event-format", choices=["text", "ndjson"], default="text",
                    help="事件输出格式：text=人类可读（默认）| ndjson=结构化事件行（GUI 用，人类文本转 stderr）")
     p.add_argument("--heartbeat-interval", type=float, default=20.0,
@@ -213,6 +215,7 @@ def config_from_args(args):
         v2_concurrency=args.v2_concurrency,
         v2_ctx_local=args.v2_ctx,
         v2_source_filter=args.source_filter,
+        auto_synopsis=not args.no_auto_synopsis,
         asr_meta=args.asr_meta,
         force=args.force,
         resume=args.resume,

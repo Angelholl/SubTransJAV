@@ -149,3 +149,34 @@ def test_learn_gate_off_all_pass(tmp_path):
     assert tm.has_exact("さようなら。", stage=1)
 
     tm.close()
+
+
+def test_validator_antonym_warning_blocks_tm_learn(tmp_path):
+    """validator 告警 → 不入 TM（直接用例）：antonym_yamete 命中的翻译对
+    经 check_and_fix_translation_errors 产出 flagged_indexes，传入
+    _learn_to_tm 后该行被学习门槛阻断（既有机制，零新代码）；干净行照常入库。
+
+    全部为中性合成文本。
+    """
+    from subtransjav.refine.post_validate import check_and_fix_translation_errors
+
+    orig = _make_entries([
+        "やめて、やめてよ…",          # 1: antonym_yamete 命中（→别停）
+        "今日はいい天気だ。",          # 2: 干净
+    ])
+    final = _make_entries([
+        "别停，别停呀…",               # 1: 反义误译（仅告警，文本不改）
+        "今天天气真好。",              # 2: 干净
+    ])
+    _fixes, warnings, flagged = check_and_fix_translation_errors(orig, final)
+    assert 1 in flagged
+    assert any("antonym_yamete" in w for w in warnings)
+
+    db_path = str(tmp_path / "test_tm.db")
+    tm = TranslationMemory(db_path)
+    try:
+        pv._learn_to_tm(tm, orig, final, flagged=flagged, gate=True)
+        assert not tm.has_exact("やめて、やめてよ…", stage=1)   # 告警行不入库
+        assert tm.has_exact("今日はいい天気だ。", stage=1)       # 干净行入库
+    finally:
+        tm.close()

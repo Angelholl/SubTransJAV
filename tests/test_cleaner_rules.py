@@ -279,7 +279,7 @@ def test_clean_srt_e2e(config_dir):
         "2\n00:01:30,000 --> 00:01:32,000\n好紧\n\n"
         "3\n00:03:00,000 --> 00:03:02,000\n今天天气真好\n"
     )
-    result = clean_srt(srt, config_dir)
+    result, _stats = clean_srt(srt, config_dir)
     items = parse_srt(result)
     assert len(items) >= 1
     texts = [it.text for it in items]
@@ -324,7 +324,7 @@ def test_hardened_address_family():
     """M2: 家庭称呼受HARDENED保护不被删除（单条测试，走L0路径而非CQS）"""
     # 单条"爷爷"——不触发CQS（需≥3条连续），纯L0-hardened保护
     srt_single = "1\n00:00:01,000 --> 00:00:02,000\n爷爷\n"
-    result = clean_srt(srt_single)
+    result, _stats = clean_srt(srt_single)
     assert "爷爷" in result
 
     # "爸爸"混在正常对话中——验证不被误删
@@ -333,7 +333,7 @@ def test_hardened_address_family():
         "2\n00:00:01,500 --> 00:00:02,500\n爸爸\n\n"
         "3\n00:00:03,000 --> 00:00:04,000\n我们去玩吧\n"
     )
-    result2 = clean_srt(srt_mixed)
+    result2, _stats2 = clean_srt(srt_mixed)
     assert "爸爸" in result2
 
 
@@ -346,11 +346,15 @@ def test_has_substantive_two_char():
 
 
 def test_exclamation_isolated_delete():
-    """M5确认: L6孤立感叹词正常触发删除（无死条件阻塞）"""
+    """M5确认: L6孤立感叹词正常触发删除（无死条件阻塞）
+    v1.2.1 P0: 删除须源侧证据——纯假名源文放行"""
     srt = "1\n00:00:01,000 --> 00:00:02,000\n啊\n"
-    result = clean_srt(srt)
+    source_map = {"00:00:01,000 --> 00:00:02,000": "ああああ"}
+    result, stats = clean_srt(srt, source_map=source_map)
     # 孤立感叹词应被删除
     assert "啊" not in result or result.strip() == ""
+    assert stats["deleted"] == 1
+    assert stats["deleted_by_rule"] == {"L6-pure-exclamation": 1}
 
 
 def test_hardened_removal_no_protect():
@@ -371,23 +375,236 @@ def test_hardened_deep_retained():
 
 
 def test_sensory_isolated_delete():
-    """L7: 孤立感官词正常触发删除（非HARDENED保护词）"""
+    """L7: 孤立感官词正常触发删除（非HARDENED保护词）
+    v1.2.1 P0: 删除须源侧证据——纯假名源文放行；
+    v1.2.2 C2: L7 追加源侧噪声证据——源文须命中闸门0 计数类噪声特征
+    （单元平铺连缀 あじゃ×4）才允许删除"""
     # "痛苦"含感官根"痛"，不在HARDENED词表中，孤立出现应被删除
     srt = "1\n00:00:01,000 --> 00:00:02,000\n痛苦\n"
-    result = clean_srt(srt)
+    source_map = {"00:00:01,000 --> 00:00:02,000": "あじゃあじゃあじゃあじゃ"}
+    result, stats = clean_srt(srt, source_map=source_map)
     assert "痛苦" not in result
+    assert stats["deleted_by_rule"] == {"L7-sensory": 1}
+    assert stats["kept_by_noise_gate"] == 0
+
+
+def test_sensory_real_kana_source_kept():
+    """L7 收紧（v1.2.2 C2）：源文纯假名但为实义串（ああだめだ，含だめだ
+    实义应答，未命中噪声特征）→ 免删并计入 kept_by_noise_gate"""
+    srt = "1\n00:00:01,000 --> 00:00:02,000\n痛苦\n"
+    source_map = {"00:00:01,000 --> 00:00:02,000": "ああだめだ"}
+    result, stats = clean_srt(srt, source_map=source_map)
+    assert "痛苦" in result
+    assert stats["deleted"] == 0
+    assert stats["kept_by_noise_gate"] == 1
+    assert stats["kept_by_noise_gate_timings"] == \
+        ["00:00:01,000 --> 00:00:02,000"]
+
+
+def test_short_response_real_kana_kept():
+    """L8 收紧（v1.2.2 C2 核心契约）：源「やめて」（纯假名实义，白名单词）
+    + 译文"不要。" → 保留，kept_by_noise_gate ≥ 1"""
+    srt = "1\n00:00:01,000 --> 00:00:02,000\n不要。\n"
+    source_map = {"00:00:01,000 --> 00:00:02,000": "やめて"}
+    result, stats = clean_srt(srt, source_map=source_map)
+    assert "不要" in result
+    assert stats["deleted"] == 0
+    assert stats["kept_by_noise_gate"] == 1
 
 
 def test_short_response_delete_flow():
-    """L8: 短应答正常触发删除"""
+    """L8: 短应答正常触发删除
+    v1.2.1 P0: 删除须源侧证据——纯假名源文放行；
+    v1.2.2 C2: L8 追加源侧噪声证据——重复连打（あ×6）构成噪声特征"""
     srt = "1\n00:00:01,000 --> 00:00:02,000\n嗯\n"
-    result = clean_srt(srt)
+    source_map = {"00:00:01,000 --> 00:00:02,000": "ああああああ"}
+    result, stats = clean_srt(srt, source_map=source_map)
     assert "嗯" not in result
+    assert stats["deleted_by_rule"] == {"L8-short-response": 1}
+    assert stats["kept_by_noise_gate"] == 0
 
 
 def test_address_isolated_delete():
-    """L10: 孤立称呼正常触发删除（非hardened保护词）"""
+    """L10: 孤立称呼正常触发删除（非hardened保护词）
+    v1.2.1 P0: 删除须源侧证据——纯假名源文放行"""
     # "小姐"不是hardened保护词，孤立出现应被删除
     srt = "1\n00:00:01,000 --> 00:00:02,000\n小姐\n"
-    result = clean_srt(srt)
+    source_map = {"00:00:01,000 --> 00:00:02,000": "おねえさん"}
+    result, stats = clean_srt(srt, source_map=source_map)
     assert "小姐" not in result
+    assert stats["deleted_by_rule"] == {"L10-address": 1}
+
+
+# ---- v1.2.1 P0: 源侧证据前置门槛 + 结构化统计 ----
+
+def test_source_kanji_keeps_L10_address(config_dir):
+    """源文含汉字（部長さん。）+ 译文命中 L10 孤立称呼（部长。）→ 保留"""
+    srt = "1\n00:00:01,000 --> 00:00:02,000\n部长。\n"
+    source_map = {"00:00:01,000 --> 00:00:02,000": "部長さん。"}
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    assert "部长" in result
+    assert stats["deleted"] == 0
+    assert stats["kept_by_source_evidence"] == 1
+
+
+def test_source_kanji_keeps_L7_sensory(config_dir):
+    """源文含汉字（…最高…）+ 译文命中 L7 感官词（痛苦）→ 保留"""
+    srt = "1\n00:00:01,000 --> 00:00:02,000\n痛苦\n"
+    source_map = {"00:00:01,000 --> 00:00:02,000": "…最高…"}
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    assert "痛苦" in result
+    assert stats["kept_by_source_evidence"] == 1
+    assert stats["deleted"] == 0
+
+
+def test_source_kana_allows_deletion(config_dir):
+    """源文纯假名噪声（ああああああ，重复连打=噪声特征）+ 译文命中删除
+    规则 → 正常删除（v1.2.2 C2：L8 须噪声证据，あ×6 命中）"""
+    srt = "1\n00:00:01,000 --> 00:00:02,000\n嗯\n"
+    source_map = {"00:00:01,000 --> 00:00:02,000": "ああああああ"}
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    assert "嗯" not in result
+    assert stats["merged"] == 0
+    assert stats["deleted"] == 1
+    assert stats["deleted_by_rule"] == {"L8-short-response": 1}
+    assert stats["kept_by_source_evidence"] == 0
+    assert stats["kept_by_noise_gate"] == 0
+
+
+def test_no_source_map_failsafe_keep(config_dir):
+    """source_map 缺省 → fail-safe 全部保留（可删文本也不删）"""
+    srt = "1\n00:00:01,000 --> 00:00:02,000\n嗯\n"
+    result, stats = clean_srt(srt, config_dir=config_dir)
+    assert "嗯" in result
+    assert stats["deleted"] == 0
+    assert stats["deleted_by_rule"] == {}
+    # 仅"源文含汉字"的免删计入 kept_by_source_evidence；
+    # 证据缺失的 fail-safe 保留不计入
+    assert stats["kept_by_source_evidence"] == 0
+
+
+def test_source_map_missing_entry_failsafe_keep(config_dir):
+    """source_map 提供但该条目查不到源文 → 该条目 fail-safe 保留"""
+    srt = "1\n00:00:01,000 --> 00:00:02,000\n嗯\n"
+    source_map = {"00:00:09,000 --> 00:00:09,500": "ああああ"}
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    assert "嗯" in result
+    assert stats["deleted"] == 0
+
+
+def test_merged_entry_any_member_kanji_keeps(config_dir):
+    """合并行任一成员源文含汉字 → 合并行保留（继承成员源文集合）"""
+    srt = (
+        "1\n00:00:00,000 --> 00:00:00,800\n，\n\n"
+        "2\n00:00:00,900 --> 00:00:01,700\n！！\n"
+    )
+    source_map = {
+        "00:00:00,000 --> 00:00:00,800": "えっと",
+        "00:00:00,900 --> 00:00:01,700": "部長と",
+    }
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    items = parse_srt(result)
+    assert len(items) == 1                 # 两行已合并为一条
+    assert stats["merged"] == 1
+    assert stats["deleted"] == 0
+    assert stats["kept_by_source_evidence"] == 1
+
+
+def test_merged_entry_all_kana_deletes(config_dir):
+    """合并行成员源文全部为纯假名 → 按原逻辑删除，统计拆分正确"""
+    srt = (
+        "1\n00:00:00,000 --> 00:00:00,800\n，\n\n"
+        "2\n00:00:00,900 --> 00:00:01,700\n！！\n"
+    )
+    source_map = {
+        "00:00:00,000 --> 00:00:00,800": "えっと",
+        "00:00:00,900 --> 00:00:01,700": "あはは",
+    }
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    assert parse_srt(result) == []
+    assert stats["merged"] == 1
+    assert stats["deleted"] == 1
+    assert stats["deleted_by_rule"] == {"L5-garbage": 1}
+    assert stats["kept_by_source_evidence"] == 0
+
+
+def test_merged_entry_any_member_real_kana_keeps(config_dir):
+    """合并行任一成员为实义假名源文（やめて）→ 整行保留
+    （v1.2.2 C2 噪声闸门取成员并集：实义成员压过另一成员的噪声证据）"""
+    srt = (
+        "1\n00:00:00,000 --> 00:00:00,800\n，\n\n"
+        "2\n00:00:00,900 --> 00:00:01,700\n嗯\n"
+    )
+    source_map = {
+        "00:00:00,000 --> 00:00:00,800": "やめて",
+        "00:00:00,900 --> 00:00:01,700": "ああああああ",
+    }
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    assert len(parse_srt(result)) == 1        # 两行已合并为一条且保留
+    assert stats["merged"] == 1
+    assert stats["deleted"] == 0
+    assert stats["kept_by_noise_gate"] == 1
+
+
+def test_l11_60s_dedup_real_kana_source_kept(config_dir):
+    """L11 收紧（v1.2.2 C2）：60s 同感官根去重命中，但源文为实义假名
+    （やめて，未命中噪声特征）→ 保留并计入 kept_by_noise_gate"""
+    srt = (
+        "1\n00:00:00,000 --> 00:00:01,000\n好棒啊今天\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\n真是棒啊\n"
+    )
+    source_map = {
+        "00:00:00,000 --> 00:00:01,000": "すごいです",
+        "00:00:03,000 --> 00:00:04,000": "やめて",
+    }
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    items = parse_srt(result)
+    assert len(items) == 2
+    assert stats["deleted"] == 0
+    assert stats["kept_by_noise_gate"] == 1
+
+
+def test_l11_60s_dedup_noise_source_deletes(config_dir):
+    """L11：同感官根去重命中且源文为重复连打噪声（あ×6）→ 允许删除"""
+    srt = (
+        "1\n00:00:00,000 --> 00:00:01,000\n好棒啊今天\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\n真是棒啊\n"
+    )
+    source_map = {
+        "00:00:00,000 --> 00:00:01,000": "すごいです",
+        "00:00:03,000 --> 00:00:04,000": "ああああああ",
+    }
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    items = parse_srt(result)
+    assert len(items) == 1
+    assert stats["deleted"] == 1
+    assert stats["deleted_by_rule"] == {"L11-60s-dedup": 1}
+    assert stats["kept_by_noise_gate"] == 0
+
+
+def test_stats_counts_mixed_entries(config_dir):
+    """混合场景：stats 各字段（merged/deleted/deleted_by_rule/kept）计数正确"""
+    srt = (
+        "1\n00:00:00,000 --> 00:00:00,800\n其实，\n\n"      # 与下行合并
+        "2\n00:00:00,900 --> 00:00:01,700\n我觉得不对\n\n"
+        "3\n00:00:06,000 --> 00:00:07,000\n嗯\n\n"          # L8 → 删除
+        "4\n00:00:08,000 --> 00:00:09,000\n部长。\n"        # L10 → 源文含汉字 → 免删
+    )
+    source_map = {
+        "00:00:00,000 --> 00:00:00,800": "えっと",
+        "00:00:00,900 --> 00:00:01,700": "そうおもわない",
+        # v1.2.2 C2：L8 须噪声证据——用重复连打（あ×6）放行删除
+        "00:00:06,000 --> 00:00:07,000": "ああああああ",
+        "00:00:08,000 --> 00:00:09,000": "部長さん。",
+    }
+    result, stats = clean_srt(srt, config_dir=config_dir, source_map=source_map)
+    items = parse_srt(result)
+    assert len(items) == 2
+    texts = [it.text for it in items]
+    assert any("我觉得不对" in t for t in texts)
+    assert any("部长" in t for t in texts)
+    assert stats["merged"] == 1
+    assert stats["deleted"] == 1
+    assert stats["deleted_by_rule"] == {"L8-short-response": 1}
+    assert stats["kept_by_source_evidence"] == 1
+    assert stats["kept_by_noise_gate"] == 0

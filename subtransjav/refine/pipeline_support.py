@@ -19,7 +19,7 @@ CREATED_TMP_DIRS = []
 _tmp_dirs_lock = threading.Lock()
 
 from .config import TEMP_DIR, RefineConfig  # noqa: E402  # 延迟导入规避循环依赖
-from .glossary import load_glossary  # noqa: E402  # 延迟导入规避循环依赖
+from .glossary import load_glossary_ex  # noqa: E402  # 延迟导入规避循环依赖
 
 
 class RefineError(Exception):
@@ -80,14 +80,20 @@ def learned_glossary_path() -> str:
 
 
 def load_glossary_merged(cfg: RefineConfig) -> list:
-    """加载人工词库 + 自动学习词库（learned 追加，不覆盖人工条目）。"""
-    glossary = load_glossary(cfg.glossary_path) if cfg.glossary_path else []
-    _learned = load_glossary(learned_glossary_path())
+    """加载人工词库 + 自动学习词库（learned 追加，不覆盖人工条目）。
+
+    v1.2.2 D：返回三元组 ``[(src, dst, aliases), ...]``——第三列为
+    人工词库可选列 target_aliases（`|` 分隔，缺列/空 = 无别名）；
+    learned 自学习词库不生成别名（恒为空元组）。两列消费者
+    （match_glossary / format_glossary_block）已兼容三列词条。
+    """
+    glossary = load_glossary_ex(cfg.glossary_path) if cfg.glossary_path else []
+    _learned = load_glossary_ex(learned_glossary_path())
     if _learned:
-        _existing_srcs = {s for s, _ in glossary}
-        for s, d in _learned:
+        _existing_srcs = {s for s, _d, _a in glossary}
+        for s, d, a in _learned:
             if s not in _existing_srcs:
-                glossary.append((s, d))
+                glossary.append((s, d, a))
     if glossary:
         print(f"📚 [refine] 词库已加载：{len(glossary)} 条")
     return glossary

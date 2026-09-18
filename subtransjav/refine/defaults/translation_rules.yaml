@@ -35,16 +35,70 @@ validator_rules:
     warn_only: false
 
   # 主语误判检测：源文含僕たち/私たち/俺たち+名词+で（定语构造）而译文
-  # 以"我是/我是…/我们，是…"开头，说明把复数定语误作主语。
+  # 以单数"我是/俺是"开头才告警（僕たち/私たち…で 复数代词误译为单数
+  # 主语）；"我们是…"为正确方向不告警（定语读法"我们的…"由角色卡规则
+  # 防护，负向前瞻 (?![们們等]) 排除复数）。
   # 注意 source 特意要求后面接「で」（中顿）：僕たちは部長だ→"我们是部长"
   # 是正确翻译，不能误伤；间隔字符排除换行（条目均为单行，无影响）。
   # 片假名变体（ボク/ワタシ/オレ）一并覆盖，ASR 字幕常见。
   # 主语推断需上下文，仅告警不改译文。
   # 影响范围：日志告警（Logs/）+ 质量报告"校验告警"清单。
   subject_misjudge:
-    description: 僕たち/私たち+名词+で 定语结构被误作主语（"我是/我们是…"开头）
+    description: 僕たち/私たち+名词+で 定语结构被误译为单数"我是/俺是"开头
     source_pattern: '(?:僕|私|俺|ボク|ワタシ|オレ)たち(?!は).{0,12}で'
-    target_pattern: '^\s*(?:我|俺)(?:们|們|等)?\s*[，,、]?\s*(?:是|成了)'
+    target_pattern: '^\s*(?:我|俺)(?![们們等])\s*[，,、]?\s*(?:是|成了)'
+    warn_only: true
+
+  # 反义误译检测（批次 B2，冻结契约 D2026-0917-01 ③）：双侧锚定——源文
+  # 命中指定形态 且 译文命中目标集才告警；warn_only=true 仅进质量报告
+  # 复核清单 + 经既有 flagged_indexes 机制阻断该翻译对进入 TM 学习，
+  # 不改动译文。
+  # 反义规则仅 local/strict 档生效（post_validate 既有执行条件：
+  # _apply_fallback_rules 在 cloud/lenient 档整层跳过，无需单独开关）。
+  # 影响范围：质量报告"校验告警"复核清单 + TM 学习准入（validator 类跳过）。
+  antonym_yamete:
+    description: やめて 禁止默认译'别停/不要停'，优先'住手/停下'，按语境裁定；やめないで 才是'别停'；仅 local/strict 档生效
+    # 负向排除 やめないで/やめるな：やめないで→"别停"是正确翻译不得告警
+    source_pattern: 'やめ(?!ないで)(?!るな)(?:て|ろ)'
+    target_pattern: '(?:别停|不要停)(?:下来)?'
+    warn_only: true
+
+  antonym_saitei:
+    description: 日语口语 最低=差劲，译成正面评价即反义；仅 local/strict 档生效
+    source_pattern: '最低'
+    target_pattern: '(?:真不错|真棒|不错|挺好)'
+    warn_only: true
+
+  antonym_zurui:
+    description: ずるい/ずりー=狡猾/不公平，非"滑"；仅 local/strict 档生效
+    source_pattern: 'ずるい|ずりー'
+    target_pattern: '滑'
+    warn_only: true
+
+  # 身体部位误译检测（批次 B 闭环）：身体语境下 首=脖子（不是头）。双侧锚定
+  # 与 antonym_* 同构（批次 B2 既有机制）：源文命中 首 且 译文命中
+  # 摸头/揉头/头上/头发 才告警；warn_only=true 仅进质量报告复核清单 +
+  # 经既有 flagged_indexes 机制阻断该翻译对进入 TM 学习，不改动译文。
+  # 仅 local/strict 档生效（_apply_fallback_rules 既有执行条件）。
+  # 影响范围：质量报告"校验告警"复核清单 + TM 学习准入（validator 类跳过）。
+  body_part_kubi:
+    description: 身体语境 首=脖子非头；习语负向排除；仅 local/strict 档生效
+    # 负向排除习语/抽象形态：首が回らない/首を長くする/首になる/首をかしげる
+    source_pattern: '首(?!が回ら)(?!を長く)(?!になる)(?!をかしげ)'
+    target_pattern: '(?:摸头|揉头|头上|头发)'
+    warn_only: true
+
+  # イク系变体高潮语境复核（批次 B 闭环）：イク 已由 glossary 强制译"要去了"，
+  # 本规则捕获 glossary 子串匹配不到的假名变体（イっ/イきそう/イく/いっちゃう）
+  # 译出高潮类目标时的复核（いっちゃう 口语中亦可能为 行く+ちゃう，需人裁定）。
+  # 汉字 行く/行きます/行った/行こう 显式负向排除（契约要求）；イク 精确形态
+  # 一并负向排除（glossary 译法本身不告警）。双侧锚定 + warn_only，同 B2 既有
+  # 行为；仅 local/strict 档生效。
+  climax_iku_variant:
+    description: イク系变体仅高潮语境复核（いっちゃう 口语亦可能为行く+ちゃう）；普通'去'不受影响；仅 local/strict 档生效
+    # 前瞻负向排除：普通"去"类汉字形态 + glossary 精确形态イク
+    source_pattern: '(?!行く|行きます|行った|行こう|イク)(?:イっ|イきそう|イく|イク|いっちゃう)'
+    target_pattern: '(?:要去了|快去了|要高潮了|快高潮了)'
     warn_only: true
 
 # -----------------------------------------------------------------------------

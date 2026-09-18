@@ -54,6 +54,10 @@ TUNABLE_FIELD_TYPES = {
     "v2_source_filter_valve_pct": int,
     "v2_asr_meta_min_coverage_pct": int,
     "v2_asr_meta_stale_max_hours": int,
+    "context_sidecar": bool,
+    # v1.2.2 Beta 剧情自摘要：开关（bool 白名单字面量收敛）与采样字符预算
+    "auto_synopsis": bool,
+    "synopsis_max_chars": int,
 }
 
 # ---- 服务商预设 ----
@@ -135,6 +139,18 @@ def user_settings_path() -> str:
 
 def _coerce_tunable(raw, typ):
     """按字段类型收敛配置值；类型非法返回 None（调用方警告后忽略）。"""
+    if typ is bool:
+        # bool 不走 bool(raw)（bool("false")/bool("0") 均为 True，会误开
+        # 开关）：仅接受真 bool 与白名单字面量，其余视为非法忽略。
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            v = raw.strip().lower()
+            if v in ("1", "true", "yes", "on"):
+                return True
+            if v in ("0", "false", "no", "off"):
+                return False
+        return None
     try:
         return typ(raw)
     except (TypeError, ValueError):
@@ -242,6 +258,13 @@ class RefineConfig:
     batch_size_stable: bool = True   # 固定批次大小（提高缓存命中率）
     # 自动词库学习
     auto_glossary: bool = False     # S1 完成后自动提取术语
+    # v1.2.2 D3 learned 自学习治理开关：False 时跳过 glossary_learned
+    # 学习路径（跳过计数入日志）。影响学习行为，须入 manifest 指纹。
+    glossary_learn_enabled: bool = True
+    # v1.2.2 D1 术语冲突观察闸：False=仅观察（默认，冲突只落 CSV/JSON
+    # 与报告小节）；True=冲突条目禁止进入 TM 学习（_learn_to_tm 入库前
+    # 检查，冲突即跳过并计数）。转阻断与否由用户裁决，系统不自动切换。
+    glossary_conflict_block: bool = False
     # 自定义净语规则配置目录（空=使用内置默认）
     cleaner_config_dir: str = ""
 
@@ -251,7 +274,7 @@ class RefineConfig:
     v2_profile: str = "local"       # local=strict兜底(cleaner+误译拦截) | cloud=lenient(仅通用校验)
     v2_concurrency: int = 1         # 批间并发数（1-5，默认1为串行，对所有服务商生效）
     v2_ctx_local: int = 32768       # 本地模型上下文窗口（批大小/max_tokens 预算依据）
-    v2_keep_untranslated: str = "original"   # 阶段B仍失败时: original=保留日文原文 | empty=删除
+    v2_keep_untranslated: str = "original"   # D1 后仅兼容保留：A/B 双失败一律回退原文+[未翻译] 标记（原 original/empty 两档已并轨，不再删行）
     # 闸门0 送翻前源侧幻觉检测（预合并前对原始条目生效，两档 profile 均执行；
     # 规则库见 refine/defaults/source_hallucination.yaml）
     v2_source_filter: str = "default"       # strict | default | off（仿 v2_profile 档位声明）
@@ -264,6 +287,19 @@ class RefineConfig:
     # 上游 ASR 信号阈值：覆盖率告警下限（%）/ 运行 manifest 新鲜度上限（小时）
     v2_asr_meta_min_coverage_pct: int = DEFAULT_V2_ASR_META_MIN_COVERAGE_PCT
     v2_asr_meta_stale_max_hours: int = DEFAULT_V2_ASR_META_STALE_MAX_HOURS
+    # v1.2.2 C1 per-片语境 sidecar（{stem}.context.md，与输入 srt 同目录
+    # 同名）：剧情摘要 + 误听怀疑表注入 A/B 提示词。默认开；文件不存在=
+    # 无注入；False=禁用。可经 user_settings.json / SUBTRANSJAV_CONTEXT_SIDECAR
+    # 覆盖（TUNABLE_FIELD_TYPES 注册，bool 白名单字面量收敛）。
+    context_sidecar: bool = True
+    # v1.2.2 Beta 剧情自摘要（auto_synopsis）：闸门0+预合并后自动抽样整片
+    # 剧情行，一次独立 LLM 调用生成 3-5 行中文梗概，仅注入 A/B 提示词
+    # （绝不写入输出目录/终稿/质量报告）；手写 sidecar【剧情摘要】非空时
+    # 手写优先。摘要缓存独立目录 Temp/synopsis_cache/（与 TM 完全隔离）；
+    # 摘要文本与缓存不参与 manifest 指纹（与 sidecar 内容同款已知边界）。
+    # 可经 user_settings.json / SUBTRANSJAV_AUTO_SYNOPSIS 覆盖。
+    auto_synopsis: bool = True
+    synopsis_max_chars: int = 6000  # 抽样文本字符预算（桶采样总限幅）
     force: bool = False             # v2: 忽略已有产物强制重跑（覆盖前自动备份）
     tm_learn_gate: bool = True      # TM 学习准入门槛总开关（False 用于 A/B 验证）
     # 断点续跑（清单指纹校验见 manifest 模块）

@@ -105,7 +105,9 @@ class FakeTM:
     def lookup_exact(self, source, stage=0):
         return self.hits.get(source.strip())
 
-    def store_batch(self, pairs):
+    def store_batch(self, pairs, source_name=None):
+        # v1.2.2：签名随 tm.store_batch 增加 source_name（provenance）参数，
+        # 记录内容仍为 3 元组 pairs，既有断言不变
         self.stored.extend(pairs)
         return len(pairs)
 
@@ -204,11 +206,65 @@ def test_retry_chain_both_fail_keeps_original(tmp_path, monkeypatch):
     monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
     final = pv._run_stage_b(cfg, a, entries, str(tmp_path), [])
     texts = {e["index"]: e["text"] for e in final}
-    assert texts[1] == "こんにちは"    # 回退日文原文
+    assert texts[1] == pv.UNTRANSLATED_PREFIX + "こんにちは"    # D1: 回退日文原文并加 [未翻译] 标记
+
+
+class MergeTwoLinesClient(FakeClient):
+    """D7：模型恒定把两行并成一行返回（每两行只回第一行的译文）。"""
+
+    def translate_entries(self, entries, *, system_text, user_prompt,
+                          max_batch_size=30, allow_empty_deletions=False,
+                          scene_threshold=60.0, progress=None):
+        self.calls.append([e["index"] for e in entries])
+        self.entry_log.append([dict(e) for e in entries])
+        is_stage_b = any("|||" in e["text"] for e in entries)
+        translations, deleted, failed = {}, set(), []
+        for k, e in enumerate(entries):
+            i = e["index"]
+            if k % 2 == 0:
+                translations[i] = f"审{i}" if is_stage_b else f"译{i}"
+            else:
+                failed.append(i)         # 第二行被并掉 → 缺行
+        return BatchResult(translations=translations, deleted=deleted,
+                           failed=failed)
+
+
+def test_retry_budget_d7_merged_lines_degrade_to_untranslated(
+        tmp_path, monkeypatch):
+    """D7：模型恒定两行并一行 → 缺行按既有 failed 链路降级，绝不整文件失败。
+
+    终稿条目数不变、缺失行带 [未翻译]、风险清单计数正确。
+    （重试恰 2 次的预算语义由 tests/test_llm_client.py 协议层测试钉住。）
+    """
+    from subtransjav.refine.risk import RiskCollector
+    cfg = _make_cfg(tmp_path)
+    entries = _entries("こんにちは", "さようなら", "ありがとう", "おやすみ")
+    monkeypatch.setattr(pv, "_make_client",
+                        lambda cfg, tag: MergeTwoLinesClient())
+    collector = RiskCollector()
+    a = pv._run_stage_a(cfg, entries, None, str(tmp_path), [],
+                        collector=collector)
+    # 条目数不变；被并掉的行带 [未翻译] 前缀
+    assert len(a.entries) == 4
+    texts = {e["index"]: e["text"] for e in a.entries}
+    assert texts[2] == pv.UNTRANSLATED_PREFIX + "さようなら"
+    assert texts[4] == pv.UNTRANSLATED_PREFIX + "おやすみ"
+    # 风险清单：阶段A 缺行计数正确
+    ev = [e for e in collector.events
+          if e.stage == "A" and e.action == "置 [未翻译] 交阶段B补译"]
+    assert len(ev) == 1 and ev[0].affected_count == 2
+    # 阶段B 同样并行 → 双失败行走回退链保留原文（风险清单第二环）
+    final = pv._run_stage_b(cfg, a, entries, str(tmp_path), [],
+                            collector=collector)
+    assert len(final) == 4                      # 条目数不变（宁多勿缺）
+    ftexts = {e["index"]: e["text"] for e in final}
+    assert ftexts[2] == pv.UNTRANSLATED_PREFIX + "さようなら"
+    kept = [e for e in collector.events if e.action == "保留日文原文"]
+    assert len(kept) == 1 and kept[0].affected_count == 2
 
 
 def test_stage_b_deletion(tmp_path, monkeypatch):
-    """阶段B删除的条目不进终稿。"""
+    """D1：阶段B 删除标记不再物理删条——缺译文行回退 A 译文（宁多勿缺）。"""
     cfg = _make_cfg(tmp_path)
     entries = _entries("こんにちは", "あ")
     monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: FakeClient())
@@ -216,7 +272,8 @@ def test_stage_b_deletion(tmp_path, monkeypatch):
     fake = FakeClient(delete_b={2})
     monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
     final = pv._run_stage_b(cfg, a, entries, str(tmp_path), [])
-    assert [e["index"] for e in final] == [1]
+    assert [e["index"] for e in final] == [1, 2]   # D1: 删除标记不再删条
+    assert final[1]["text"] == "译2"      # 回退 A 译文
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +287,7 @@ def test_strict_profile_applies_post_validate(tmp_path, monkeypatch):
     # 模拟阶段A产出了误译
     a_entries = [{"index": 1, "timing": entries[0]["timing"],
                   "text": "作为部长，作为王牌。"}]
-    out, warns, clean_merged, flagged = pv._apply_fallback_rules(
+    out, warns, clean_merged, flagged, clean_stats = pv._apply_fallback_rules(
         cfg, a_entries, entries)
     assert out[0]["text"] == "是部长，是王牌。"
     assert warns and "で误译修正" in warns[0]
@@ -242,10 +299,10 @@ def test_lenient_profile_skips_fallback(tmp_path):
     entries = _entries("部長で、エースで。")
     a_entries = [{"index": 1, "timing": entries[0]["timing"],
                   "text": "作为部长，作为王牌。"}]
-    out, warns, clean_merged, flagged = pv._apply_fallback_rules(
+    out, warns, clean_merged, flagged, clean_stats = pv._apply_fallback_rules(
         cfg, a_entries, entries)
     assert out[0]["text"] == "作为部长，作为王牌。"
-    assert warns == [] and clean_merged is None
+    assert warns == [] and clean_merged is None and clean_stats is None
 
 
 # ---------------------------------------------------------------------------
@@ -384,15 +441,19 @@ def test_cleaner_config_dir_wired(tmp_path, monkeypatch):
     """GUI「净语配置目录」→ strict 档 clean_srt(config_dir=...)。"""
     calls = {}
     import subtransjav.refine.cleaner_rules as cr
-    def fake_clean_srt(srt, config_dir=None):
+    def fake_clean_srt(srt, config_dir=None, source_map=None):
         calls["config_dir"] = config_dir
-        return srt
+        calls["source_map"] = source_map
+        return srt, {"merged": 0, "deleted": 0,
+                     "deleted_by_rule": {}, "kept_by_source_evidence": 0}
     monkeypatch.setattr(cr, "clean_srt", fake_clean_srt)
     cfg = _make_cfg(tmp_path, profile="local")
     cfg.cleaner_config_dir = r"D:\custom\rules"
     entries = [{"index": 1, "timing": "t", "text": "你好"}]
     pv._apply_fallback_rules(cfg, entries, entries)
     assert calls["config_dir"] == r"D:\custom\rules"
+    # 源侧证据接线：清洗前条目按时间轴对齐源文后传入
+    assert calls["source_map"] == {"t": "你好"}
 
 
 # ---------------------------------------------------------------------------
@@ -427,19 +488,25 @@ def test_cleaner_renumbering_index_restored(tmp_path, monkeypatch):
     """cleaner 重新编号后，必须按时间轴恢复原始 index（防错位）。"""
     import subtransjav.refine.cleaner_rules as cr
 
-    def fake_clean_srt(srt, config_dir=None):
+    def fake_clean_srt(srt, config_dir=None, source_map=None):
         # 模拟 cleaner：删掉第2条并重新编号（原文 index 1,3 → 输出 1,2）
         assert srt.count("-->") == 3
+        stats = {"merged": 0, "deleted": 1,
+                 "deleted_by_rule": {"L8-short-response": 1},
+                 "kept_by_source_evidence": 0}
         return ("1\n00:00:01,000 --> 00:00:01,500\n译1\n\n"
-                "2\n00:00:03,000 --> 00:00:03,500\n译3\n")
+                "2\n00:00:03,000 --> 00:00:03,500\n译3\n"), stats
     monkeypatch.setattr(cr, "clean_srt", fake_clean_srt)
 
     cfg = _make_cfg(tmp_path, profile="local")
     orig = _entries("あ", "い", "う")
     entries = [{"index": e["index"], "timing": e["timing"], "text": f"译{e['index']}"}
                for e in orig]
-    out, warns, clean_merged, _flagged = pv._apply_fallback_rules(cfg, entries, orig)
-    assert clean_merged == 1
+    out, warns, clean_merged, _flagged, clean_stats = \
+        pv._apply_fallback_rules(cfg, entries, orig)
+    # 合并/删除拆分：该 fake 只删除未合并
+    assert clean_merged == 0
+    assert clean_stats["deleted"] == 1
     by_start = {e["text"]: e["index"] for e in out}
     # 译1→index1，译3→index3（原始身份恢复，而非重编号后的 2）
     assert by_start["译1"] == 1
@@ -691,12 +758,263 @@ def test_quality_report_review_checklist():
     assert "00:00:07,500 --> 00:00:08,500" in report
     assert "あいしゃぶんねて" in report
     assert "カチューシャ" in report
-    # 统计行：条目链路与合并统计
+    # 统计行：条目链路与合并统计（规则清洗如实拆分：合并/删除分行呈现）
     assert "条目: 原文 6 → 预合并后 5 → 终稿 4" in report
-    assert "预合并合并 1 处 | 规则清洗合并 2 处" in report
+    assert "（预合并合并 1 处）" in report
+    assert "规则清洗: 合并 2 · 删除 0（源侧证据免删 0）" in report
     assert "时间轴对齐率（对预合并后期望时间轴）: 75.0%" in report
     # #4 未对齐 → 期望 #4 无对应终稿条目，同计漏覆盖
     assert "实义内容漏覆盖: 2/3 (66.7%)" in report
+
+
+def test_quality_report_kana_grouped_per_entry():
+    """D3：同条目多个假名串归并为一条复核项，片段清单列全并标注总段数。"""
+    from subtransjav.refine.quality_report import build_quality_report
+    orig = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+             "text": "内容"}]
+    # 同一条目 5 个假名串（含汉字，非 [未翻译]）
+    final = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+              "text": "あいう かきく さしす たちつ なにぬ残留内容"}]
+    report = build_quality_report(orig, final, "demo")
+    assert report.count("[假名残留·需人工确认]") == 1      # 仅 1 条编号
+    assert report.count("#1 00:00:01,000") == 1
+    assert "残留假名串（共 5 段）" in report
+    assert "等 5 段" in report
+    assert "あいう" in report and "なにぬ" in report       # 5 段全列出
+    assert "假名残留 1 条" in report                        # 结论按条目数
+
+    # 超 5 段：只显示前 5 段 + "等 7 段"
+    final7 = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+               "text": "あいう かきく さしす たちつ なにぬ はひふ まみむ内容"}]
+    report7 = build_quality_report(orig, final7, "demo")
+    assert report7.count("[假名残留·需人工确认]") == 1
+    assert "等 7 段" in report7
+    assert "「まみむ」" not in report7                       # 第 6/7 段不进片段清单
+
+
+def test_quality_report_disposal_section():
+    """D2：处置章节渲染闸门0 删除台账（总数/分类/样本/归档指引）。"""
+    from subtransjav.refine.quality_report import build_quality_report
+    orig = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+             "text": "挿入する"}]
+    final = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+              "text": "插进去"}]
+    gate0_deletions = {
+        "total": 2,
+        "by_category": {"纯标点行": 1, "!串": 1, "孤立应答词": 0},
+        "samples": [
+            {"index": 2, "timing": "00:00:03,000 --> 00:00:04,000",
+             "reason": "纯标点行", "text": "。。。"},
+            {"index": 5, "timing": "00:00:06,000 --> 00:00:07,000",
+             "reason": "!串", "text": "！！"},
+        ],
+    }
+    report = build_quality_report(orig, final, "demo",
+                                  gate0_deletions=gate0_deletions,
+                                  orig_total=3)
+    assert "【处置】" in report
+    assert "送翻前检测（闸门0）删除 2 条" in report
+    assert "按删除原因: 纯标点行 1 条、!串 1 条" in report   # 0 计数类别不出现
+    assert "孤立应答词" not in report
+    assert "#2 00:00:03,000 --> 00:00:04,000 [纯标点行] 。。。" in report
+    assert "#5 00:00:06,000 --> 00:00:07,000 [!串] ！！" in report
+    assert "全量台账见 Errors/dropped_entries.log" in report
+
+    # 无删除：只报总数，不出样本/台账行
+    report0 = build_quality_report(orig, final, "demo",
+                                   gate0_deletions={"total": 0,
+                                                    "by_category": {},
+                                                    "samples": []},
+                                   orig_total=1)
+    assert "送翻前检测（闸门0）删除 0 条" in report0
+    assert "dropped_entries" not in report0
+
+    # 未提供台账（旧调用方）：整节省略
+    assert "【处置】" not in build_quality_report(orig, final, "demo")
+
+
+def test_quality_report_garble_review_section():
+    """D5：乱码强译复核小节——置于【处置】之后，上限 20 条，空表显示无样本。"""
+    from subtransjav.refine.quality_report import build_quality_report
+    orig = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+             "text": "挿入する"}]
+    final = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+              "text": "插进去"}]
+    garble = [
+        {"index": 7, "timing": "00:00:03,000 --> 00:00:04,000",
+         "src_preview": "あじゃあじゃあじゃあじゃ",
+         "zh_preview": "来吧，继续", "signal": "无意义音节连缀"},
+        {"index": 9, "timing": "00:00:05,000 --> 00:00:06,000",
+         "src_preview": "んああああああ", "zh_preview": "别停下，继续",
+         "signal": "闸门0计数类检出"},
+    ]
+    report = build_quality_report(
+        orig, final, "demo",
+        gate0_deletions={"total": 0, "by_category": {}, "samples": []},
+        garble_review=garble)
+    assert "【乱码强译复核】" in report
+    assert "共 2 条" in report
+    assert "语义是否被反转" in report
+    assert "#7 00:00:03,000 --> 00:00:04,000 [无意义音节连缀]" in report
+    assert "源: あじゃあじゃあじゃあじゃ" in report
+    assert "译: 来吧，继续" in report
+    # 小节顺序：【处置】 → 【乱码强译复核】 → 【双引擎分歧】
+    assert report.index("【处置】") < report.index("【乱码强译复核】") \
+        < report.index("【双引擎分歧】")
+
+    # 0 条：小节在场且显示"无样本"（精确到小节内首行，防撞统计行）
+    report0 = build_quality_report(orig, final, "demo", garble_review=[])
+    lines0 = report0.splitlines()
+    i0 = lines0.index("【乱码强译复核】")
+    assert lines0[i0 + 1] == "无样本"
+
+    # 未提供（旧调用方）：整节省略
+    assert "【乱码强译复核】" not in build_quality_report(orig, final, "demo")
+
+    # 超上限：25 条 → 列 20 条 + "其余 5 条略"
+    many = [{"index": i,
+             "timing": f"00:00:{i:02d},000 --> 00:00:{i:02d},500",
+             "src_preview": f"乱码源文{i}", "zh_preview": f"通顺译文{i}",
+             "signal": "无意义音节连缀"} for i in range(1, 26)]
+    report_many = build_quality_report(orig, final, "demo",
+                                       garble_review=many)
+    assert "（其余 5 条略）" in report_many
+    listed = [ln for ln in report_many.splitlines()
+              if ln.strip().startswith("译: ")]
+    assert len(listed) == 20
+
+
+def test_run_single_v2_garble_review_wired(tmp_path, monkeypatch):
+    """D5 端到端：乱码源文 × 通顺译文 → 质量报告出现乱码强译复核小节。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = tmp_path / "demo.srt"
+    in_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nあじゃあじゃあじゃあじゃ\n\n"
+        "2\n00:00:10,000 --> 00:00:11,000\nこんにちは\n",
+        encoding="utf-8")
+
+    def _fake_tmp(p, s):
+        d = tmp_path / "work"
+        d.mkdir(exist_ok=True)
+        return str(d)
+    monkeypatch.setattr(pv, "refine_tmp_dir", _fake_tmp)
+
+    class FluentClient(FakeClient):
+        def translate_entries(self, entries, **kw):
+            r = super().translate_entries(entries, **kw)
+            r.translations = {i: f"继续来吧{i}" for i in r.translations}
+            return r
+
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: FluentClient())
+    monkeypatch.setattr(pv, "_init_tm", lambda c: None)
+
+    out = pv._run_single_v2(cfg, str(in_srt))
+    report_path = tmp_path / "demo_质量报告.txt"
+    assert report_path.is_file()
+    report = report_path.read_text(encoding="utf-8")
+    assert "【乱码强译复核】" in report
+    assert "共 1 条" in report                       # 实义行こんにちは不入
+    assert "あじゃあじゃあじゃあじゃ" in report
+    assert "语义是否被反转" in report
+    assert out.endswith("demo_final_cn.srt")
+
+
+def test_quality_report_entry_identity_check():
+    """D2：条数核对恒等式——平衡 ✅、人为破坏计数 ⚠️ 且两侧数值可见。"""
+    from subtransjav.refine.quality_report import build_quality_report
+
+    def _e(i):
+        return {"index": i,
+                "timing": f"00:00:0{i},000 --> 00:00:0{i},500",
+                "text": f"テスト{i}"}
+
+    # 平衡：原文6 = 闸门0删除1 + 预合并合并1 + 规则清洗合并1 + 规则清洗删除1 + 终稿2
+    expected = [_e(2), _e(4), _e(5), _e(6)]
+    final = [_e(2), _e(4)]
+    merge_stats = {"premerge_merged": 1, "clean_merged": 1,
+                   "clean_deleted": 1,
+                   "clean_deleted_by_rule": {"L9-test": 1},
+                   "clean_kept_by_evidence": 2}
+    gate0_deletions = {"total": 1, "by_category": {"纯标点行": 1},
+                       "samples": []}
+    report = build_quality_report(expected, final, "demo",
+                                  expected_entries=expected,
+                                  merge_stats=merge_stats,
+                                  gate0_deletions=gate0_deletions,
+                                  orig_total=6)
+    assert ("条数核对: ✅ 原文 6 = 闸门0删除 1 + 预合并合并 1"
+            " + 规则清洗合并 1 + 规则清洗删除 1 + 终稿 2") in report
+
+    # 隔离区移出入账（H5）：原文6 = 闸门0删除1 + 预合并合并1 + 规则清洗
+    # 合并1 + 规则清洗删除1 + 隔离区移出1 + 终稿1 → ✅（六项全显示）
+    report_q = build_quality_report(expected, final[:1], "demo",
+                                    expected_entries=expected,
+                                    merge_stats={**merge_stats,
+                                                 "quarantine_moved": 1},
+                                    gate0_deletions=gate0_deletions,
+                                    orig_total=6)
+    assert ("条数核对: ✅ 原文 6 = 闸门0删除 1 + 预合并合并 1"
+            " + 规则清洗合并 1 + 规则清洗删除 1 + 隔离区移出 1"
+            " + 终稿 1") in report_q
+
+    # 无隔离（键缺失或 0）：隔离区移出项不显示，恒等式退回五项形式
+    report_noq = build_quality_report(expected, final, "demo",
+                                      expected_entries=expected,
+                                      merge_stats=merge_stats,
+                                      gate0_deletions=gate0_deletions,
+                                      orig_total=6)
+    assert "隔离区移出" not in report_noq
+
+    # 破坏：终稿再少 1 条（未入账损失）→ ⚠️ 且两侧数值都显示
+    report_bad = build_quality_report(expected, final[:1], "demo",
+                                      expected_entries=expected,
+                                      merge_stats=merge_stats,
+                                      gate0_deletions=gate0_deletions,
+                                      orig_total=6)
+    assert "条数核对: ⚠️ 不平（原文 6 ≠ 右侧合计 5）" in report_bad
+    assert "闸门0删除 1 + 预合并合并 1 + 规则清洗合并 1" \
+           " + 规则清洗删除 1 + 终稿 1" in report_bad
+
+
+def test_quality_report_untranslated_section():
+    """D1 口径：[未翻译] 条目单列小节逐条列出，与假名残留章不重复计数。"""
+    from subtransjav.refine.quality_report import build_quality_report
+    orig = [
+        {"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+         "text": "こんにちは"},
+        {"index": 2, "timing": "00:00:03,000 --> 00:00:03,500",
+         "text": "さようなら"},
+        {"index": 3, "timing": "00:00:05,000 --> 00:00:05,500",
+         "text": "ありがとう"},
+    ]
+    final = [
+        {"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+         "text": "[未翻译]こんにちは"},            # 含假名，但不得进假名章
+        {"index": 2, "timing": "00:00:03,000 --> 00:00:03,500",
+         "text": "[未翻译]さようなら"},
+        {"index": 3, "timing": "00:00:05,000 --> 00:00:05,500",
+         "text": "谢谢"},
+    ]
+    report = build_quality_report(orig, final, "demo",
+                                  expected_entries=orig)
+    assert "【未翻译】共 2 条" in report
+    assert "#1 00:00:01,000 --> 00:00:02,000 原文: こんにちは" in report
+    assert "#2 00:00:03,000 --> 00:00:03,500 原文: さようなら" in report
+    assert "[假名残留·需人工确认]" not in report           # 不与假名章重复
+    assert "✅ 通过，无待复核项" in report                  # 不计入需复核清单
+    assert "[未翻译] 残留: 2 条" in report                  # 统计行按条目数
+
+    # 超上限：21 条时列 20 条 + "其余 1 条略"
+    many_orig = [{"index": i, "timing": f"00:00:{i:02d},000 --> 00:00:{i:02d},500",
+                  "text": "こんにちは"} for i in range(1, 22)]
+    many_final = [{"index": i,
+                   "timing": f"00:00:{i:02d},000 --> 00:00:{i:02d},500",
+                   "text": "[未翻译]こんにちは"} for i in range(1, 22)]
+    report_many = build_quality_report(many_orig, many_final, "demo",
+                                       expected_entries=many_orig)
+    assert "【未翻译】共 21 条" in report_many
+    assert "（其余 1 条略）" in report_many
+    assert report_many.count("原文: こんにちは") == 20
 
 
 def test_quality_report_no_miss_threshold_lists_all():
@@ -756,7 +1074,7 @@ def test_run_v2_all_fail_raises(tmp_path, monkeypatch):
 
 
 def test_stage_b_keep_untranslated_empty(tmp_path, monkeypatch):
-    """v2_keep_untranslated='empty'：A、B 双失败的行整条移除。"""
+    """D1：v2_keep_untranslated='empty' 不再移除行——A、B 双失败行保留原文并加 [未翻译] 标记（与 original 档一致）。"""
     cfg = _make_cfg(tmp_path)
     cfg.v2_keep_untranslated = "empty"
     entries = _entries("こんにちは", "さようなら")
@@ -771,7 +1089,8 @@ def test_stage_b_keep_untranslated_empty(tmp_path, monkeypatch):
     fake = FakeClient(fail_b={1})
     monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
     final = pv._run_stage_b(cfg, a, entries, str(tmp_path), [])
-    assert [e["index"] for e in final] == [2]
+    assert [e["index"] for e in final] == [1, 2]   # D1: empty 档不再移除
+    assert final[0]["text"] == pv.UNTRANSLATED_PREFIX + "こんにちは"   # 原文+[未翻译] 标记
 
 
 def test_validate_v2_requires_stage_b_model():
@@ -1582,57 +1901,76 @@ def test_single_file_failure_counts_and_emits_error(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# H3：幻觉处置报告 / R8 摘要行 / gate0_summary 事件 / H4a 上游信号接线
+# H3：闸门0 摘要（gate0_summary NDJSON 事件 + 质量报告【处置】章节）/
+# R8 摘要行 / H4a 上游信号接线
+# （1.2.1 起 {stem}_幻觉处置报告.json 退场：机器可读通道为 gate0_summary
+#   事件，人读通道为质量报告【处置】章节，契约在此钉死）
 # ---------------------------------------------------------------------------
 
-def _read_gate0_report(tmp_path, name="demo"):
-    return json.loads(
-        (tmp_path / f"{name}_幻觉处置报告.json").read_text(encoding="utf-8"))
+def _run_gate0_capture_payload(tmp_path, cfg, in_srt):
+    """直调 _run_single_v2 并捕获 gate0_summary NDJSON 事件 payload
+    （每文件恰好一次）。"""
+    buf = io.StringIO()
+    emitter = pv.EventEmitter(stream=buf, enabled=True)
+    out = pv._run_single_v2(cfg, str(in_srt), emitter=emitter)
+    events = [parse_event_line(ln) for ln in buf.getvalue().splitlines()
+              if ln.strip()]
+    summaries = [e for e in events if e["type"] == "gate0_summary"]
+    assert len(summaries) == 1                       # 每文件恰好一次
+    return out, summaries[0]["payload"]
 
 
-def test_gate0_report_generated_with_schema_contract(tmp_path, monkeypatch):
-    """final 输出阶段原子写 {stem}_幻觉处置报告.json，schema 契约钉死。"""
+def test_gate0_summary_payload_and_disposal_section_contract(tmp_path,
+                                                             monkeypatch):
+    """1.2.1 契约（json 报告退场后）：
+    - gate0_summary 事件 payload 键集/取值钉死（机器可读通道）；
+    - 质量报告【处置】章节承载删除台账（计数/类别/样本，人读通道）；
+    - {stem}_幻觉处置报告.json 不再生成。"""
     cfg = _make_cfg(tmp_path)
     in_srt = _write_gate0_srt(tmp_path)
     fake = FakeClient()
     _wire_gate0_e2e(tmp_path, monkeypatch, fake)
 
-    out = pv._run_single_v2(cfg, str(in_srt))
+    out, payload = _run_gate0_capture_payload(tmp_path, cfg, in_srt)
     assert out.endswith("demo_final_cn.srt")
-    report = _read_gate0_report(tmp_path)
-    # 顶层键集合（契约：缺一不可、不可增减；H5 只增 quarantine/noise_left_empty）
-    assert set(report) == {"report_version", "source", "gate0_ran", "mode",
-                           "total", "deleted", "detected_total", "valve",
-                           "categories", "samples", "upstream",
-                           "quarantine", "noise_left_empty"}
-    assert report["report_version"] == 1
-    assert report["source"] == "demo.srt"
-    assert report["gate0_ran"] is True
-    assert report["mode"] == "default"
-    assert report["total"] == 3
-    assert report["deleted"] == 1 and report["detected_total"] == 1
+    # json 报告退场：无论成功与否都不落盘
+    assert not (tmp_path / "demo_幻觉处置报告.json").exists()
+    assert not list(tmp_path.glob("*.tmp"))          # 原子写不留 .tmp 残留
+    # payload 顶层键集合（契约：缺一不可、不可增减；去 samples，
+    # quarantine/noise_left_empty 为历史兼容字段）
+    assert set(payload) == {"report_version", "source", "gate0_ran", "mode",
+                            "total", "deleted", "detected_total", "valve",
+                            "categories", "upstream",
+                            "quarantine", "noise_left_empty"}
+    assert payload["report_version"] == 1
+    assert payload["source"] == "demo.srt"
+    assert payload["gate0_ran"] is True
+    assert payload["mode"] == "default"
+    assert payload["total"] == 3
+    assert payload["deleted"] == 1 and payload["detected_total"] == 1
     # valve 区块
-    assert set(report["valve"]) == {"tripped", "pct", "message"}
-    assert report["valve"] == {"tripped": False, "pct": 50, "message": None}
+    assert payload["valve"] == {"tripped": False, "pct": 50, "message": None}
     # categories：七类别中文 label 齐全
-    assert set(report["categories"]) == {
+    assert set(payload["categories"]) == {
         "!串", "纯标点行", "不可发音辅音串", "重复循环", "片尾元信息",
         "孤立应答词", "无意义音节连缀"}
-    assert report["categories"]["纯标点行"] == {"detected": 1, "deleted": 1}
-    # samples：已删条目（编号/类别/原文）
-    assert report["samples"] == [
-        {"number": 2, "category": "纯标点行", "text": "。。。。。"}]
+    assert payload["categories"]["纯标点行"] == {"detected": 1, "deleted": 1}
     # upstream：无旁车文件 → 无信号
-    assert report["upstream"] == {
+    assert payload["upstream"] == {
         "present": False, "status": None, "mileage_pct": None,
         "stale": False, "file": None, "warnings": []}
-    # H5：default 正常删除 → 无候选、无隔离区产物、无留空删除
-    assert report["quarantine"] == {"candidates": 0, "quarantined": 0,
-                                    "file": None}
-    assert report["noise_left_empty"] == 0
+    # H5：事件时点 default 正常删除 → 无候选；隔离区尚未回捞判定（null）
+    assert payload["quarantine"] == {"candidates": 0, "quarantined": None,
+                                     "file": None}
+    assert payload["noise_left_empty"] == 0
     assert not (tmp_path / "demo_隔离区.srt").exists()
-    # 原子写不留 .tmp 残留
-    assert not list(tmp_path.glob("*.tmp"))
+    # 人读通道：质量报告【处置】章节（删除计数/类别/样本）
+    report = (tmp_path / "demo_质量报告.txt").read_text(encoding="utf-8")
+    assert "【处置】" in report
+    assert "送翻前检测（闸门0）删除 1 条" in report
+    assert "按删除原因: 纯标点行 1 条" in report
+    assert ("  #2 00:00:20,000 --> 00:00:21,000 [纯标点行] 。。。。。") in report
+    assert "全量台账见 Errors/dropped_entries.log" in report
 
 
 def test_gate0_summary_line_in_summary_lines(tmp_path, monkeypatch):
@@ -1653,7 +1991,7 @@ def test_gate0_summary_line_in_summary_lines(tmp_path, monkeypatch):
 
 def test_resume_rerun_reports_real_gate0_counts(tmp_path, monkeypatch):
     """resume 复用阶段A：闸门0 在管线头部无条件执行（受信 resume 下幂等），
-    报告如实记录真实计数（gate0_ran=true、删除数保留），不归零。"""
+    摘要如实记录真实计数（gate0_ran=true、删除数保留），不归零。"""
     cfg = _make_cfg(tmp_path)
     # 自建含幻觉行的输入（_setup_e2e 的固定输入无可删条目，区分度不足）
     in_srt = tmp_path / "demo.srt"
@@ -1673,23 +2011,31 @@ def test_resume_rerun_reports_real_gate0_counts(tmp_path, monkeypatch):
     cfg.inputs = [str(in_srt)]
     with pytest.raises(KeyboardInterrupt):
         pv.run_v2(cfg)
+    # 1.2.1 起 json 报告不再生成（中断/成功均不落盘）
     assert not (tmp_path / "demo_幻觉处置报告.json").exists()
 
     fake2 = FakeClient()
     monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake2)
     cfg.resume = True
-    pv.run_v2(cfg)
-    report = _read_gate0_report(tmp_path)
-    assert report["gate0_ran"] is True
+    cfg.event_format = "ndjson"
+    buf = io.StringIO()
+    pv.run_v2(cfg, event_stream=buf)
+    events = [parse_event_line(ln) for ln in buf.getvalue().splitlines()
+              if ln.strip()]
+    payload = [e for e in events if e["type"] == "gate0_summary"][0]["payload"]
+    assert payload["gate0_ran"] is True
     # 真实计数保留：纯标点行被闸门0 删除并归档，不因 resume 归零
-    assert report["total"] == 2 and report["deleted"] == 1
-    assert report["samples"] and report["samples"][0]["category"] == "纯标点行"
+    assert payload["total"] == 2 and payload["deleted"] == 1
+    # 已删条目样本（编号/类别）由质量报告【处置】章节承接
+    report = (tmp_path / "demo_质量报告.txt").read_text(encoding="utf-8")
+    assert "送翻前检测（闸门0）删除 1 条" in report
+    assert "[纯标点行]" in report
 
 
 def test_suspect_upstream_tightens_gate0_and_annotates_report(
         tmp_path, monkeypatch, capsys):
     """H4a 接线：上游 status=suspect → 显著警告 + RiskCollector warning +
-    tighten 传递给闸门0（3 连同文被收紧删除）+ 报告 upstream 标注。"""
+    tighten 传递给闸门0（3 连同文被收紧删除）+ 事件 upstream 标注。"""
     cfg = _make_cfg(tmp_path)
     in_srt = tmp_path / "demo.srt"
     rows = []
@@ -1704,17 +2050,17 @@ def test_suspect_upstream_tightens_gate0_and_annotates_report(
     fake = FakeClient()
     _wire_gate0_e2e(tmp_path, monkeypatch, fake)
 
-    pv._run_single_v2(cfg, str(in_srt))
+    out, payload = _run_gate0_capture_payload(tmp_path, cfg, in_srt)
+    assert out.endswith("demo_final_cn.srt")
     # 显著警告（文本模式 print 到 stdout）
     assert "⚠️ 上游 ASR 信号：run 状态=suspect，转写可信度低" in capsys.readouterr().out
     # tighten 传递：3 连同文在送翻前删除（无信号时 default 档不删 3 连）
     assert len(fake.entry_log[0]) == 5
     assert all("みんな" not in e["text"] for e in fake.entry_log[0])
-    # 报告 upstream 标注
-    report = _read_gate0_report(tmp_path)
-    assert report["upstream"]["present"] is True
-    assert report["upstream"]["status"] == "suspect"
-    assert any("闸门0 已收紧" in w for w in report["upstream"]["warnings"])
+    # 事件 upstream 标注
+    assert payload["upstream"]["present"] is True
+    assert payload["upstream"]["status"] == "suspect"
+    assert any("闸门0 已收紧" in w for w in payload["upstream"]["warnings"])
     # RiskCollector warning（风险清单落盘，stage=gate0）
     risk = json.loads(
         (tmp_path / "demo_风险清单.json").read_text(encoding="utf-8"))
@@ -1724,7 +2070,7 @@ def test_suspect_upstream_tightens_gate0_and_annotates_report(
 
 
 def test_low_coverage_upstream_warns_without_tighten(tmp_path, monkeypatch):
-    """覆盖率低于阈值 → RiskCollector warning + 报告标注；不触发 tighten。"""
+    """覆盖率低于阈值 → RiskCollector warning + 事件标注；不触发 tighten。"""
     cfg = _make_cfg(tmp_path)
     in_srt = tmp_path / "demo.srt"
     rows = []
@@ -1739,14 +2085,14 @@ def test_low_coverage_upstream_warns_without_tighten(tmp_path, monkeypatch):
     fake = FakeClient()
     _wire_gate0_e2e(tmp_path, monkeypatch, fake)
 
-    pv._run_single_v2(cfg, str(in_srt))
+    out, payload = _run_gate0_capture_payload(tmp_path, cfg, in_srt)
+    assert out.endswith("demo_final_cn.srt")
     # 无收紧：3 连同文照常送翻（default 档 min_run=4）
     assert len(fake.entry_log[0]) == 8
-    # 报告标注覆盖率 + 警告
-    report = _read_gate0_report(tmp_path)
-    assert report["upstream"]["mileage_pct"] == 10.0
+    # 事件标注覆盖率 + 警告
+    assert payload["upstream"]["mileage_pct"] == 10.0
     assert any("覆盖率" in w and "低于阈值" in w
-               for w in report["upstream"]["warnings"])
+               for w in payload["upstream"]["warnings"])
     # 风险清单 warning（stage=gate0）
     risk = json.loads(
         (tmp_path / "demo_风险清单.json").read_text(encoding="utf-8"))
@@ -1756,7 +2102,7 @@ def test_low_coverage_upstream_warns_without_tighten(tmp_path, monkeypatch):
 
 
 def test_gate0_valve_trips_risk_and_report_message(tmp_path, monkeypatch):
-    """保险阀触发 → RiskCollector warning + 报告 valve.message。"""
+    """保险阀触发 → RiskCollector warning + 事件 valve.message。"""
     cfg = _make_cfg(tmp_path)
     in_srt = tmp_path / "demo.srt"
     rows = []
@@ -1770,11 +2116,12 @@ def test_gate0_valve_trips_risk_and_report_message(tmp_path, monkeypatch):
     fake = FakeClient()
     _wire_gate0_e2e(tmp_path, monkeypatch, fake)
 
-    pv._run_single_v2(cfg, str(in_srt))
-    report = _read_gate0_report(tmp_path)
-    assert report["valve"]["tripped"] is True
-    assert report["valve"]["message"] == "拦截率超阈值，本文件降级为只计数模式"
-    assert report["deleted"] == 0 and report["detected_total"] >= 6
+    out, payload = _run_gate0_capture_payload(tmp_path, cfg, in_srt)
+    assert out.endswith("demo_final_cn.srt")
+    assert payload["valve"]["tripped"] is True
+    assert payload["valve"]["message"] == "拦截率超阈值，本文件降级为只计数模式"
+    assert payload["deleted"] == 0 and payload["detected_total"] >= 6
+    assert not (tmp_path / "demo_幻觉处置报告.json").exists()
     risk = json.loads(
         (tmp_path / "demo_风险清单.json").read_text(encoding="utf-8"))
     valve_risks = [e for e in risk["events"] if "保险阀触发" in e["reason"]]
@@ -1851,12 +2198,14 @@ def test_quarantine_moves_fluent_zh_on_valve_trip(tmp_path, monkeypatch):
     隔离区（主稿移除、隔离区 SRT 原子写、报告/摘要行接线）。"""
     cfg = _make_cfg(tmp_path)
     cfg.v2_source_filter_valve_pct = 20
+    cfg.event_format = "ndjson"
     in_srt = _write_valve_srt(tmp_path)
     fake = ZhFakeClient()
     _wire_gate0_e2e(tmp_path, monkeypatch, fake)
     cfg.inputs = [str(in_srt)]
     summary = {}
-    out = pv.run_v2(cfg, summary_sink=summary)
+    buf = io.StringIO()
+    out = pv.run_v2(cfg, summary_sink=summary, event_stream=buf)
     # 隔离区产物：3 条候选被译成流畅中文 → 移出主稿落盘
     q_path = tmp_path / "demo_隔离区.srt"
     assert q_path.is_file()
@@ -1869,10 +2218,15 @@ def test_quarantine_moves_fluent_zh_on_valve_trip(tmp_path, monkeypatch):
     # "中文1\n" 带 SRT 行尾比对，避免与条目 10 的 "中文10" 子串误判
     assert "审校好的中文1\n" not in content        # 已移出主稿
     assert "审校好的中文4" in content              # 真实台词照常在主稿
-    # 报告接线：候选 3、隔离 3、产物文件名
-    report = _read_gate0_report(tmp_path)
-    assert report["quarantine"] == {"candidates": 3, "quarantined": 3,
-                                    "file": "demo_隔离区.srt"}
+    # 事件接线：候选 3（事件时点隔离区尚未回捞判定 → quarantined/file null）
+    events = [parse_event_line(ln) for ln in buf.getvalue().splitlines()
+              if ln.strip()]
+    payload = [e for e in events if e["type"] == "gate0_summary"][0]["payload"]
+    assert payload["quarantine"] == {"candidates": 3, "quarantined": None,
+                                     "file": None}
+    # 最终处置结果由质量报告承接：恒等式"隔离区移出 3"入账
+    q_report = (tmp_path / "demo_质量报告.txt").read_text(encoding="utf-8")
+    assert "隔离区移出 3" in q_report
     # R8 摘要行：隔离区信息行（不计入风险），闸门0 计数行仍恰一条
     q_lines = [ln for ln in summary["summary_lines"] if "隔离区" in ln]
     assert q_lines == ["📪 隔离区：3 条存疑译文已移出主稿，见 demo_隔离区.srt"]
@@ -1891,13 +2245,13 @@ def test_quarantine_skipped_when_translation_not_fluent(tmp_path, monkeypatch):
     fake = FakeClient()              # 译N/审N：单汉字，不判流畅
     _wire_gate0_e2e(tmp_path, monkeypatch, fake)
 
-    out = pv._run_single_v2(cfg, str(in_srt))
+    out, payload = _run_gate0_capture_payload(tmp_path, cfg, in_srt)
     assert not (tmp_path / "demo_隔离区.srt").exists()
     with open(out, encoding="utf-8") as f:
         assert "审1" in f.read()     # 候选条目留在主稿
-    report = _read_gate0_report(tmp_path)
-    assert report["quarantine"] == {"candidates": 3, "quarantined": 0,
-                                    "file": None}
+    # 事件时点候选如实计数；隔离区尚未回捞判定（null）；最终无隔离区产物
+    assert payload["quarantine"] == {"candidates": 3, "quarantined": None,
+                                     "file": None}
 
 
 def test_noise_left_empty_counts_stage_a_deletions(tmp_path, monkeypatch):
@@ -1909,9 +2263,84 @@ def test_noise_left_empty_counts_stage_a_deletions(tmp_path, monkeypatch):
     fake = FakeClient(delete_a=(1, 2, 3))    # 阶段A 留空删除 3 条候选
     _wire_gate0_e2e(tmp_path, monkeypatch, fake)
 
-    pv._run_single_v2(cfg, str(in_srt))
-    report = _read_gate0_report(tmp_path)
-    assert report["noise_left_empty"] == 3
-    assert report["quarantine"]["candidates"] == 3
-    assert report["quarantine"]["quarantined"] == 0
-    assert not (tmp_path / "demo_隔离区.srt").exists()
+    out, payload = _run_gate0_capture_payload(tmp_path, cfg, in_srt)
+    assert payload["noise_left_empty"] == 0   # D1: 阶段A 不再留空删条，恒为 0（字段仅为事件 schema 兼容保留）
+    assert payload["quarantine"]["candidates"] == 3
+    assert not (tmp_path / "demo_隔离区.srt").exists()   # 无存疑译文 → 不落隔离区文件
+
+
+# ---------------------------------------------------------------------------
+# D1：删除权收归闸门0 —— 下游一律不物理删条
+# ---------------------------------------------------------------------------
+
+class MuteClient(FakeClient):
+    """模拟模型拒不输出任何译文的假客户端（A/B 全部缺行）。"""
+
+    def translate_entries(self, entries, *, system_text, user_prompt,
+                          max_batch_size=30, allow_empty_deletions=False,
+                          scene_threshold=60.0, progress=None):
+        self.calls.append([e["index"] for e in entries])
+        self.entry_log.append([dict(e) for e in entries])
+        return BatchResult(translations={}, deleted=set(),
+                         failed=[e["index"] for e in entries])
+
+
+def test_d1_mute_model_preserves_every_entry(tmp_path, monkeypatch):
+    """e2e：模型拒不输出任何译文 → 终稿条目集合不减（等于闸闠0+预合并
+    后的集合），且缺译文条目均带 [未翻译] 标记（D1：下游不再物理删条）。"""
+    cfg = _make_cfg(tmp_path)
+    in_srt = _setup_e2e(tmp_path, monkeypatch, MuteClient())
+    out = pv._run_single_v2(cfg, str(in_srt))
+    final = pv.parse_srt(Path(out).read_text(encoding="utf-8"))
+    assert {e["index"] for e in final} == {1, 2}
+    assert all(e["text"].startswith(pv.UNTRANSLATED_PREFIX) for e in final)
+
+
+def test_filter_language_marks_instead_of_dropping():
+    """D1：语言白名单不再删条——非中文条目加 [未翻译] 前缀保留；
+    已带标记的条目跳过校验（防二次加标）。"""
+    entries = _entries("こんにちは", "中文没有问题",
+                      pv.UNTRANSLATED_PREFIX + "あ")
+    kept = pv._filter_language(None, entries, 3)
+    texts = {e["index"]: e["text"] for e in kept}
+    assert set(texts) == {1, 2, 3}
+    assert texts[1] == pv.UNTRANSLATED_PREFIX + "こんにちは"
+    assert texts[2] == "中文没有问题"
+    assert texts[3] == pv.UNTRANSLATED_PREFIX + "あ"   # 不二次加标
+
+
+def test_stage_b_missing_line_keeps_a_translation(tmp_path, monkeypatch):
+    """阶段B 某行无译文 → 保留 A 译文不丢行；A/B 均无 → 原文+[未翻译]。"""
+    cfg = _make_cfg(tmp_path)
+    entries = _entries("こんにちは", "さようなら")
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: FakeClient())
+    a = pv._run_stage_a(cfg, entries, None, str(tmp_path), [])
+    # 手动注入：阶段A 对 #1 失败（带标记），阶段B 对 #1、#2 均缺行
+    a.entries = [
+        e if e["index"] != 1 else
+        {**e, "text": pv.UNTRANSLATED_PREFIX + e["text"]}
+        for e in a.entries
+    ]
+    a.failed = {1}
+    fake = FakeClient(fail_b={1, 2})
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
+    final = pv._run_stage_b(cfg, a, entries, str(tmp_path), [])
+    texts = {e["index"]: e["text"] for e in final}
+    assert [e["index"] for e in final] == [1, 2]     # 不丢行
+    assert texts[2] == "译2"                      # B 缺行 → 保留 A 译文
+    assert texts[1] == pv.UNTRANSLATED_PREFIX + "こんにちは"   # A/B 双无 → 原文+标记
+    assert final[0]["_keep_original"] is True
+
+
+def test_resume_rejects_changed_stage_prompts(tmp_path, monkeypatch, capsys):
+    """D1：V2_STAGE_PROMPTS 内容变化 → config 指纹失配 → --resume 拒绝复用阶段A。"""
+    cfg = _make_cfg(tmp_path)
+    _run_interrupted(tmp_path, monkeypatch, cfg)
+    fake2 = FakeClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake2)
+    monkeypatch.setitem(pv.V2_STAGE_PROMPTS, "A", "changed prompt")
+    cfg.resume = True
+    pv.run_v2(cfg)
+    out = capsys.readouterr().out
+    assert "不复用" in out
+    assert len(fake2.calls) == 2      # 指纹失配：阶段A 重跑 + 阶段B

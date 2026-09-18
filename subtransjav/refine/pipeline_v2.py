@@ -1,14 +1,16 @@
 """
 v2 两阶段流水线编排
 ====================
-阶段A 净语+翻译（ja→zh，LLM×1）：一次调用完成噪音删除与翻译；
+阶段A 净语+翻译（ja→zh，LLM×1）：一次调用完成噪音标记与翻译；
 阶段B 审校+抛光（zh→zh，LLM×1）：对照日文原文（`日文 ||| 中文` 格式）
-审核误译/补译/润色，可整条删除杂音。
+审核误译/补译/润色。D1 决策（v1.2.1）：删除权收归闸门0，下游一律
+不物理删条，无法给出译文的条目加 [未翻译] 标记保留。
 
 效率设计：
 - 每批 LLM 调用 4+ 次（legacy 4 阶段）→ 2 次；
 - TM 精确命中行直接替代译文，零 LLM 调用；
-- 失败行由客户端定向重试 → 仍失败交阶段B补译 → 阶段B仍失败保留原文。
+- 失败行由客户端定向重试 → 仍失败交阶段B补译 → 仍失败保留原文并加
+  [未翻译] 标记（宁多勿缺）。
 
 兜底规则层（profile 驱动，无需人工维护）：
 - local  → strict：cleaner_rules 清洗 + post_validate 误译拦截（默认，本地弱模型）
@@ -19,7 +21,6 @@ v2 两阶段流水线编排
 
 import contextlib
 import hashlib
-import json
 import logging
 import os
 import re
@@ -41,6 +42,14 @@ from .config import (
 from .events import EventEmitter
 from .filters import build_srt, parse_srt
 from .glossary import format_glossary_block, match_glossary
+from .glossary_conflict import (
+    append_watch_record,
+    default_watch_path,
+    evaluate_watch,
+    load_watch_records,
+    scan_glossary_conflicts,
+    write_conflict_csv,
+)
 from .instructions import hardened_suffix, write_effective_instructions
 from .manifest import (
     MANIFEST_VERSION,
@@ -65,7 +74,18 @@ from .pipeline_support import (
     refine_tmp_dir,
 )
 from .risk import SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_WARNING, RiskCollector
-from .source_hallucination import apply_source_filter, quarantine_review
+from .source_hallucination import (
+    apply_source_filter,
+    is_fluent_zh,
+    quarantine_review,
+    strong_garble_signal,
+)
+from .synopsis import (
+    SYNOPSIS_TIMEOUT_CAP_S,
+    SYNOPSIS_TIMEOUT_DEFAULT_S,
+    build_synopsis_input,
+    request_synopsis,
+)
 from .tm import TranslationMemory
 
 logger = logging.getLogger(__name__)
@@ -91,9 +111,17 @@ V2_STAGE_PROMPTS = {
         "#<编号>\nTranslation>\n<该条目的中文译文>\n"
         "要求：\n"
         "- #N 与输入条目编号一一对应，不得跳号、不得重排编号\n"
-        "- 整条均为ASR噪音/填充/幻觉（无实义内容）的条目："
-        "Translation> 后留空（表示删除），编号保持对齐\n"
+        "- 每一行都必须给出译文，不得留空；"
+        "若源文确属无法辨识的乱码/纯噪声，输出 `[未翻译]` 占位\n"
+        "- 源文为转录乱码/残缺时：只直译可辨认的部分，禁止臆测情节、"
+        "禁止补充原文不存在的动作或语义；严禁反转语义方向"
+        "（拒绝↔邀请、停止↔继续、否定↔肯定等）；"
+        "确实无法辨识时输出 `[未翻译]` 并保留原文，严禁从零编造\n"
         "- 其余条目按角色卡规范输出中文译文\n"
+        "- 仅当源文确定为无实义的拟声/呻吟（纯假名噪声）时，"
+        "译为中文拟声（唔…/嗯…/啊…）或省略号，"
+        "禁止音译成假名词或生造汉字词（如把转写噪声音译成名词）；"
+        "疑似误听词（见误听怀疑清单）不适用本条，按误听语义翻译\n"
         "- 禁止输出 .srt 时间码块、序号块、说明、总结或注释"
     ),
     "B": (
@@ -105,7 +133,16 @@ V2_STAGE_PROMPTS = {
         "要求：\n"
         "- #N 与输入条目编号一一对应，不得跳号\n"
         "- 无需修正的条目原样输出\n"
-        "- 需要删除的条目（纯杂音冗余）在 Translation> 后留空\n"
+        "- 每一行都必须给出译文，不得留空；"
+        "若源文确属无法辨识的乱码/纯噪声，输出 `[未翻译]` 占位\n"
+        "- 源文为转录乱码/残缺时：只直译可辨认的部分，禁止臆测情节、"
+        "禁止补充原文不存在的动作或语义；严禁反转语义方向"
+        "（拒绝↔邀请、停止↔继续、否定↔肯定等）；"
+        "确实无法辨识时输出 `[未翻译]` 并保留原文，严禁从零编造\n"
+        "- 仅当源文确定为无实义的拟声/呻吟（纯假名噪声）时，"
+        "译为中文拟声（唔…/嗯…/啊…）或省略号，"
+        "禁止音译成假名词或生造汉字词（如把转写噪声音译成名词）；"
+        "疑似误听词（见误听怀疑清单）不适用本条，按误听语义翻译\n"
         "- 禁止输出 .srt 时间码块、序号块、说明、总结或注释"
     ),
 }
@@ -115,11 +152,53 @@ V2_STAGE_PROMPTS = {
 DEEPSEEK_BASE_URL = DEEPSEEK_BASE_DEFAULT
 UNTRANSLATED_PREFIX = "[未翻译] "
 
-# H3 幻觉处置报告：已删条目样本上限（防大文件撑爆报告体积）
+# 闸门0 删除样本上限（供质量报告【处置】章节与归档日志，防大文件撑爆）
 _GATE0_REPORT_SAMPLE_CAP = 50
 
 # LLM 客户端 ⏳ 进度文本（"批次 3/63"）→ phase_progress 事件载荷的解析规则
 _BATCH_PROGRESS_RE = re.compile(r"批次\s*(\d+)\s*/\s*(\d+)")
+
+# D5 乱码强译复核：源文含汉字判定（含汉字即视为实义行，不入复核候选）
+_KANJI_SRC_RE = re.compile(r"[\u4e00-\u9fff]")
+
+# ---------------------------------------------------------------------------
+# v1.2.2 C1 per-片语境 sidecar（{stem}.context.md，与输入 srt 同目录同名）：
+# 一机制两用途——剧情摘要块（A/B 提示词均注入）+ 误听怀疑表（按当前批次
+# 源文命中注入词条，复用 glossary 的命中风格）。挂载方式仿 glossary 块。
+# ---------------------------------------------------------------------------
+_SIDECAR_SUMMARY_TAG = "【剧情摘要】"
+_SIDECAR_MISHEAR_TAG = "【误听怀疑】"
+_SIDECAR_SUMMARY_HEADER = "【剧情摘要 - 语境参考】"
+_SIDECAR_MISHEAR_HEADER = "【误听怀疑对照】"
+# 冻结措辞（验收口径逐字比对，勿改动任何字）：
+# 剧情摘要块引导语
+SIDECAR_SUMMARY_NOTICE = (
+    "以下为剧情背景参考，仅用于消解歧义；与单句字面义和术语表冲突时，"
+    "以句子本身和术语表为准；不得改写原文中没有的信息。")
+# 误听怀疑词条措辞（{疑似词}/{疑似正解} 为占位符）
+SIDECAR_MISHEAR_NOTICE = (
+    "该词在 ASR 转写中曾出现误听（{疑似词}→疑为{疑似正解}）。"
+    "仅当上下文无法按字面义解读、且存在语义更合理的解读时方可按疑似义翻译；"
+    "可两可时一律照字面译。")
+
+# ---------------------------------------------------------------------------
+# v1.2.2 Beta 剧情自摘要：闸门0+预合并后自动抽样整片剧情行，一次独立
+# LLM 调用生成梗概，注入 A/B 提示词。手写 sidecar【剧情摘要】非空时
+# 手写优先；任何失败静默跳过。摘要文本只进提示词，绝不写入输出目录/
+# 终稿/质量报告；摘要缓存独立于 TM（Temp/synopsis_cache/）。摘要内容
+# 与缓存不参与 manifest 指纹（与 sidecar 内容同款已知边界：换
+# --s1-model 或改采样行为后须 --force 重跑方生效，见手册 §11）。
+# ---------------------------------------------------------------------------
+_SYNOPSIS_BLOCK_TAG = "【剧情背景（自动摘要·beta）】"
+
+
+def _synopsis_prompt_block(synopsis_text: str | None) -> str:
+    """组装自动摘要注入块（A/B 同措辞；引导语沿用 sidecar 冻结措辞）。"""
+    if not synopsis_text or not synopsis_text.strip():
+        return ""
+    return "\n".join([_SYNOPSIS_BLOCK_TAG,
+                      SIDECAR_SUMMARY_NOTICE,
+                      synopsis_text.strip()])
 
 # ---------------------------------------------------------------------------
 # P1-6 语法提示跨阶段缓存：键 (sha1(条目文本), 阶段tag, profile)。
@@ -419,8 +498,152 @@ def _v2_glossary_block(cfg: RefineConfig, tag: str, src_text: str,
     return ""
 
 
+def load_context_sidecar(in_path: str) -> dict | None:
+    """加载 per-片语境 sidecar（v1.2.2 C1）。
+
+    文件约定：与输入 srt 同目录同名，后缀 ``.context.md``（如
+    ``movie.srt`` -> ``movie.context.md``）。两小节：
+      【剧情摘要】自由文本若干行；
+      【误听怀疑】每行 ``疑似词 => 疑似正解``（如 ``ペソ => おへそ``）。
+
+    文件不存在返回 None（=无注入）；解析按可得内容降级（缺小节=该块
+    不注入；# 开头行视为模板注释跳过；误听行缺 "=>" 或侧为空则跳过）。
+    返回 {"summary": [str, ...], "mishear": [(疑似词, 疑似正解), ...]}。
+    """
+    p = Path(in_path).with_suffix(".context.md")
+    if not p.is_file():
+        return None
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"   ⚠️ 语境 sidecar 读取失败，忽略: {p.name} ({e})")
+        return None
+    summary: list = []
+    mishear: list = []
+    section = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith(_SIDECAR_SUMMARY_TAG):
+            section = "summary"
+            rest = s[len(_SIDECAR_SUMMARY_TAG):].strip()
+            if rest:
+                summary.append(rest)
+            continue
+        if s.startswith(_SIDECAR_MISHEAR_TAG):
+            section = "mishear"
+            continue
+        if not s or s.startswith("#"):
+            continue
+        if section == "summary":
+            summary.append(s)
+        elif section == "mishear" and "=>" in s:
+            a, _, b = s.partition("=>")
+            a, b = a.strip(), b.strip()
+            if a and b:
+                mishear.append((a, b))
+    return {"summary": summary, "mishear": mishear}
+
+
+def _load_context_sidecar(cfg: RefineConfig, in_path: str) -> dict | None:
+    """cfg 开关接线的 sidecar 加载：context_sidecar=False 禁用（返回 None）；
+    文件不存在=无注入。加载成功打印摘要行（可见性）。"""
+    if not getattr(cfg, "context_sidecar", True):
+        return None
+    sidecar = load_context_sidecar(in_path)
+    if sidecar and (sidecar["summary"] or sidecar["mishear"]):
+        print(f"   📄 语境 sidecar: 剧情摘要 {len(sidecar['summary'])} 行 / "
+              f"误听怀疑 {len(sidecar['mishear'])} 条"
+              f"（{Path(in_path).with_suffix('.context.md').name}）")
+    return sidecar
+
+
+def _v2_sidecar_block(src_text: str, sidecar: dict | None) -> str:
+    """组装语境 sidecar 注入块（A/B 同措辞；仿 glossary 块的命中风格）：
+
+    - 剧情摘要块：sidecar 存在且小节非空即注入（冻结措辞引导语在前）；
+    - 误听怀疑块：仅当当前批次源文含疑似词才注入该词条（未命中条目
+      不注入，防无关词条噪音）。
+    两块均无内容时返回空串（不挂载）。
+    """
+    if not sidecar:
+        return ""
+    parts = []
+    summary = [ln for ln in (sidecar.get("summary") or []) if ln.strip()]
+    if summary:
+        parts.append("\n".join([_SIDECAR_SUMMARY_HEADER,
+                                SIDECAR_SUMMARY_NOTICE] + summary))
+    hits = [(a, b) for a, b in (sidecar.get("mishear") or [])
+            if a and a in (src_text or "")]
+    if hits:
+        lines = [_SIDECAR_MISHEAR_HEADER]
+        lines.extend(SIDECAR_MISHEAR_NOTICE.format(疑似词=a, 疑似正解=b)
+                     for a, b in hits)
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def _ensure_auto_synopsis(cfg: RefineConfig, entries: list,
+                          sidecar: dict | None,
+                          collector=None, file_name: str = None) -> str | None:
+    """剧情自摘要（Beta）入口：返回摘要文本；关闭/失败一律返回 None。
+
+    前置条件：cfg.auto_synopsis 为 True 且手写 sidecar【剧情摘要】小节
+    为空（手写优先，存在则记日志跳过自动摘要）。抽样/调用/缓存任一环节
+    失败均静默降级（管线照常，不影响翻译结果）。
+    """
+    if not getattr(cfg, "auto_synopsis", False):
+        return None
+    # 手写优先：sidecar【剧情摘要】小节非空时不做自动摘要
+    if sidecar and [ln for ln in (sidecar.get("summary") or [])
+                    if ln.strip()]:
+        print("   📄 手写剧情摘要存在，跳过自动摘要")
+        return None
+    try:
+        sampled, meta = build_synopsis_input(
+            entries, int(getattr(cfg, "synopsis_max_chars", 6000)))
+    except Exception as e:
+        print(f"   ℹ️ 剧情自摘要(beta): 失败跳过（采样失败: {e}）")
+        return None
+    if not sampled:
+        print("   ℹ️ 剧情自摘要(beta): 失败跳过（无有效采样文本）")
+        return None
+    try:
+        stage_cfg = cfg.stages[V2_STAGE_SLOT["A"]]
+        provider = stage_cfg.provider
+        model = cfg.resolve_model(stage_cfg) or _provider_default_model(
+            cfg, provider)
+        client = _make_client(cfg, "A")
+        # 摘要调用独立配置：串行 + 独立超时（min(timeout_llm, 300s)）；
+        # 输出预算由 request_synopsis 独立传 max_tokens=300，不走阶段A
+        # 的批级 max_tokens 预算（compute_max_output_tokens）。
+        with contextlib.suppress(Exception):
+            client.config.timeout = min(
+                float(getattr(cfg, "timeout_llm", SYNOPSIS_TIMEOUT_DEFAULT_S)),
+                SYNOPSIS_TIMEOUT_CAP_S)
+            client.config.concurrency = 1
+        text = request_synopsis(client, sampled, provider=provider,
+                                model=model)
+    except Exception as e:
+        print(f"   ℹ️ 剧情自摘要(beta): 失败跳过（{e}）")
+        return None
+    if not text:
+        print("   ℹ️ 剧情自摘要(beta): 失败跳过（空输出）")
+        return None
+    spans = meta.get("bucket_ranges") or []
+    first = min((r.get("first_index") for r in spans
+                 if r.get("first_index") is not None), default="?")
+    last = max((r.get("last_index") for r in spans
+                if r.get("last_index") is not None), default="?")
+    print(f"   📝 剧情自摘要(beta): 已生成 {len(text)} 字 "
+          f"sha1={hashlib.sha1(text.encode('utf-8')).hexdigest()} "
+          f"采样={meta.get('buckets', 0)}桶[#{first}~#{last}] "
+          f"信息不足出现 {text.count('信息不足')} 次")
+    return text
+
+
 def _load_v2_instruction(cfg: RefineConfig, tag: str, gl_block: str,
-                         tmp_dir: str) -> tuple:
+                         tmp_dir: str, sidecar_block: str = "",
+                         synopsis_block: str = "") -> tuple:
     """读取 v2 角色卡并组装指令。返回 (system_text, user_prompt)。"""
     from .config import default_templates_dir
 
@@ -439,6 +662,10 @@ def _load_v2_instruction(cfg: RefineConfig, tag: str, gl_block: str,
         effective += hardened_suffix()
     if gl_block:
         effective = effective.rstrip() + "\n\n" + gl_block + "\n"
+    if sidecar_block:
+        effective = effective.rstrip() + "\n\n" + sidecar_block + "\n"
+    if synopsis_block:
+        effective = effective.rstrip() + "\n\n" + synopsis_block + "\n"
 
     path = write_effective_instructions(
         effective, "", work_dir=tmp_dir, tag=f"v2_{tag}",
@@ -528,7 +755,7 @@ def _provider_default_model(cfg: RefineConfig, provider: str) -> str:
 @dataclass
 class StageAResult:
     entries: list           # 阶段A产物条目 [{index,timing,text}]
-    deleted: set            # 被删除的 index
+    deleted: set            # 删除标记（D1 后恒空集：删除权收归闸门0，字段兼容保留）
     failed: set             # 重试后仍失败的 index（交阶段B补译）
     exact_hits: dict        # TM 精确命中 {index: zh}
 
@@ -704,7 +931,8 @@ def _inject_stage_a_assists(cfg: RefineConfig, entries: list, todo: list,
 
 def _run_stage_a(cfg: RefineConfig, entries: list, tm, tmp_dir: str,
                  glossary: list, collector=None, file_name: str = None,
-                 emitter=None) -> StageAResult:
+                 emitter=None, sidecar: dict | None = None,
+                 synopsis: str | None = None) -> StageAResult:
     # 协议标记：供 webview_gui 检测阶段切换，更新进度显示（勿删）
     print(f"[STAGE] {V2_STAGE_NAMES['A']}", flush=True)
     print("\n🔹 [阶段A 净语+翻译] 一次调用完成清洗与日译中")
@@ -740,14 +968,19 @@ def _run_stage_a(cfg: RefineConfig, entries: list, tm, tmp_dir: str,
 
     src_text = "\n".join(e["text"] for e in entries)
     gl_block = _v2_glossary_block(cfg, "A", src_text, glossary)
-    system_text, user_prompt = _load_v2_instruction(cfg, "A", gl_block, tmp_dir)
+    sidecar_block = _v2_sidecar_block(src_text, sidecar)
+    system_text, user_prompt = _load_v2_instruction(
+        cfg, "A", gl_block, tmp_dir, sidecar_block,
+        _synopsis_prompt_block(synopsis))
 
     stage_cfg = cfg.stages[V2_STAGE_SLOT["A"]]
     client = _make_client(cfg, "A")
     result = _run_with_fallback(
         cfg, "A", client, todo, system_text=system_text,
         user_prompt=user_prompt, max_batch_size=cfg.batch_for(stage_cfg),
-        allow_empty_deletions=True, emitter=emitter)
+        # D1：禁用留空删除——空译文按缺行处理（客户端定向重试 → failed），
+        # 最终仍无译文的行加 [未翻译] 标记保留（删除权收归闸门0）。
+        allow_empty_deletions=False, emitter=emitter)
 
     out_entries = []
     for e in entries:
@@ -756,23 +989,39 @@ def _run_stage_a(cfg: RefineConfig, entries: list, tm, tmp_dir: str,
             text = exact[i]
         elif i in result.translations:
             text = result.translations[i]
-        elif i in result.deleted:
-            continue
         else:
-            # 客户端定向重试后仍失败：标记交阶段B补译
+            # D1：不再物理删条——定向重试后仍失败的行（及若残余的删除
+            # 标记）一律回退原文并加 [未翻译] 标记，交阶段B补译；阶段B
+            # 仍失败则原样保留进终稿（宁多勿缺）。
             text = UNTRANSLATED_PREFIX + e["text"]
         out_entries.append({"index": i, "timing": e["timing"], "text": text})
 
     failed = set(result.failed)
     if failed:
         print(f"   ⚠️ {len(failed)} 条阶段A失败，交阶段B补译")
+        # D7：缺行定向重试预算耗尽后的降级台账（缺行条目已按既有 failed
+        # 链路置 [未翻译] 交阶段B补译，绝不整文件失败）
+        from subtransjav.translate.llm_client import MISSING_RETRY_BUDGET
+        logger.warning(
+            "阶段A 缺行 %d 条（定向重试预算 %d 轮耗尽），"
+            "置 [未翻译] 交阶段B补译", len(failed), MISSING_RETRY_BUDGET)
+        if collector is not None:
+            collector.add(stage="A", file=file_name,
+                          reason=f"阶段A 缺行 {len(failed)} 条"
+                                 f"（定向重试预算 {MISSING_RETRY_BUDGET} "
+                                 f"轮耗尽）",
+                          action="置 [未翻译] 交阶段B补译",
+                          affected_count=len(failed),
+                          severity=SEVERITY_WARNING)
     return StageAResult(entries=out_entries, deleted=set(result.deleted),
                         failed=failed, exact_hits=exact)
 
 
 def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
                  tmp_dir: str, glossary: list, collector=None,
-                 file_name: str = None, emitter=None) -> list:
+                 file_name: str = None, emitter=None,
+                 sidecar: dict | None = None,
+                 synopsis: str | None = None) -> list:
     """阶段B：对照日文原文审校+抛光。返回最终条目列表。"""
     # 协议标记：供 webview_gui 检测阶段切换，更新进度显示（勿删）
     print(f"[STAGE] {V2_STAGE_NAMES['B']}", flush=True)
@@ -812,45 +1061,49 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
 
     src_text = "\n".join(e["text"] for e in b_entries)
     gl_block = _v2_glossary_block(cfg, "B", src_text, glossary)
-    system_text, user_prompt = _load_v2_instruction(cfg, "B", gl_block, tmp_dir)
+    sidecar_block = _v2_sidecar_block(src_text, sidecar)
+    system_text, user_prompt = _load_v2_instruction(
+        cfg, "B", gl_block, tmp_dir, sidecar_block,
+        _synopsis_prompt_block(synopsis))
 
     stage_cfg = cfg.stages[V2_STAGE_SLOT["B"]]
     client = _make_client(cfg, "B")
     result = _run_with_fallback(
         cfg, "B", client, b_entries, system_text=system_text,
         user_prompt=user_prompt, max_batch_size=cfg.batch_for(stage_cfg),
-        allow_empty_deletions=True, emitter=emitter)
+        # D1：禁用留空删除（空译文按缺行处理），缺译行走下方回退链。
+        allow_empty_deletions=False, emitter=emitter)
 
-    # 组装最终产物：B 结果优先 → 回退 A 译文 → 回退日文原文（宁多勿缺）
+    # 组装最终产物：B 结果优先 → 回退 A 译文 → 回退原文+[未翻译] 标记
+    # （D1：删除权收归闸门0，本阶段任何失败路径都不再物理删条）。
     # B 输入带【语法提示】段，LLM 若回显残留则在此兜底清理
     # （clean_grammar_hint_residue 的模式覆盖阶段B注入格式）。
     from .cleaner_rules import clean_grammar_hint_residue
-    keep_untranslated = cfg.v2_keep_untranslated != "empty"
     kept_a = []                  # B 缺译文 → 回退 A 译文的条目 [(index, text)]
-    kept_original = []           # A/B 双失败 → 保留日文原文的条目 [(index, 日文)]
+    kept_original = []           # A/B 双失败 → 保留原文的条目 [(index, 原文)]
     final = []
     for ae, orig in zip(a_result.entries, aligned_orig, strict=False):
         i = ae["index"]
         keep_flag = False
-        if i in result.deleted:
-            continue
         if i in result.translations:
             text = clean_grammar_hint_residue(result.translations[i])
         elif not ae["text"].startswith(UNTRANSLATED_PREFIX):
-            text = ae["text"]            # B 失败回退 A 译文
+            text = ae["text"]            # B 缺译文回退 A 译文（不丢行）
             kept_a.append((i, text))
-        elif keep_untranslated:
-            # 回退日文原文（宁多勿缺）。打内部标记：后续语言白名单过滤
-            # （zh）会把纯日文行判无效，带标记条目须跳过该过滤（见
-            # _run_single_v2）。build_srt 只读 index/timing/text，
-            # 该键不会影响产物。
-            text = (orig["text"] or "").strip() if orig else ""  # 回退日文原文
+        else:
+            # A/B 双失败 → 回退原文并加 [未翻译] 前缀（宁多勿缺）。
+            # 打内部标记：后续语言白名单过滤（zh）会把纯日文行判无效，
+            # 带标记条目须跳过该过滤（见 _run_single_v2）。build_srt 只读
+            # index/timing/text，该键不会影响产物。
+            text = (orig["text"] or "").strip() if orig else ""
+            if not text:
+                text = ae["text"]        # 无原文可退：保留阶段A 原文+标记
+            elif not text.startswith(UNTRANSLATED_PREFIX):
+                text = UNTRANSLATED_PREFIX + text   # 统一标记（防二次加标）
             keep_flag = True
             kept_original.append((i, text))
-        else:
-            continue                     # 配置为 empty：整条移除
         if not text:
-            continue                     # 空正文不进终稿
+            continue                     # 空正文不进终稿（D1 下仅防御性保留）
         entry = {"index": i, "timing": ae["timing"], "text": text}
         if keep_flag:
             entry["_keep_original"] = True
@@ -888,12 +1141,15 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
     """兜底规则层（profile 驱动）：
     local(strict) → cleaner_rules 清洗 + post_validate 误译拦截；
     cloud(lenient) → 跳过（仅保留语言白名单等零维护校验）。
-    返回 (entries, validator_warnings, clean_merged, flagged_indexes)：
+    返回 (entries, validator_warnings, clean_merged, flagged_indexes, clean_stats)：
       validator_warnings — post_validate 告警列表（传给质量报告）；
-      clean_merged — clean_srt 前后条数差（lenient 档为 None）；
-      flagged_indexes — post_validate 标记的行 index 集合（TM 学习准入用）。"""
+      clean_merged — cleaner 碎片合并减少的条数（int，lenient 档为 None；
+        删除数不再混入，见 clean_stats["deleted"]）；
+      flagged_indexes — post_validate 标记的行 index 集合（TM 学习准入用）；
+      clean_stats — cleaner 结构化统计 dict（merged/deleted/deleted_by_rule/
+        kept_by_source_evidence；lenient 档或清洗失败时为 None）。"""
     if cfg.v2_profile != "local":
-        return entries, [], None, set()
+        return entries, [], None, set(), None
 
     # post_validate：で误译修正 + 主语误判告警（YAML 单一数据源驱动）
     validator_warnings = []
@@ -919,16 +1175,28 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
 
     # cleaner_rules：规则清洗（删除残余噪音/碎片）
     clean_merged = 0
+    clean_stats = None
     try:
         from .cleaner_rules import clean_srt
-        cleaned = clean_srt(build_srt(entries),
-                            config_dir=cfg.cleaner_config_dir or None)
+        # 源侧证据门槛（v1.2.1 P0）：清洗前条目按时间轴对齐源文日文后
+        # 传入 clean_srt——删除类规则（L3-L12）须源文佐证（任一源文行含
+        # 汉字，或证据缺失）才免删；合并条目在 clean_srt 内部继承成员
+        # 源文集合。对不齐的条目无证据 → fail-safe 保留。
+        pre_aligned = _align_orig_by_timing(entries, orig_entries)
+        source_map = {}
+        for e, o in zip(entries, pre_aligned, strict=False):
+            if o is not None and (o.get("text") or "").strip():
+                source_map[e["timing"]] = o["text"]
+        cleaned, clean_stats = clean_srt(build_srt(entries),
+                                         config_dir=cfg.cleaner_config_dir or None,
+                                         source_map=source_map)
         cleaned_entries = parse_srt(cleaned)
-        clean_merged = len(entries) - len(cleaned_entries)
-        if clean_merged > 0:
-            print(f"   🧹 兜底清洗: 规则引擎移除 {clean_merged} 条")
-        elif clean_merged < 0:
-            clean_merged = 0
+        clean_merged = int(clean_stats.get("merged", 0))
+        n_deleted = int(clean_stats.get("deleted", 0))
+        if clean_merged > 0 or n_deleted > 0:
+            print(f"   🧹 兜底清洗: 合并碎片 {clean_merged} 条，"
+                  f"规则删除 {n_deleted} 条"
+                  f"（源侧证据免删 {int(clean_stats.get('kept_by_source_evidence', 0))} 条）")
 
         # ⚠️ 身份恢复（防错位的关键步骤）：cleaner 会按输出顺序重新编号，
         # 若不恢复，后续 阶段B 的日文参照与 TM 学习都会整体错位——这正是
@@ -942,7 +1210,7 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
                 restored += 1
         if restored:
             print(f"   🔧 已按时间轴恢复 {restored} 条原始编号（防错位）")
-        return cleaned_entries, validator_warnings, clean_merged, flagged_indexes
+        return cleaned_entries, validator_warnings, clean_merged, flagged_indexes, clean_stats
     except Exception as e:
         print(f"   ⚠️ 兜底清洗失败（忽略）: {e}")
         if collector is not None:
@@ -951,16 +1219,40 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
                           action="跳过规则清洗",
                           affected_count=len(entries),
                           severity=SEVERITY_WARNING)
-        return entries, validator_warnings, 0, flagged_indexes
+        return entries, validator_warnings, 0, flagged_indexes, None
 
 
 def _filter_language(cfg: RefineConfig, entries: list, stage_idx: int) -> list:
-    """语言白名单校验（零维护通用校验，两档 profile 均启用）。"""
-    srt = build_srt(entries)
+    """语言白名单校验（零维护通用校验，两档 profile 均启用）。
+
+    D1：非中文/乱码条目不再从终稿物理删除——改加 [未翻译] 前缀保留；
+    已带 [未翻译] 标记的条目跳过校验（_keep_original 条目由调用方预先
+    分流，不经此处）。明细仍归档 Errors/dropped_entries.log。
+    """
+    normal, marked = [], []
+    for e in entries:
+        if (e.get("text") or "").startswith(UNTRANSLATED_PREFIX):
+            marked.append(e)         # 已标记条目跳过校验（防二次加标）
+        else:
+            normal.append(e)
+    srt = build_srt(normal)
     kept_entries, dropped = filter_stage_output_srt(srt, stage_idx, "zh")
+    # build_srt 会重排序号：按时间轴（条目的真实身份标识）映射回原条目——
+    # 有效条目恢复原 index；无效条目加 [未翻译] 前缀后并回产物（不丢行）。
+    by_timing = {e["timing"]: e for e in normal}
+    kept_timings = set()
+    for e in kept_entries:
+        e["index"] = by_timing[e["timing"]]["index"]
+        kept_timings.add(e["timing"])
+    for e in normal:
+        if e["timing"] not in kept_timings:
+            kept_entries.append({"index": e["index"], "timing": e["timing"],
+                                 "text": UNTRANSLATED_PREFIX + (e["text"] or "")})
+    kept_entries.extend(marked)
+    kept_entries.sort(key=lambda e: _timing_span(e["timing"])[0])
     if dropped:
-        print(f"   🧹 乱码/幻觉残留过滤：移除 {dropped} 条 -> "
-              f"Errors/dropped_entries.log")
+        print(f"   🧹 乱码/幻觉残留：{dropped} 条加 [未翻译] 标记保留"
+              f"（不删除，明细 -> Errors/dropped_entries.log）")
     return kept_entries
 
 
@@ -984,24 +1276,8 @@ def _atomic_write_text(path: str, text: str):
             os.unlink(tmp)
 
 
-def _atomic_write_json(path: str, payload: dict):
-    """原子写 JSON 报告：同目录临时文件 + os.replace（与 _atomic_write_text 同款）。"""
-    import tempfile
-    p = Path(path)
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".json.tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False, indent=2))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-
-
 # ---------------------------------------------------------------------------
-# H3 幻觉处置报告 / H4a 上游 ASR 信号接线
+# H3 闸门0 摘要（gate0_summary 事件 payload）/ H4a 上游 ASR 信号接线
 # ---------------------------------------------------------------------------
 
 def _asr_meta_min_coverage_pct(cfg) -> float:
@@ -1014,18 +1290,19 @@ def _asr_meta_min_coverage_pct(cfg) -> float:
 
 def _build_gate0_report(source_name: str, stats: dict, upstream: dict,
                         samples: list, quarantine: dict = None) -> dict:
-    """构造 {stem}_幻觉处置报告.json payload（schema 契约由
-    tests/test_pipeline_v2.py 钉住）。
+    """构造 gate0_summary NDJSON 事件 payload（schema 契约由
+    tests/test_pipeline_v2.py 钉住；1.2.1 起 {stem}_幻觉处置报告.json
+    不再落盘，本函数仅服务事件通道）。
 
     gate0_ran 恒为 True：闸门0 在管线头部无条件执行（受信 resume 下
-    幂等——指纹校验保证规则/档位/信号语义与原次一致），报告如实
+    幂等——指纹校验保证规则/档位/信号语义与原次一致），摘要如实
     记录真实计数，不做归零处理（D2026-0914-01 追记裁决）。
 
     quarantine 参数：隔离区结论（{"candidates", "quarantined", "file"}）。
     省略时（直调/单测）为"回捞未执行"基线——candidates 按 stats 如实
-    计数，quarantined/file 记 null（final 回捞尚未判定）。报告另含
-    noise_left_empty（H5-7：计数类/候选类条目中被 LLM 留空删除的数量，
-    管线在阶段A 后回填 stats，本函数如实透传）。
+    计数，quarantined/file 记 null（final 回捞尚未判定）。payload 另含
+    noise_left_empty（历史字段：D1 后阶段A 不再留空删条，管线恒
+    回填 0，仅为事件 schema 兼容保留）。
     """
     tripped = bool(stats.get("valve_tripped"))
     if quarantine is None:
@@ -1335,6 +1612,9 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                                  file_name=fname)
 
     glossary = load_glossary_merged(cfg)
+    # v1.2.2 C1 per-片语境 sidecar（{stem}.context.md）：与词库同点加载，
+    # A/B 两阶段注入；cfg.context_sidecar=False 或文件不存在时为 None
+    sidecar = _load_context_sidecar(cfg, in_path)
     tm = _init_tm(cfg)
 
     orig_entries = parse_srt(Path(in_path).read_text(encoding="utf-8"))
@@ -1377,22 +1657,19 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
             f"语音覆盖率 {mileage:g}% 低于阈值 {min_cov:g}%")
 
     # 闸门0：送翻前源侧幻觉检测（预合并前对原始条目生效，两档 profile 均执行；
-    # gate0_stats 由幻觉处置报告与 gate0_summary 事件消费）。
+    # gate0_stats 由质量报告【处置】章节与 gate0_summary 事件消费）。
     # H5：候选 position 指向本次检测输入，先留快照供条目编号对齐。
     gate0_input = orig_entries
     orig_entries, gate0_stats = apply_source_filter(
         orig_entries, cfg, source_name=fname, tighten=tighten,
         samples_limit=_GATE0_REPORT_SAMPLE_CAP)
-    # H5：候选原始下标 → 条目编号 对齐表 + 计数类/候选类条目编号集合
-    # （隔离区回捞与 noise_left_empty 核对共用；候选仅保险阀降级路径非空）
+    # H5：候选原始下标 → 条目编号 对齐表（隔离区回捞用；候选仅保险阀
+    # 降级路径非空。D1 后 noise_left_empty 恒 0，不再需要计数类条目编号
+    # 集合，原 gate0_noise_indexes 一并移除）
     _cands = gate0_stats.get("quarantine_candidates") or []
     gate0_source_lookup = {
         c["position"]: gate0_input[c["position"]].get("index")
         for c in _cands if 0 <= c["position"] < len(gate0_input)}
-    _noise_pos = ({c["position"] for c in _cands}
-                  | set(gate0_stats.get("count_positions") or []))
-    gate0_noise_indexes = {gate0_input[p].get("index") for p in _noise_pos
-                           if 0 <= p < len(gate0_input)}
 
     # 保险阀触发：第三种入风险清单的情形（warning 级）
     if gate0_stats.get("valve_tripped"):
@@ -1405,7 +1682,7 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
     # R8：每文件闸门0 计数行，走 summary_lines 聚合输出
     collector.add_summary_line(_gate0_summary_line(gate0_stats))
     # NDJSON 只增：每文件闸门0 执行后发一次 gate0_summary
-    # （payload=报告去 samples 的摘要，含 valve；gate0 执行如实记 True；
+    # （payload=闸门0 摘要，去 samples，含 valve；gate0 执行如实记 True；
     #   quarantine 的 quarantined/file 在此时尚未回捞判定，如实记 null）
     gate0_report_now = _build_gate0_report(
         fname, gate0_stats, upstream_block,
@@ -1431,6 +1708,15 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                               action="如非预期，可调低 premerge_max_span_ms / "
                                      "premerge_max_chars 或关闭 premerge_enabled",
                               severity=SEVERITY_INFO)
+
+    # ---- v1.2.2 Beta 剧情自摘要（时点：闸门0+预合并后、阶段A 前）----
+    # 手写 sidecar【剧情摘要】非空时手写优先；关闭/失败静默跳过。
+    # 摘要文本只注入 A/B 提示词，绝不写入输出目录/终稿/质量报告；
+    # 摘要内容与缓存不参与 manifest 指纹（与 sidecar 内容同款已知边界：
+    # 换 --s1-model 或改采样行为后须 --force 重跑方生效）。
+    synopsis_text = _ensure_auto_synopsis(cfg, orig_entries, sidecar,
+                                          collector=collector,
+                                          file_name=fname)
 
     print("=" * 60)
     print(f"🚀 [refine-v2] 输入: {Path(in_path).name}")
@@ -1471,7 +1757,8 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
             save_manifest(m_path, manifest)
             a_result = _run_stage_a(cfg, orig_entries, tm, tmp_dir, glossary,
                                     collector=collector, file_name=fname,
-                                    emitter=emitter)
+                                    emitter=emitter, sidecar=sidecar,
+                                    synopsis=synopsis_text)
             _atomic_write_text(out_a_path, build_srt(a_result.entries))
             print(f"   ✅ 阶段A完成 -> {Path(out_a_path).name} "
                   f"({len(a_result.entries)} 条)")
@@ -1480,17 +1767,18 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
             if a_result.failed:
                 manifest.stages["A"].status = "degraded"
             save_manifest(m_path, manifest)
-        # H5-7：阶段A 留空执行率核对——计数类/候选类条目中被 LLM 留空
-        # 删除的数量（resume 复用阶段A 时 deleted 为空集，如实记 0）
-        gate0_stats["noise_left_empty"] = len(
-            gate0_noise_indexes & set(a_result.deleted))
+        # H5-7/D1：删除权收归闸门0 后，阶段A 不再留空删条（allow_empty_
+        # deletions=False），本字段"被 LLM 留空删除的数量"语义失效——
+        # 恒记 0，仅为 gate0_summary 事件 schema 兼容保留（历史消费者：
+        # 事件流/tests 契约）。
+        gate0_stats["noise_left_empty"] = 0
         emitter.emit("phase_finished", phase="A", file=fname, payload={
             "entries": len(a_result.entries),
             "degraded_count": len(a_result.failed),
             "reused": reused_a})
 
         # ---- 兜底规则层（strict/lenient）----
-        a_entries, validator_warnings, clean_merged, flagged_indexes = \
+        a_entries, validator_warnings, clean_merged, flagged_indexes, clean_stats = \
             _apply_fallback_rules(cfg, a_result.entries, orig_entries,
                                   collector=collector, file_name=fname)
 
@@ -1501,7 +1789,9 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
         save_manifest(m_path, manifest)
         final_entries = _run_stage_b(cfg, a_for_b, orig_entries, tmp_dir,
                                      glossary, collector=collector,
-                                     file_name=fname, emitter=emitter)
+                                     file_name=fname, emitter=emitter,
+                                     sidecar=sidecar,
+                                     synopsis=synopsis_text)
         # ---- 语言白名单过滤 ----
         # 带 _keep_original 标记的回退日文原条目跳过 zh 白名单过滤
         # （否则 keep_untranslated 回退的日文原文会被误判删除），
@@ -1523,6 +1813,24 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
         emitter.emit("phase_finished", phase="B", file=fname, payload={
             "entries": len(final_entries), "degraded_count": n_kept,
             "reused": False})
+
+        # ---- v1.2.2 D1 术语冲突观察（终稿生成后计算；一次遍历两用）----
+        # 冲突清单供 CSV/报告【术语冲突观察】小节；逐术语统计供
+        # 【术语一致性】章节；冲突 span 集合在 glossary_conflict_block=True
+        # 时阻断 TM 学习（入库前检查）。无词库时整段跳过（零开销）。
+        conflict_data = None
+        if glossary:
+            try:
+                conflict_data = scan_glossary_conflicts(
+                    final_entries, orig_entries, glossary)
+            except Exception as e:
+                print(f"   ⚠️ 术语冲突扫描失败（忽略）: {e}")
+                collector.add(stage="final", file=fname,
+                              reason=f"术语冲突扫描失败: {e}",
+                              action="跳过术语冲突观察",
+                              severity=SEVERITY_INFO)
+        conflict_spans = {_timing_span(c.get("timing", ""))
+                          for c in (conflict_data or {}).get("conflicts") or []}
 
         # ---- final 终稿落盘 ----
         emitter.emit("phase_started", phase="final", file=fname)
@@ -1571,13 +1879,20 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                               reason=f"必看分歧行集合计算失败: {e}",
                               action="跳过必看分歧行门槛",
                               severity=SEVERITY_INFO)
+        learned_count = None
         if tm:
-            _learn_to_tm(tm, orig_entries, final_entries,
-                         flagged=flagged_indexes, gate=cfg.tm_learn_gate,
-                         must_see_spans=must_see_spans,
-                         collector=collector, file_name=fname)
+            learned_count = _learn_to_tm(
+                tm, orig_entries, final_entries,
+                flagged=flagged_indexes, gate=cfg.tm_learn_gate,
+                must_see_spans=must_see_spans,
+                collector=collector, file_name=fname,
+                conflict_spans=conflict_spans,
+                block_conflicts=bool(getattr(cfg, "glossary_conflict_block",
+                                             False)))
 
         # ---- 自动词库学习（cfg.auto_glossary，含防幻觉核验）----
+        # v1.2.2 D3 治理开关 glossary_learn_enabled 的跳过判定在
+        # _auto_learn_glossary 内部（打印/日志/风险清单计数）。
         # P1-6：学习调用放入后台线程（daemon，注册到 run 级 learn_threads），
         # 不阻塞主流程；run_v2 收尾统一 join。
         if cfg.auto_glossary:
@@ -1596,15 +1911,152 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                     pass_mode = probe_disagreement_mode(in_path)
                     disag = collect_disagreement(in_path)
                 merge_stats = {"premerge_merged": premerge_merged}
+                # H5 隔离区回捞：移出主稿进 *_隔离区.srt 的条数入账条数
+                # 恒等式（无隔离时为 0，报告中该项不显示）
+                merge_stats["quarantine_moved"] = len(quarantine_entries)
                 if clean_merged is not None:
                     merge_stats["clean_merged"] = clean_merged
+                if clean_stats:
+                    # 键名契约（质量报告渲染在后续任务改造，先保证稳定）：
+                    # clean_deleted / clean_deleted_by_rule / clean_kept_by_evidence
+                    merge_stats["clean_deleted"] = int(clean_stats.get("deleted", 0))
+                    merge_stats["clean_deleted_by_rule"] = dict(
+                        clean_stats.get("deleted_by_rule") or {})
+                    merge_stats["clean_kept_by_evidence"] = int(
+                        clean_stats.get("kept_by_source_evidence", 0))
+                    # v1.2.2 C2 噪声闸门：纯假名实义源文免删的条数与时间轴
+                    # （报告"纯假名实义保留"行及 [未翻译] 标记统计消费）
+                    merge_stats["clean_kept_by_noise_gate"] = int(
+                        clean_stats.get("kept_by_noise_gate", 0))
+                    merge_stats["clean_kept_by_noise_gate_timings"] = list(
+                        clean_stats.get("kept_by_noise_gate_timings") or [])
+                # 闸门0 删除台账（处置章节消费）：samples 原始结构为
+                # {number, category, text}（无 timing），按条目编号回查
+                # 闸门0 输入的时间轴后转成报告渲染契约
+                _timing_by_index = {e.get("index"): (e.get("timing") or "")
+                                    for e in gate0_input}
+                gate0_deletions = {
+                    "total": int(gate0_stats.get("deleted", 0) or 0),
+                    "by_category": {
+                        label: int(v.get("deleted", 0) or 0)
+                        for label, v in (gate0_stats.get("categories")
+                                         or {}).items()},
+                    "samples": [
+                        {"index": s.get("number"),
+                         "timing": _timing_by_index.get(s.get("number"), ""),
+                         "reason": s.get("category", ""),
+                         "text": s.get("text", "")}
+                        for s in (gate0_stats.get("samples") or [])],
+                }
+                # ---- D5 乱码强译复核候选（终稿生成后计算）----
+                # (源文命中闸门0计数类位置 OR strong_garble_signal 命中)
+                # AND is_fluent_zh(终稿译文) AND 源文不含汉字
+                _count_idx = {
+                    gate0_input[p].get("index")
+                    for p in (gate0_stats.get("count_positions") or [])
+                    if isinstance(p, int) and 0 <= p < len(gate0_input)}
+                garble_review = []
+                for e, o in zip(final_entries,
+                                _align_orig_by_timing(final_entries,
+                                                      orig_entries),
+                                strict=False):
+                    src = (o.get("text") or "").strip() if o else ""
+                    zh = (e.get("text") or "").strip()
+                    if not src or _KANJI_SRC_RE.search(src):
+                        continue       # 无对应源文 / 实义行（含汉字）不入
+                    if not is_fluent_zh(zh):
+                        continue       # 非流畅译文（含 [未翻译]）不入
+                    sig = strong_garble_signal(src)
+                    if sig is None and o.get("index") in _count_idx:
+                        sig = "闸门0计数类检出"
+                    if sig is None:
+                        continue
+                    garble_review.append({
+                        "index": e.get("index"),
+                        "timing": e.get("timing") or "",
+                        "src_preview": src[:60],
+                        "zh_preview": zh[:60],
+                        "signal": sig,
+                    })
+                # ---- v1.2.2 C1 误听疑似改写留痕（终稿生成后计算）----
+                # 源文命中任一误听疑似词的终稿条目全部列入（命中即列，
+                # 不做是否改写的语义判定——保守审计口径，防审计缺口）。
+                mishear_review = []
+                if sidecar and (sidecar.get("mishear")):
+                    for e, o in zip(final_entries,
+                                    _align_orig_by_timing(final_entries,
+                                                          orig_entries),
+                                    strict=False):
+                        src = (o.get("text") or "").strip() if o else ""
+                        if not src:
+                            continue
+                        for a, b in sidecar["mishear"]:
+                            if a and a in src:
+                                mishear_review.append({
+                                    "index": e.get("index"),
+                                    "timing": e.get("timing") or "",
+                                    "suspect": a,
+                                    "correct": b,
+                                    "zh_preview":
+                                        (e.get("text") or "").strip()[:60],
+                                })
+                # 无误听怀疑表（sidecar 未启用/文件缺表）时传 None=整节省略
+                sidecar_review = mishear_review \
+                    if (sidecar and sidecar.get("mishear")) else None
+                # ---- v1.2.2 D1 术语冲突观察：CSV 落盘 + 跨运行累计 ----
+                # glossary_conflicts/term_consistency：有词库时传列表
+                # （空列表 → 报告显示"无样本"）；无词库/扫描失败传 None
+                # （章节整体省略）。观察闸 JSON 追加本次运行记录并取
+                # 三态建议行（只评估不自动切换）。
+                conflicts = (conflict_data or {}).get("conflicts")
+                term_stats = (conflict_data or {}).get("term_stats")
+                conflict_csv_path = None
+                watch_advice = None
+                if conflict_data is not None:
+                    try:
+                        if conflicts:
+                            conflict_csv_path = write_conflict_csv(
+                                str(Path(out_dir)
+                                    / f"{stem}_术语冲突观察.csv"),
+                                conflicts)
+                            print(f"📊 术语冲突观察 CSV 已生成: "
+                                  f"{Path(conflict_csv_path).name}")
+                        per_term = {
+                            t.get("term", ""): {
+                                "candidates": t.get("hits", 0),
+                                "conflicts": t.get("with_neither", 0)}
+                            for t in term_stats or []}
+                        watch_path = default_watch_path()
+                        append_watch_record(watch_path, fname, per_term)
+                        watch_advice = evaluate_watch(
+                            load_watch_records(watch_path))
+                    except Exception as e:
+                        print(f"   ⚠️ 术语冲突观察落盘失败（忽略）: {e}")
+                        collector.add(stage="final", file=fname,
+                                      reason=f"术语冲突观察落盘失败: {e}",
+                                      action="跳过观察闸 CSV/JSON 累计",
+                                      severity=SEVERITY_INFO)
+                # TM 摘要行取值：H=阶段A 精确命中数（阶段A 复用时取不到
+                # → None）；L=本次学习入库数（未启用 TM → None）
+                tm_exact_hits = (len(a_result.exact_hits)
+                                 if (tm is not None and not reused_a) else None)
                 report = build_quality_report(
                     orig_entries, final_entries, Path(in_path).name,
                     expected_entries=orig_entries,
                     merge_stats=merge_stats,
                     validator_warnings=validator_warnings,
                     pass_disagreement=disag,
-                    pass_mode=pass_mode)
+                    pass_mode=pass_mode,
+                    gate0_deletions=gate0_deletions,
+                    garble_review=garble_review,
+                    sidecar_review=sidecar_review,
+                    orig_total=len(gate0_input),
+                    profile=str(getattr(cfg, "v2_profile", "") or ""),
+                    glossary_conflicts=conflicts,
+                    term_consistency=term_stats,
+                    conflict_watch_advice=watch_advice,
+                    tm_exact_hits=tm_exact_hits,
+                    tm_learned_count=learned_count)
                 rp = write_quality_report(out_dir, stem, report)
                 print(f"\n📋 质量报告已生成: {Path(rp).name}")
                 print("\n".join(report.splitlines()[-3:]))
@@ -1628,15 +2080,17 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
 
         # ---- 任务成功完成：清理断点恢复类中间文件 ----
         # （清单已完成使命；{stem}_manifest.json、{stem}_refine_A.srt 与
-        #   上一轮的 {stem}_幻觉处置报告.json 留着只会误导下一次 --resume；
-        #   tmp_dir 中的指令副本同样不再需要）
+        #   旧版残留的 {stem}_幻觉处置报告.json（1.2.1 起不再生成）留着
+        #   只会误导下一次 --resume；tmp_dir 中的指令副本同样不再需要）
         delete_resume_artifacts(out_dir, stem)
         _remove_tmp_dir(tmp_dir)
         print("🧹 恢复类中间文件已清理")
 
-        # ---- H5 隔离区落盘 + H3 幻觉处置报告 ----
-        # （均置于恢复类清理之后一环，避免被本次运行的清理误删；
-        #   隔离区仅非空时写，空则不落文件——上一轮残留已随清理删除）
+        # ---- H5 隔离区落盘 ----
+        # （置于恢复类清理之后一环，避免被本次运行的清理误删；
+        #   隔离区仅非空时写，空则不落文件——上一轮残留已随清理删除。
+        #   1.2.1 起 {stem}_幻觉处置报告.json 不再生成：闸门0 台账由质量
+        #   报告【处置】章节承接，机器可读通道为 gate0_summary 事件）
         quarantine_file = None
         if quarantine_entries:
             quarantine_file = f"{stem}_隔离区.srt"
@@ -1647,17 +2101,6 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
             print(f"   {line}")
             # R8 口径：信息行走 summary_lines 聚合，不计入风险事件
             collector.add_summary_line(line)
-        # H3 报告与 manifest 同目录口径，final 输出阶段原子写；
-        # resume 复用阶段A 的运行同样落报告：闸门0 在管线头部无条件执行
-        # （受信 resume 下幂等），报告如实记录真实计数（D2026-0914-01 追记裁决）
-        gate0_report = _build_gate0_report(
-            fname, gate0_stats, upstream_block,
-            samples=gate0_stats.get("samples") or [],
-            quarantine={"candidates": len(_cands),
-                        "quarantined": len(quarantine_entries),
-                        "file": quarantine_file})
-        _atomic_write_json(str(Path(out_dir) / f"{stem}_幻觉处置报告.json"),
-                           gate0_report)
     finally:
         if tm:
             with contextlib.suppress(Exception):
@@ -1671,7 +2114,7 @@ def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
     """--force 重跑前的产物备份（仅精确匹配文件名，存在才备份）。
 
     对输出目录中确切名为 ``{stem}_final_cn.srt``、``{stem}_质量报告.txt``、
-    ``{stem}_分歧复核.csv`` 的文件，复制为同目录
+    ``{stem}_分歧复核.csv``、``{stem}_术语冲突观察.csv`` 的文件，复制为同目录
     ``{原名去扩展}_bak_YYYYMMDD_HHMMSS.{原扩展}``；同一次运行共用同一时间戳。
     精确匹配保证旧的 ``*_bak_*`` 文件不会被再次备份。
     """
@@ -1679,7 +2122,8 @@ def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
     from datetime import datetime
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    for suffix in ("_final_cn.srt", "_质量报告.txt", "_分歧复核.csv"):
+    for suffix in ("_final_cn.srt", "_质量报告.txt", "_分歧复核.csv",
+                   "_术语冲突观察.csv"):
         p = Path(out_dir) / f"{stem}{suffix}"
         if not p.is_file():
             continue
@@ -1704,10 +2148,25 @@ def _auto_learn_glossary(cfg: RefineConfig, in_path: str, out_final_path: str,
     防污染：glossary_learn 内部做子串核验（原文/译文中必须真实存在），
     幻觉造词不会入库；learned 词库仅通过 load_glossary_merged 追加注入。
 
+    v1.2.2 D3 治理开关：cfg.glossary_learn_enabled=False 时跳过本学习
+    路径（跳过事实计数入日志与风险清单，止增不清退——存量清退用
+    tools/glossary_learned_reset.py）。
+
     P1-6 异步化：学习调用放入后台 daemon 线程（注册到 run 级 threads
     列表，由 run_v2 收尾 join 超时 60s），不阻塞主流程；threads=None
     （无 run 上下文的直调）保持同步语义。
     """
+    if not getattr(cfg, "glossary_learn_enabled", True):
+        print("   ⏭️ 词库学习已被 glossary_learn_enabled=False 跳过")
+        logger.info("glossary_learn_enabled=False，跳过 learned 词库学习"
+                    "（file=%s）", file_name)
+        if collector is not None:
+            collector.add(stage="final", file=file_name,
+                          reason="glossary_learn_enabled=False",
+                          action="跳过 learned 词库学习（配置治理开关）",
+                          severity=SEVERITY_INFO)
+        return
+
     def _learn_once():
         try:
             from .glossary_learn import learn_from_s2_output
@@ -1754,7 +2213,8 @@ def _wrap_as_result(entries: list, a_result: StageAResult) -> StageAResult:
 
 def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
                  final_entries: list, flagged=None, gate=True,
-                 must_see_spans=None, collector=None, file_name: str = None):
+                 must_see_spans=None, collector=None, file_name: str = None,
+                 conflict_spans=None, block_conflicts=False) -> int | None:
     """终稿学习：日文原文 → 最终中文。
 
     ⚠️ 双指针对齐（同起点多条按序消费），只学时间轴完全一致
@@ -1775,11 +2235,26 @@ def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
         （同一 merged 文件解析出的 entries）span 直接可比。
         该行 span 命中集合 → 一律不入库（双引擎严重分歧行，
         真问题富集区，学习风险大于收益）。仅 gate=True 时生效。
+    conflict_spans : set | None
+        术语冲突观察条目的时间轴 span 集合（v1.2.2 D1，glossary_conflict.
+        scan_glossary_conflicts 产出冲突清单的 timing）。
+    block_conflicts : bool
+        cfg.glossary_conflict_block：True 时冲突条目禁止进入 TM 学习
+        （入库前检查，冲突即跳过并计数）。独立于 gate（观察闸转阻断
+        由用户裁决，不随 A/B 验证口径关断）。
+
+    Returns
+    -------
+    int | None
+        本次实际入库条数（store_batch 新增数；无候选 0）；学习过程
+        异常时返回 None（报告 TM 摘要行按"取不到"处理）。
     """
     if flagged is None:
         flagged = set()
     if must_see_spans is None:
         must_see_spans = set()
+    if conflict_spans is None:
+        conflict_spans = set()
     try:
         from .post_validate import scan_learn_defect
     except Exception:
@@ -1788,6 +2263,8 @@ def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
     # 准入跳过计数器（按类别）
     skip_kana = skip_leak = skip_src_prefix = skip_placeholder = 0
     skip_len_ratio = skip_validator = skip_must_see = 0
+    skip_conflict = 0
+    learned_count = 0
 
     try:
         pairs = []
@@ -1811,6 +2288,12 @@ def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
                         and not tgt.startswith(UNTRANSLATED_PREFIX)
                         and tgt != src):         # 同文残留对不入库
                     # ---- 准入门槛 ----
+                    # 层0：术语冲突观察闸转阻断（v1.2.2 D1）——独立于
+                    # gate（用户显式开启 glossary_conflict_block 才生效）
+                    if block_conflicts and fspan in conflict_spans:
+                        skip_conflict += 1
+                        j += 1
+                        continue
                     if gate:
                         # 层3：必看分歧行（双引擎严重分歧，确定性阻断）
                         # 必看行 timing 来自 merged 产物（=in_path），学习
@@ -1846,18 +2329,25 @@ def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
             # fspan 起点相同但被合并（终点延长）→ 不学习也不消费，
             # 让被合并的后续原文行自然跳过
         if pairs:
-            added = tm.store_batch(pairs)
+            # v1.2.2 批次 A2：学习入库带上来源 srt 文件名 stem（TM
+            # provenance，供后续 TM 清洗区分跨片同源句；file_name 为
+            # Path(in_path).name，stem 即来源标识）
+            source_stem = Path(file_name).stem if file_name else None
+            added = tm.store_batch(pairs, source_name=source_stem)
+            learned_count = int(added or 0)
             if added:
                 print(f"   💾 翻译记忆库: 学习 {len(pairs)} 对"
                       f"（新增 {added} 条）")
         # 准入门槛统计行
         skip_total = (skip_kana + skip_leak + skip_src_prefix
                       + skip_placeholder + skip_len_ratio + skip_validator
-                      + skip_must_see)
+                      + skip_must_see + skip_conflict)
         print(f"   🚫 学习门槛: 跳过 {skip_total} 行"
               f"（假名{skip_kana}/泄漏{skip_leak}/源残留{skip_src_prefix}"
               f"/占位符{skip_placeholder}/长度比{skip_len_ratio}"
-              f"/validator {skip_validator}/必看{skip_must_see}）")
+              f"/validator {skip_validator}/必看{skip_must_see}"
+              f"/术语冲突{skip_conflict}）")
+        return learned_count
     except Exception as e:
         print(f"   ⚠️ 翻译记忆库学习失败: {e}")
         if collector is not None:
@@ -1865,3 +2355,4 @@ def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
                           reason=f"翻译记忆库学习失败: {e}",
                           action="跳过TM学习",
                           severity=SEVERITY_INFO)
+        return None

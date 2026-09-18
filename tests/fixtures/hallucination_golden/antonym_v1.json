@@ -1,0 +1,89 @@
+{
+  "version": "1.0",
+  "frozen": true,
+  "created": "2026-09-17",
+  "description": "反义误译规则（批次 B2，冻结契约 D2026-0917-01 ③）黄金样本回归集 v1.0（冻结版本）。回归口径独立于实现代码写就：双侧锚定——源文命中 やめて/やめろ、最低、ずるい/ずりー 指定形态 且 译文命中对应目标集（别停/不要停；真不错/真棒/不错/挺好；滑）→ 必须告警；源侧负向排除（やめないで/やめるな）或译文为正确方向（住手/停下、差劲、狡猾）→ 不得告警。全部为中性合成文本，不引用任何真实语料。",
+  "schema": {
+    "id": "样本唯一标识（GA-序号）",
+    "source": "受检源文（日文源句）",
+    "translation": "该条译文",
+    "expected_warn": "true=反义规则必须告警 / false=不得告警",
+    "origin": "constructed（构造样本；真实语料待用户提供后以 origin=real 追加）",
+    "annotator": "标注人",
+    "generated_by": "构造依据（引用 antonym_* 规则 source_pattern/target_pattern 双侧锚定口径，供复核）"
+  },
+  "cases": [
+    {
+      "id": "GA-001",
+      "source": "やめて、やめてよ…",
+      "translation": "别停，别停呀…",
+      "expected_warn": true,
+      "origin": "constructed",
+      "annotator": "code-Executor-p2",
+      "generated_by": "源命中 やめ(?!ないで)(?!るな)(?:て|ろ)（やめて/やめてよ），译文命中 (?:别停|不要停)(?:下来)?（别停）→ 双侧锚定成立，antonym_yamete 必须告警"
+    },
+    {
+      "id": "GA-002",
+      "source": "最低じゃねぇな。",
+      "translation": "真不错啊。",
+      "expected_warn": true,
+      "origin": "constructed",
+      "annotator": "code-Executor-p2",
+      "generated_by": "源命中 最低，译文命中 (?:真不错|真棒|不错|挺好)（真不错）→ antonym_saitei 必须告警（日语口语 最低=差劲）"
+    },
+    {
+      "id": "GA-003",
+      "source": "ずりーよな。",
+      "translation": "滑下去了呢。",
+      "expected_warn": true,
+      "origin": "constructed",
+      "annotator": "code-Executor-p2",
+      "generated_by": "源命中 ずるい|ずりー（ずりー），译文命中 滑 → antonym_zurui 必须告警（ずるい=狡猾/不公平）"
+    },
+    {
+      "id": "GA-004",
+      "source": "やめないで…",
+      "translation": "别停下来……",
+      "expected_warn": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p2",
+      "generated_by": "负样本：やめないで→别停 是正确翻译，源侧负向排除 (?!ないで) → 不得告警"
+    },
+    {
+      "id": "GA-005",
+      "source": "やめて！",
+      "translation": "住手！",
+      "expected_warn": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p2",
+      "generated_by": "负样本：译文 住手 不在目标集 (?:别停|不要停)(?:下来)? → 双侧锚定不成立，不得告警"
+    },
+    {
+      "id": "GA-006",
+      "source": "やめるなよ。",
+      "translation": "别停下来啊。",
+      "expected_warn": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p2",
+      "generated_by": "负样本：やめるな 为否定命令形（继续干下去），源侧负向排除 (?!るな) → 不得告警"
+    },
+    {
+      "id": "GA-007",
+      "source": "最低だな。",
+      "translation": "真差劲啊。",
+      "expected_warn": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p2",
+      "generated_by": "负样本：译文 真差劲 为正确方向，不在目标集 (?:真不错|真棒|不错|挺好) → 不得告警"
+    },
+    {
+      "id": "GA-008",
+      "source": "ずるいよ、お前。",
+      "translation": "你太狡猾了。",
+      "expected_warn": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p2",
+      "generated_by": "负样本：译文 狡猾 为正确方向，不含 滑 → 目标集不命中，不得告警"
+    }
+  ]
+}

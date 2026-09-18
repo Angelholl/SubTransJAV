@@ -714,3 +714,67 @@ def test_is_fluent_zh_boundary():
     assert sh.is_fluent_zh("") is False
     assert sh.is_fluent_zh("ABC") is False
     assert sh.is_fluent_zh("チャンネルとうろく") is False  # 纯假名零汉字
+
+
+# ---------------------------------------------------------------------------
+# 10. D5 乱码强译复核：strong_garble_signal 纯函数
+# ---------------------------------------------------------------------------
+
+def test_strong_garble_signal_hits():
+    """强信号命中：同假名连打≥6 / 2-4 字单元平铺≥4（与 _is_nonsense 同源）。"""
+    assert sh.strong_garble_signal("あじゃあじゃあじゃあじゃ") == "无意义音节连缀"
+    assert sh.strong_garble_signal("んああああああ") == "无意义音节连缀"
+    assert sh.strong_garble_signal("ぱにぱにぱにぱに") == "无意义音节连缀"
+
+
+def test_strong_garble_signal_negative():
+    """负侧：真实台词/拖长音豁免/不足阈值/空串/含汉字。"""
+    assert sh.strong_garble_signal("こんにちは") is None          # 真实台词
+    assert sh.strong_garble_signal("あああああああ") is None      # 单假名拖长音豁免
+    assert sh.strong_garble_signal("ぱにぱにぱに") is None        # 平铺×3 不足
+    assert sh.strong_garble_signal("んあああああ") is None        # 连打×5 不足
+    assert sh.strong_garble_signal("また明日") is None            # 含汉字非纯假名
+    assert sh.strong_garble_signal("") is None
+    assert sh.strong_garble_signal(None) is None
+
+
+# ---------------------------------------------------------------------------
+# 11. v1.2.2 C2 源侧计数类噪声判定：is_source_counting_noise 纯函数
+# ---------------------------------------------------------------------------
+
+def test_is_source_counting_noise_keep_list_words_are_not_noise():
+    """keep_list 白名单词不算噪声（はい/うん/やめて 是实义应答），
+    含汉字文本不算噪声（实义行）。"""
+    assert sh.is_source_counting_noise("はい") is False
+    assert sh.is_source_counting_noise("うん") is False
+    assert sh.is_source_counting_noise("やめて") is False
+    assert sh.is_source_counting_noise("うん。") is False        # 带句读规范化后仍白名单
+    assert sh.is_source_counting_noise("また明日") is False      # 含汉字
+    assert sh.is_source_counting_noise("気持ちいい") is False    # 含汉字
+
+
+def test_is_source_counting_noise_repeat_features():
+    """重复连打/单元平铺命中 → True（阈值与闸门0 计数类同源）。"""
+    assert sh.is_source_counting_noise("ああああああ") is True        # 连打×6
+    assert sh.is_source_counting_noise("んああああああ") is True      # 内嵌连打
+    assert sh.is_source_counting_noise("あじゃあじゃあじゃあじゃ") is True  # 单元×4
+
+
+def test_is_source_counting_noise_negatives():
+    """负侧：空串/纯标点/普通台词/未达阈值不判噪（保守：无证据不判噪）。"""
+    assert sh.is_source_counting_noise("") is False
+    assert sh.is_source_counting_noise("。。。") is False
+    assert sh.is_source_counting_noise("こんにちは") is False     # 普通台词
+    assert sh.is_source_counting_noise("ああああ") is False       # 连打×4 不足
+    assert sh.is_source_counting_noise("あああああ") is False     # 连打×5 不足
+    assert sh.is_source_counting_noise("ぱにぱにぱに") is False   # 平铺×3 不足
+    assert sh.is_source_counting_noise(None) is False
+
+
+def test_is_source_counting_noise_rules_override():
+    """rules 显式传入时使用该规则库（自定义 keep_list 白名单生效）。"""
+    rules = sh.load_source_rules()
+    assert sh.is_source_counting_noise("ああああああ", rules=rules) is True
+    custom = dict(rules)
+    custom["keep_list"] = list(rules["keep_list"]) + ["ああああああ"]
+    assert sh.is_source_counting_noise("ああああああ", rules=custom) is False

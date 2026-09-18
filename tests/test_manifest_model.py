@@ -512,16 +512,27 @@ def test_delete_resume_artifacts_deletes_only_targets(tmp_path):
     assert delete_resume_artifacts(str(tmp_path), "ep01") == []   # 无文件可删
     manifest_file = tmp_path / "ep01_manifest.json"
     refine_a = tmp_path / "ep01_refine_A.srt"
-    gate0_report = tmp_path / "ep01_幻觉处置报告.json"
+    # 旧版残留素材：幻觉处置报告 1.2.1 起不再生成，
+    # delete_resume_artifacts 仍须清理旧版运行留下的该文件
+    stale_gate0_report = tmp_path / "ep01_幻觉处置报告.json"
     quarantine = tmp_path / "ep01_隔离区.srt"
     manifest_file.write_text("{}", encoding="utf-8")
     refine_a.write_text("1\n00:00:00,000 --> 00:00:01,000\n原\n", encoding="utf-8")
-    gate0_report.write_text("{}", encoding="utf-8")   # H3：旧报告同属恢复类现场
+    stale_gate0_report.write_text("{}", encoding="utf-8")
     quarantine.write_text("1\n00:00:00,000 --> 00:00:01,000\n疑\n",
                           encoding="utf-8")           # H5：旧隔离区同属恢复类现场
     removed = delete_resume_artifacts(str(tmp_path), "ep01")
     assert sorted(removed) == ["ep01_manifest.json", "ep01_refine_A.srt",
                                "ep01_幻觉处置报告.json", "ep01_隔离区.srt"]
     assert not manifest_file.exists() and not refine_a.exists()
-    assert not gate0_report.exists() and not quarantine.exists()
+    assert not stale_gate0_report.exists() and not quarantine.exists()
     assert keep1.exists() and keep2.exists()               # 其余产物不动
+
+
+def test_config_hash_tracks_v2_stage_prompts(monkeypatch):
+    """D1：内置阶段提示词（V2_STAGE_PROMPTS）参与 config_hash——
+    不落盘的指令源变更后，--resume 必须拒绝复用旧提示词产出的阶段产物。"""
+    from subtransjav.refine import pipeline_v2 as pv_d1
+    h1 = compute_config_hash(_make_cfg())
+    monkeypatch.setitem(pv_d1.V2_STAGE_PROMPTS, "B", "changed prompt")
+    assert compute_config_hash(_make_cfg()) != h1

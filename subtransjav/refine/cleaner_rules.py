@@ -6,10 +6,16 @@ from pathlib import Path
 
 import yaml
 
+from .source_hallucination import is_source_counting_noise
+
 # Pre-compiled: sentence-fragment connector words (used in _merge_fragments)
 _CONNECTOR_RE = re.compile(
     r'^(那个|这个|其实|但是|因为|所以|然后|就是|而且|不过|和|与|但|可|就|才|又|再|也|还|并|而|于|以|被|把|给|让|使|令|叫|请|帮)$'
 )
+
+# 源侧证据（v1.2.1 P0）：条目对应源文行含汉字 ⇒ 译文有真实源文支撑，
+# 禁止删除；仅纯假名/符号噪声源文（如 ASR 幻觉"ああああ"）才放行 L 规则。
+_HAS_KANJI_RE = re.compile(r'[\u4e00-\u9fff]')
 
 
 def resolve_data_file(
@@ -350,6 +356,27 @@ class ChineseCleaner:
                 return set(seg)
         return set()
 
+    @staticmethod
+    def _gate_delete(rule: str, source_texts: list[str] | None,
+                     noise_gate: bool = False) -> tuple[bool, str]:
+        """L3-L12 删除提交前的源侧证据门槛：
+        - 证据缺失（source_map 未提供/该条目未对齐到源文）→ fail-safe 保留；
+        - 任一源文行含汉字 → 保留（kept-by-source-evidence，计入统计）；
+        - v1.2.2 C2（noise_gate=True，仅 L7/L8/L11）：源文虽不含汉字，但
+          未命中闸门0 计数类噪声特征 → 保留（kept-by-noise-gate，计入
+          统计）。合并条目取成员并集判定：任一成员为实义假名（白名单词
+          或非噪声串）即整体保留，防合并行连带丢实义；
+        - 源文全部为纯假名且（noise_gate 时）全部命中计数类噪声特征
+          → 放行删除（返回规则名）。"""
+        if not source_texts:
+            return False, "kept-no-evidence"
+        if any(_HAS_KANJI_RE.search(t or "") for t in source_texts):
+            return False, "kept-by-source-evidence"
+        if noise_gate and not all(
+                is_source_counting_noise(t or "") for t in source_texts):
+            return False, "kept-by-noise-gate"
+        return True, rule
+
     def _should_delete(
         self,
         item: Subtitle,
@@ -357,7 +384,16 @@ class ChineseCleaner:
         idx: int,
         cqs_indices: set[int],
         segments: list[list[int]],
+        source_texts: list[str] | None = None,
     ) -> tuple[bool, str]:
+        """判定是否删除。source_texts 为该条目时间轴对应的源文日文行
+        （合并条目为多条）；任何删除类规则（L3-L12）提交前须过源侧证据
+        门槛（见 _gate_delete）：证据缺失或源文含汉字一律保留。
+        v1.2.2 C2：L7/L8/L11 追加"源侧噪声证据"——源文不含汉字时还须
+        命中闸门0 计数类噪声特征才允许删除（实义纯假名源文如 やめて
+        一律保留）；L3-L6/L9-L12 维持原门槛。
+        L0-L2 为保留路径，不受影响。source_texts=None 时可独立测试，
+        此时按 fail-safe 只保留不删。"""
         text = item.text.strip()
 
         if self._is_hardened(text):
@@ -379,37 +415,40 @@ class ChineseCleaner:
             return False, "L2-segment-content"
 
         if self._is_video_meta(text):
-            return True, "L3-meta"
+            return self._gate_delete("L3-meta", source_texts)
 
         if self._is_parenthetical_meta(text):
-            return True, "L4-parenthetical"
+            return self._gate_delete("L4-parenthetical", source_texts)
 
         if self._is_garbage(text):
-            return True, "L5-garbage"
+            return self._gate_delete("L5-garbage", source_texts)
 
         if self._is_pure_exclamation(text):
-            return True, "L6-pure-exclamation"
+            return self._gate_delete("L6-pure-exclamation", source_texts)
 
         if self._is_isolated_sensory(text):
-            return True, "L7-sensory"
+            return self._gate_delete("L7-sensory", source_texts,
+                                     noise_gate=True)
 
         if self._is_short_response(text):
-            return True, "L8-short-response"
+            return self._gate_delete("L8-short-response", source_texts,
+                                     noise_gate=True)
 
         if self._is_filler(text):
-            return True, "L9-filler"
+            return self._gate_delete("L9-filler", source_texts)
 
         if self._is_isolated_address(text):
-            return True, "L10-address"
+            return self._gate_delete("L10-address", source_texts)
 
         if self._check_60s_dedup(idx, items, seg):
-            return True, "L11-60s-dedup"
+            return self._gate_delete("L11-60s-dedup", source_texts,
+                                     noise_gate=True)
 
         cleaned = re.sub(r'[\s,\.!?…~～，。、！？]', '', text)
         if len(cleaned) <= 2:
             has_chinese = bool(re.search(r'[\u4e00-\u9fff]', cleaned))
             if not has_chinese:
-                return True, "L12-non-chinese-short"
+                return self._gate_delete("L12-non-chinese-short", source_texts)
 
         return False, "keep"
 
@@ -460,10 +499,52 @@ class ChineseCleaner:
             item.index = idx
         return merged
 
-    def filter(self, items: list[Subtitle]) -> list[Subtitle]:
+    @staticmethod
+    def _map_evidence_to_merged(
+        pre_items: list[Subtitle],
+        merged_items: list[Subtitle],
+        source_evidence: list[list[str] | None] | None,
+    ) -> dict[int, list[str]]:
+        """把"清洗前条目→源文"证据按时间轴包含关系归并到合并后条目：
+        合并条目继承其全部成员的源文集合（任一成员含汉字即触发保留）。"""
+        if not source_evidence:
+            return {}
+        result: dict[int, list[str]] = {}
+        eps = 1.0
+        for mi, m in enumerate(merged_items):
+            texts: list[str] = []
+            for pi, p in enumerate(pre_items):
+                if pi >= len(source_evidence):
+                    break
+                if p.start >= m.start - eps and p.end <= m.end + eps:
+                    ev = source_evidence[pi]
+                    if ev:
+                        texts.extend(ev)
+            if texts:
+                result[mi] = texts
+        return result
+
+    def filter(
+        self,
+        items: list[Subtitle],
+        source_evidence: list[list[str] | None] | None = None,
+    ) -> tuple[list[Subtitle], dict]:
+        """碎片合并 + 规则删除。source_evidence 与 items（清洗前）等长，
+        每项为该条目对应的源文日文行列表（None=无证据 → fail-safe 保留）。
+        返回 (保留条目, stats)，stats 含 merged / deleted / deleted_by_rule /
+        kept_by_source_evidence / kept_by_noise_gate（v1.2.2 C2：因未命中
+        噪声证据而免删的条数）/ kept_by_noise_gate_timings（对应条目的
+        时间轴串列表，质量报告"纯假名实义保留 [未翻译] 标记"统计消费）。"""
+        stats: dict = {"merged": 0, "deleted": 0,
+                       "deleted_by_rule": {}, "kept_by_source_evidence": 0,
+                       "kept_by_noise_gate": 0,
+                       "kept_by_noise_gate_timings": []}
         if not items:
-            return []
+            return [], stats
+        pre_items = items
         items = self._merge_fragments(items)
+        stats["merged"] = len(pre_items) - len(items)
+        evidence = self._map_evidence_to_merged(pre_items, items, source_evidence)
         cqs_indices = self._mark_cqs_indices(items)
         segments = self._split_interaction_segments(items)
         kept: list[Subtitle] = []
@@ -471,12 +552,24 @@ class ChineseCleaner:
             if idx in cqs_indices:
                 kept.append(item)
                 continue
-            should_del, _reason = self._should_delete(item, items, idx, cqs_indices, segments)
-            if not should_del:
+            should_del, reason = self._should_delete(
+                item, items, idx, cqs_indices, segments,
+                source_texts=evidence.get(idx))
+            if should_del:
+                stats["deleted"] += 1
+                stats["deleted_by_rule"][reason] = \
+                    stats["deleted_by_rule"].get(reason, 0) + 1
+            else:
+                if reason == "kept-by-source-evidence":
+                    stats["kept_by_source_evidence"] += 1
+                elif reason == "kept-by-noise-gate":
+                    stats["kept_by_noise_gate"] += 1
+                    stats["kept_by_noise_gate_timings"].append(
+                        _timing_key(item))
                 kept.append(item)
         for new_idx, item in enumerate(kept, 1):
             item.index = new_idx
-        return kept
+        return kept, stats
 
 
 # 语法提示残留清理模式：
@@ -504,14 +597,63 @@ def clean_grammar_hint_residue(text: str) -> str:
     return cleaned.strip()
 
 
-def clean_srt(srt_content: str, config_dir: str | None = None) -> str:
+def _fmt_ts(ms: float) -> str:
+    """毫秒 → "HH:MM:SS,mmm"（与 format_srt 输出一致）。"""
+    h = int(ms // 3600000)
+    m = int(ms % 3600000 // 60000)
+    s = int(ms % 60000 // 1000)
+    msec = int(ms % 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{msec:03d}"
+
+
+def _timing_key(item: Subtitle) -> str:
+    """条目时间轴标识（与 SRT 时间轴行/caller entry["timing"] 同格式）。"""
+    return f"{_fmt_ts(item.start)} --> {_fmt_ts(item.end)}"
+
+
+def clean_srt(
+    srt_content: str,
+    config_dir: str | None = None,
+    source_map: dict[str, str | list[str]] | None = None,
+) -> tuple[str, dict]:
+    """规则清洗 SRT，返回 (cleaned_srt, stats)。
+
+    source_map（可选，v1.2.1 P0 源侧证据门槛）：清洗前条目的 timing 串
+    （如 "00:00:01,000 --> 00:00:02,000"）→ 该条目时间轴对应的源文日文
+    （str 或多行 list[str]）。删除类规则（L3-L12）提交前须过源侧证据：
+    任一源文行含汉字、或证据缺失 → 保留（fail-safe）；合并条目继承其
+    成员的全部源文。v1.2.2 C2：L7/L8/L11 追加源侧噪声证据门槛——源文
+    不含汉字时还须命中闸门0 计数类噪声特征才允许删除。
+    stats 结构（键名契约，质量报告消费）：
+      merged — 碎片合并减少的条数；
+      deleted — 删除条数；
+      deleted_by_rule — 按规则名计数，如 {"L8-short-response": 2}；
+      kept_by_source_evidence — 因源侧证据（含汉字）而免删的条数；
+      kept_by_noise_gate — 因无噪声证据而免删的条数（仅 L7/L8/L11）；
+      kept_by_noise_gate_timings — 对应条目的时间轴串列表（报告消费）。
+    """
     cleaner = ChineseCleaner(config_dir)
     items = parse_srt(srt_content)
+    stats: dict = {"merged": 0, "deleted": 0,
+                   "deleted_by_rule": {}, "kept_by_source_evidence": 0,
+                   "kept_by_noise_gate": 0, "kept_by_noise_gate_timings": []}
     if not items:
-        return srt_content
+        return srt_content, stats
     # 清理语法提示残留（S2 预处理注入的兜底）
     for item in items:
         item.text = clean_grammar_hint_residue(item.text)
-    filtered = cleaner.filter(items)
-    return format_srt(filtered)
+    # 源侧证据：清洗前条目 timing → 源文行列表（缺失 → None → fail-safe）
+    source_evidence: list[list[str] | None] | None = None
+    if source_map:
+        source_evidence = []
+        for it in items:
+            ev = source_map.get(_timing_key(it))
+            if ev is None:
+                source_evidence.append(None)
+            elif isinstance(ev, str):
+                source_evidence.append([ev])
+            else:
+                source_evidence.append(list(ev))
+    filtered, stats = cleaner.filter(items, source_evidence)
+    return format_srt(filtered), stats
 

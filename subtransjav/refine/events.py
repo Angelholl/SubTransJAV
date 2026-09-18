@@ -30,7 +30,8 @@ EVENT_TYPES = (
     "heartbeat",
     "task_finished",
     # H3：闸门0 处置摘要（每文件闸门0 执行后一次；
-    # payload=幻觉处置报告去 samples 的摘要，含 valve），只增不改原九类
+    # payload=闸门0 计数/类别/保险阀/上游信号/隔离区候选摘要，去 samples），
+    # 只增不改原九类
     "gate0_summary",
 )
 

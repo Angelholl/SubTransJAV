@@ -20,12 +20,15 @@
 """
 
 import ipaddress
+import logging
 import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # token 预算（自 legacy core.py 迁移，参数可调；适配 Qwen3 等长上下文本地模型）
@@ -105,6 +108,10 @@ class LLMError(Exception):
 
 # 瞬态 HTTP 状态码与错误特征（自 deletion_patch 的瞬态重试逻辑收编）
 _TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
+
+# D7 缺行定向重试预算（轮数）：同一批缺行/畸形最多重试 2 轮，预算耗尽后
+# 停止重试——剩余缺行按既有 failed 链路交调用方降级 [未翻译]，绝不整批失败
+MISSING_RETRY_BUDGET = 2
 
 _MARK_SPLIT = re.compile(r"^#(\d+)\s*$", re.MULTILINE)
 _EXPECT_LINE = re.compile(r"^\s*Translation>\s*$")
@@ -443,32 +450,53 @@ class LLMClient:
                 if progress:
                     progress(f"批次 {done[0]}/{total}")
 
+        def _warn_line_deficit(batch_no: int, batch: list, res: dict) -> None:
+            """D7 批后行数守卫：输出行数 ≠ 输入行数时告警（缺行定向重试
+            仍是主守卫，此处只保证失配不静默）。"""
+            if len(res) == len(batch):
+                return
+            logger.warning(
+                "[llm] 批次 %d 行数不守恒：输入 %d 行 / 输出 %d 行"
+                "（缺行进入定向重试，预算 %d 轮）",
+                batch_no, len(batch), len(res), MISSING_RETRY_BUDGET)
+
         # 部分失败隔离：单批任何异常（LLMError 或意外错误）只丢弃该批
         # （缺行走定向重试，重试仍败标记 failed），不拖垮其他已完成批次
         if self.config.concurrency > 1 and total > 1:
             with ThreadPoolExecutor(max_workers=self.config.concurrency) as ex:
-                futs = {ex.submit(_run_batch, b): b for b in batches}
+                futs = {ex.submit(_run_batch, b): (bno, b)
+                        for bno, b in enumerate(batches, 1)}
                 for fut in futs:
                     fut.add_done_callback(_report)
-                for fut in futs:
+                for fut, (bno, b) in futs.items():
                     try:
-                        results.update(fut.result())
+                        res = fut.result()
+                        _warn_line_deficit(bno, b, res)
+                        results.update(res)
                     except Exception as e:   # noqa: BLE001 批级隔离
                         self._log(f"[llm] 批次失败（缺行走定向重试）: {e}")
         else:
-            for b in batches:
+            for bno, b in enumerate(batches, 1):
                 try:
-                    results.update(_run_batch(b))
+                    res = _run_batch(b)
+                    _warn_line_deficit(bno, b, res)
+                    results.update(res)
                 except Exception as e:   # noqa: BLE001 批级隔离
                     self._log(f"[llm] 批次失败（缺行走定向重试）: {e}")
                 done[0] += 1
                 if progress:
                     progress(f"批次 {done[0]}/{total}")
 
-        # 定向重试：缺行（含不允许删除的空译文）单独组成小批再试一次
-        missing = [e for e in entries if e["index"] not in results]
-        if missing:
-            self._log(f"[llm] {len(missing)} 条缺行，定向重试")
+        # 定向重试（D7 重试预算 N=MISSING_RETRY_BUDGET）：缺行（含不允许
+        # 删除的空译文）单独组成小批重试，最多预算轮数；预算耗尽后停止
+        # 重试，剩余缺行逐行走既有 failed 链路（调用方置 [未翻译]），
+        # 绝不整批/整文件失败
+        for round_no in range(1, MISSING_RETRY_BUDGET + 1):
+            missing = [e for e in entries if e["index"] not in results]
+            if not missing:
+                break
+            self._log(f"[llm] {len(missing)} 条缺行，定向重试"
+                      f"（第 {round_no}/{MISSING_RETRY_BUDGET} 轮）")
             retry_batch = self.build_batches(missing, min(10, max_batch_size),
                                              scene_threshold)
             for rb in retry_batch:
@@ -476,6 +504,12 @@ class LLMClient:
                     results.update(_run_batch(rb))
                 except Exception as e:   # noqa: BLE001 重试仍败保留缺行
                     self._log(f"[llm] 定向重试失败（保留缺行）: {e}")
+        still_missing = [e for e in entries if e["index"] not in results]
+        if still_missing:
+            logger.warning(
+                "[llm] 缺行定向重试预算（%d 轮）耗尽，仍缺 %d 行，"
+                "逐行降级为 [未翻译] 链路（不整批失败）",
+                MISSING_RETRY_BUDGET, len(still_missing))
 
         translations, deleted, failed = {}, set(), []
         for e in entries:

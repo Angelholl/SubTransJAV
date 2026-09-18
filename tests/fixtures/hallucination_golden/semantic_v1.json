@@ -1,0 +1,89 @@
+{
+  "version": "1.0",
+  "frozen": true,
+  "created": "2026-09-16",
+  "description": "D5 乱码强译复核（语义反转防护）黄金样本回归集 v1.0（冻结版本）。回归口径独立于实现代码写就：乱码源文（命中 strong_garble_signal 强信号）× 通顺中文译文（≥2 汉字且非 [未翻译] 前缀）× 源文不含汉字 → 必须进【乱码强译复核】清单；任一条件不成立 → 不得进。全部为中性合成文本，不引用任何真实语料。",
+  "schema": {
+    "id": "样本唯一标识（GS-序号）",
+    "source": "受检源文（终稿条目对应的日文源文）",
+    "translation": "该条终稿译文",
+    "expected_in_review": "true=必须进乱码强译复核清单 / false=不得进",
+    "origin": "constructed（构造样本；真实语料待用户提供后以 origin=real 追加）",
+    "annotator": "标注人",
+    "generated_by": "构造依据（引用 strong_garble_signal/is_fluent_zh 阈值，供复核）"
+  },
+  "cases": [
+    {
+      "id": "GS-001",
+      "source": "あじゃあじゃあじゃあじゃ",
+      "translation": "来吧，继续",
+      "expected_in_review": true,
+      "origin": "constructed",
+      "annotator": "code-Executor-p1",
+      "generated_by": "2 字假名单元 あじゃ 整条平铺×4（≥unit_repeat_min=4）命中 strong_garble_signal；译文通顺（≥2 汉字）且含方向词对（停下↔继续形态）——必须进复核清单"
+    },
+    {
+      "id": "GS-002",
+      "source": "んああああああ",
+      "translation": "那就继续吧",
+      "expected_in_review": true,
+      "origin": "constructed",
+      "annotator": "code-Executor-p1",
+      "generated_by": "同一假名 あ 连续×6（≥intra_repeat_min=6）命中强信号（ん+あ×6，非整条单假名重复）；译文通顺——必须进复核清单"
+    },
+    {
+      "id": "GS-003",
+      "source": "ぱにぱにぱにぱに",
+      "translation": "好的，我马上过来",
+      "expected_in_review": true,
+      "origin": "constructed",
+      "annotator": "code-Executor-p1",
+      "generated_by": "2 字假名单元 ぱに 平铺×4 命中强信号；译文通顺——必须进复核清单（乱码源文被强译成应答语义）"
+    },
+    {
+      "id": "GS-004",
+      "source": "うぇうぇうぇうぇ",
+      "translation": "不要停下来",
+      "expected_in_review": true,
+      "origin": "constructed",
+      "annotator": "code-Executor-p1",
+      "generated_by": "2 字假名单元 うぇ 平铺×4 命中强信号；译文含否定→继续方向词对（停止↔继续形态）——必须进复核清单"
+    },
+    {
+      "id": "GS-005",
+      "source": "また明日",
+      "translation": "明天见",
+      "expected_in_review": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p1",
+      "generated_by": "负样本：实义源文含汉字（明日）→「源文不含汉字」条件不成立，不得进清单"
+    },
+    {
+      "id": "GS-006",
+      "source": "ありがとうございます",
+      "translation": "非常感谢",
+      "expected_in_review": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p1",
+      "generated_by": "负样本：纯假名实义台词，无条目内连打（≥6）与单元平铺（≥4）信号，strong_garble_signal 不命中 → 不得进清单"
+    },
+    {
+      "id": "GS-007",
+      "source": "あじゃあじゃあじゃあじゃ",
+      "translation": "[未翻译] あじゃあじゃあじゃあじゃ",
+      "expected_in_review": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p1",
+      "generated_by": "负样本：译文带 [未翻译] 前缀（is_fluent_zh=False）——按硬条款输出的占位不属于强译，不得进清单"
+    },
+    {
+      "id": "GS-008",
+      "source": "んああああああ",
+      "translation": "あじゃ",
+      "expected_in_review": false,
+      "origin": "constructed",
+      "annotator": "code-Executor-p1",
+      "generated_by": "负样本：译文无汉字（<2 汉字，is_fluent_zh=False）——非通顺中文，不得进清单"
+    }
+  ]
+}

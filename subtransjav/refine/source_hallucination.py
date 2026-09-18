@@ -599,6 +599,70 @@ def is_fluent_zh(text: str, untranslated_prefix: str = "[未翻译]") -> bool:
     return len(_HANZI_RE.findall(t)) >= 2
 
 
+def strong_garble_signal(text: str) -> str | None:
+    """D5 乱码强译复核：源文命中强乱码信号时返回信号名，否则 None。
+
+    复用闸门0 计数类"无意义音节连缀"的既有强信号判定（同一假名连打
+    ≥intra_repeat_min、2-4 字假名单元整条平铺 ≥unit_repeat_min，与
+    _is_nonsense 同源同阈值，规则库同样走用户目录→包内回退链），
+    不新造假名比启发式；单假名拖长音豁免（あああ 等真实台词形态）
+    与 _is_nonsense 保持一致。
+    """
+    norm = _normalize_text(text)
+    if not norm:
+        return None
+    cfg = load_source_rules().get("nonsense_syllables") or {}
+    if _is_nonsense(norm, cfg):
+        return _CATEGORY_LABELS["nonsense_syllables"]
+    return None
+
+
+def is_source_counting_noise(text: str, config_dir: str = None,
+                             rules: dict = None) -> bool:
+    """源侧计数类噪声判定（v1.2.2 C2，公开纯函数；cleaner 的 L7/L8/L11
+    删除闸门消费）。
+
+    复用闸门0 计数类"无意义音节连缀"的两大信号（与 _is_nonsense 同源
+    同阈值，规则库走用户目录→包内回退链）：
+      1) 条目内重复：同一假名连续 ≥ nonsense_syllables.intra_repeat_min；
+      2) 单元重复：2-4 字假名单元整条平铺 ≥ unit_repeat_min。
+
+    与 _is_nonsense 的刻意差异（消费场景不同：本函数服务删除决策侧，
+    _is_nonsense 服务闸门0 检测/删除侧）：
+    - keep_list 白名单词不算噪声（はい/うん 等是实义应答，白名单保护
+      语义一致）；
+    - 含汉字文本不算噪声（实义行）；
+    - 不做"整条单假名拖长音豁免"：纯假名长连打（あ×6 及以上）即噪声
+      证据——闸门0 的豁免（_SINGLE_KANA_REPEAT_RE）只保护其自身的
+      检出/删除语义（あああ 等真实台词形态），不外溢到本判定；
+    - 证据缺失（空串/纯标点）→ False（保守：无噪声证据不判噪）。
+
+    重复循环（repeat_loop）为跨条目特征，单条文本无法判定，不参与本
+    判定；该维度的防误删由 cleaner 自身的 L11 同感官根去重门槛承担。
+    """
+    norm = _normalize_text(text)
+    if not norm:
+        return False
+    if rules is None:
+        rules = load_source_rules(config_dir)
+    keep_set = {_normalize_text(w)
+                for w in (rules.get("keep_list") or []) if _normalize_text(w)}
+    if norm in keep_set:
+        return False
+    if _HANZI_RE.search(norm):
+        return False
+    cfg = rules.get("nonsense_syllables") or {}
+    try:
+        intra_min = max(2, int(cfg.get("intra_repeat_min", 6)))
+        unit_min = max(2, int(cfg.get("unit_repeat_min", 4)))
+        max_unit = max(2, int(cfg.get("max_unit_len", 4)))
+    except (TypeError, ValueError):
+        intra_min, unit_min, max_unit = 6, 4, 4
+    if re.search(rf"([\u3040-\u30ff])\1{{{intra_min - 1},}}", norm):
+        return True
+    return _unit_repeat_len(norm, unit_min, max_unit) is not None
+
+
 def quarantine_review(final_entries: list, candidates: list,
                       source_lookup: dict,
                       untranslated_prefix: str = "[未翻译]") -> tuple:

@@ -48,16 +48,20 @@ def test_detection1_then_detection2_both_fire():
 
 
 # ---------------------------------------------------------------------------
-# subject_misjudge target_pattern（YAML 2c 正则）五样例
+# subject_misjudge target_pattern（D4 收窄为单数）验收样例
 # ---------------------------------------------------------------------------
 
 def test_subject_target_pattern_samples():
-    """re.match 语义（从头匹配）下的五个验收样例。"""
+    """re.match 语义（从头匹配）下的验收样例：仅单数"我/俺是"命中，
+    复数"我们是"为正确方向不命中（负向前瞻排除）。"""
     from subtransjav.refine.post_validate import _get_compiled
     pat = _get_compiled()["subject"]["target"]
-    assert pat.match("我是游泳部的部长"), "「我是…」应命中"
-    assert pat.match("我们，是游泳部的部长"), "「我们，是…」应命中"
-    assert pat.match("我们是游泳部的部长"), "「我们是…」应命中"
+    assert pat.match("我是游泳部的部长"), "「我是…」（单数）应命中"
+    assert pat.match("俺是部长"), "「俺是…」（单数）应命中"
+    assert pat.match("我，是游泳部的部长"), "单数+逗号停顿应命中"
+    assert not pat.match("我们是游泳部的部长"), "「我们是…」正确方向不命中"
+    assert not pat.match("我们，是游泳部的部长"), "「我们，是…」正确方向不命中"
+    assert not pat.match("我們是游泳部的部长"), "繁体复数「我們是」不命中"
     assert not pat.match("是我们的游泳部部长"), "「是…」开头不命中"
     assert not pat.match("她是我们的部长"), "「她…」开头不命中"
 
@@ -85,15 +89,44 @@ def test_subject_topic_wa_correct_translation_no_warning():
 
 
 def test_subject_adnominal_with_comma_warns():
-    """源「僕たち、水泳部の部長で…」译「我们，是游泳部的部长」→ 应告警。"""
+    """源「僕たち、水泳部の部長で…」译「我，是游泳部的部长」（单数）→ 应告警，
+    且文案含实际译文开头（动态引用）与"主语误判"字样。"""
     src = [{"index": 1, "timing": _TIMING, "text": "ボクたち、水泳部の部長で…"}]
-    tgt = [{"index": 1, "timing": _TIMING, "text": "我们，是游泳部的部长"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "我，是游泳部的部长"}]
     fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0                          # 仅告警，不改动译文
     assert len(warnings) == 1
-    assert "主语误判" in warnings[0]
-    assert tgt[0]["text"] == "我们，是游泳部的部长"
+    assert "主语误判" in warnings[0]           # quality_report 归类依赖此四字
+    assert "我，是游泳部" in warnings[0]       # 动态引用实际命中的译文开头（前6字）
+    assert "以'我是'开头" not in warnings[0]   # 废弃硬编码文案
+    assert tgt[0]["text"] == "我，是游泳部的部长"
     assert 1 in flagged
+
+
+def test_subject_singular_short_head_warns():
+    """D4 验收：源「ボクたち、水泳部の部長で…」译「我是部长」（<6 字）→
+    触发告警且文案含完整实际译文开头"我是部长"。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "ボクたち、水泳部の部長で…"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "我是部长"}]
+    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert len(warnings) == 1
+    assert "主语误判" in warnings[0]
+    assert "我是部长" in warnings[0]
+    assert 1 in flagged
+
+
+def test_subject_plural_predicate_translation_no_warning():
+    """用户实例回归：源「ボクたち、水泳部の部長で…」终稿以"我们，"开头
+    （谓语读法，正确方向）→ 不告警；"我们是…"同样不告警。"""
+    for plural_tgt in ("我们，是游泳部的部长", "我们是游泳部的部长"):
+        src = [{"index": 1, "timing": _TIMING, "text": "ボクたち、水泳部の部長で…"}]
+        tgt = [{"index": 1, "timing": _TIMING, "text": plural_tgt}]
+        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        assert fixes == 0, plural_tgt
+        assert warnings == [], f"复数正确方向不应告警: {plural_tgt}"
+        assert not flagged, plural_tgt
+        assert tgt[0]["text"] == plural_tgt    # 译文不被改动
 
 
 # ---------------------------------------------------------------------------
@@ -148,3 +181,168 @@ def test_warn_only_false_hard_warning(monkeypatch):
     assert any("[硬性]" in w and "主语误判" in w for w in warnings)
     assert len(errors) == len(warnings)      # 每条硬性告警均 logger.error
     assert 1 in flagged and 2 in flagged
+
+
+# ---------------------------------------------------------------------------
+# 反义误译规则（批次 B2，双侧锚定 warn_only）
+# ---------------------------------------------------------------------------
+
+def test_antonym_yamete_warns():
+    """源 やめて/やめてよ + 译文"别停/不要停" → 告警（antonym_yamete），
+    仅告警不改译文、无硬性前缀；告警不含"主语误判"（独立归类）。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "やめて、やめてよ…"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "别停，别停呀…"}]
+    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert len(warnings) == 1
+    assert "antonym_yamete" in warnings[0]     # 规则标识（主语误判以外的规则标识）
+    assert "主语误判" not in warnings[0]
+    assert "[硬性]" not in warnings[0]         # warn_only：仅进复核清单
+    assert tgt[0]["text"] == "别停，别停呀…"    # 译文不被改动
+    assert 1 in flagged                        # flagged_indexes 阻断 TM 学习
+
+
+def test_antonym_yamete_negative_source_forms_no_warn():
+    """源侧负向排除：やめないで/やめるな →"别停"是正确翻译，不得告警。"""
+    for neg_src in ("やめないで、続けて…", "やめるなよ"):
+        src = [{"index": 1, "timing": _TIMING, "text": neg_src}]
+        tgt = [{"index": 1, "timing": _TIMING, "text": "别停下来，继续…"}]
+        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        assert fixes == 0, neg_src
+        assert warnings == [], f"やめないで/やめるな 正译不应告警: {neg_src}"
+        assert not flagged, neg_src
+
+
+def test_antonym_yamete_correct_target_no_warn():
+    """目标集锚定："住手/停下"不在"别停/不要停"目标集，不告警。"""
+    for good_tgt in ("住手！", "停下、停下……"):
+        src = [{"index": 1, "timing": _TIMING, "text": "やめて！"}]
+        tgt = [{"index": 1, "timing": _TIMING, "text": good_tgt}]
+        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        assert fixes == 0, good_tgt
+        assert warnings == [], f"'{good_tgt}'为正确方向不应告警"
+        assert not flagged, good_tgt
+
+
+def test_antonym_saitei_warns_and_correct_no_warn():
+    """最低=差劲：译"真不错/真棒/不错/挺好"即反义 → 告警（antonym_saitei）；
+    译"真差劲"为正确方向 → 不告警。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "最低じゃねぇな。"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "真不错啊。"}]
+    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert len(warnings) == 1
+    assert "antonym_saitei" in warnings[0]
+    assert "[硬性]" not in warnings[0]
+    assert tgt[0]["text"] == "真不错啊。"
+    assert 1 in flagged
+
+    src2 = [{"index": 1, "timing": _TIMING, "text": "最低だな。"}]
+    tgt2 = [{"index": 1, "timing": _TIMING, "text": "真差劲啊。"}]
+    _fixes, warnings2, flagged2 = check_and_fix_translation_errors(src2, tgt2)
+    assert warnings2 == [] and not flagged2
+
+
+def test_antonym_zurui_warns_and_correct_no_warn():
+    """ずるい/ずりー=狡猾/不公平，非"滑"：译"滑下去了" → 告警
+    （antonym_zurui）；译"狡猾"为正确方向 → 不告警。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "ずりーよな"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "滑下去了"}]
+    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert len(warnings) == 1
+    assert "antonym_zurui" in warnings[0]
+    assert "[硬性]" not in warnings[0]
+    assert tgt[0]["text"] == "滑下去了"
+    assert 1 in flagged
+
+    src2 = [{"index": 1, "timing": _TIMING, "text": "ずるいよ、お前。"}]
+    tgt2 = [{"index": 1, "timing": _TIMING, "text": "你太狡猾了。"}]
+    _fixes, warnings2, flagged2 = check_and_fix_translation_errors(src2, tgt2)
+    assert warnings2 == [] and not flagged2
+
+
+def test_antonym_benign_sentences_no_warn():
+    """良性句全不告警（无源文形态命中，或译文目标集未命中）。"""
+    pairs = [
+        ("水泳で鍛えてるだけあんじゃん。", "不愧是练游泳的啊。"),
+        ("やめとこうか。", "就算了吧。"),
+        ("今日もいい天気だね。", "今天天气也很好呢。"),
+    ]
+    for src_text, tgt_text in pairs:
+        src = [{"index": 1, "timing": _TIMING, "text": src_text}]
+        tgt = [{"index": 1, "timing": _TIMING, "text": tgt_text}]
+        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        assert fixes == 0, src_text
+        assert warnings == [], f"良性句不应告警: {src_text} → {tgt_text}"
+        assert not flagged, src_text
+
+
+# ---------------------------------------------------------------------------
+# 批次 B 闭环：身体部位（首=脖子）与イク系变体（双侧锚定 warn_only）
+# ---------------------------------------------------------------------------
+
+def test_body_part_kubi_warns():
+    """首を触られる→被摸头：身体语境 首=脖子（非头），译"摸头"应告警
+    （body_part_kubi）；仅告警不改译文、无硬性前缀，flagged 阻断 TM。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "首を触られると落ち着く"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "被摸头就会安静下来"}]
+    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert len(warnings) == 1
+    assert "body_part_kubi" in warnings[0]
+    assert "主语误判" not in warnings[0]
+    assert "[硬性]" not in warnings[0]
+    assert tgt[0]["text"] == "被摸头就会安静下来"
+    assert 1 in flagged
+
+
+def test_body_part_kubi_idiom_no_warn():
+    """习语负向排除：首が回らない/首を長くして待って 译良性句不告警。"""
+    pairs = [
+        ("今月は首が回らない。", "这个月实在周转不开。"),
+        ("首を長くして待ってね。", "望眼欲穿地等着呢。"),
+    ]
+    for src_text, tgt_text in pairs:
+        src = [{"index": 1, "timing": _TIMING, "text": src_text}]
+        tgt = [{"index": 1, "timing": _TIMING, "text": tgt_text}]
+        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        assert fixes == 0, src_text
+        assert warnings == [], f"习语句不应告警: {src_text} → {tgt_text}"
+        assert not flagged, src_text
+
+
+def test_climax_iku_variant_warns():
+    """イっちゃう→要去了：假名变体 + 高潮类目标 → 复核告警
+    （climax_iku_variant）；仅告警不改译文，flagged 阻断 TM。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "もうイっちゃう！"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "要去了！"}]
+    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert len(warnings) == 1
+    assert "climax_iku_variant" in warnings[0]
+    assert "主语误判" not in warnings[0]
+    assert "[硬性]" not in warnings[0]
+    assert tgt[0]["text"] == "要去了！"
+    assert 1 in flagged
+
+
+def test_climax_iku_kanji_go_no_warn():
+    """汉字 行く系 负向排除：行った→去了 属普通"去"，不告警。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "昨日も行った。"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "去了。"}]
+    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert warnings == [], "汉字行った被负向排除，不应告警"
+    assert not flagged
+
+
+def test_climax_iku_glossary_exact_form_no_warn():
+    """イク→要去了（glossary 强制译法本身）不告警：精确形态被负向排除，
+    与 glossary 互补不冲突（复核旗只留给 glossary 覆盖不到的假名变体）。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "イク！"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "要去了！"}]
+    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert warnings == [], "glossary 精确形态イク不应告警"
+    assert not flagged

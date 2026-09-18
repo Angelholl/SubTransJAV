@@ -211,6 +211,39 @@ def test_failed_lines_reported_not_raised():
         server.stop()
 
 
+def test_missing_retry_budget_exactly_two_rounds():
+    """D7：缺行定向重试预算 N=2——模型恒定两行并一行返回时，
+    恰好重试 2 轮后停止，剩余缺行按 failed 链路降级，不抛异常。"""
+    merge = "#1\nTranslation>\n你好"      # 恒定只回 #1（#2 被并掉）
+    server = FakeServer([merge, merge, merge])
+    try:
+        r = _client(server).translate_entries(
+            _entries("こんにちは", "さようなら"),
+            system_text="", user_prompt="p", max_batch_size=10)
+        assert len(server.requests) == 3   # 首批 + 恰好 2 轮定向重试
+        assert r.translations == {1: "你好"}
+        assert r.failed == [2]             # 预算耗尽降级，绝不整批失败
+    finally:
+        server.stop()
+
+
+def test_missing_recovered_in_first_retry_keeps_budget():
+    """D7 对照：第 1 轮重试补回缺行后不再继续重试（预算不空转）。"""
+    server = FakeServer([
+        "#1\nTranslation>\n你好",          # 首批漏 #2
+        "#2\nTranslation>\n再见",          # 第 1 轮补回 → 停止
+    ])
+    try:
+        r = _client(server).translate_entries(
+            _entries("こんにちは", "さようなら"),
+            system_text="", user_prompt="p", max_batch_size=10)
+        assert len(server.requests) == 2
+        assert r.translations == {1: "你好", 2: "再见"}
+        assert r.failed == []
+    finally:
+        server.stop()
+
+
 def test_transient_error_backoff_then_success():
     server = FakeServer([
         {"__status__": 429},

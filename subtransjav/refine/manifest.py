@@ -158,7 +158,8 @@ def delete_resume_artifacts(out_dir, stem) -> list:
     """删除断点续跑相关产物（存在才删），返回实际删除的文件名列表。"""
     removed = []
     names = (manifest_path(out_dir, stem).name, f"{stem}_refine_A.srt",
-             # H3：旧一轮的幻觉处置报告同属恢复类现场，重跑成功后按新报告重建
+             # H3：幻觉处置报告 1.2.1 起不再生成（台账由质量报告【处置】
+             # 章节承接），保留清理以扫除旧版运行残留
              f"{stem}_幻觉处置报告.json",
              # H5：上一轮的隔离区同属恢复类现场，本轮无存疑译文时不落文件
              f"{stem}_隔离区.srt")
@@ -277,6 +278,25 @@ def _asr_meta_sha1(cfg):
         return None
 
 
+def _v2_stage_prompts_sha1():
+    """v2 内置阶段提示词（pipeline_v2.V2_STAGE_PROMPTS）语义指纹（D1）。
+
+    V2_STAGE_PROMPTS 与角色卡共同决定模型行为，却不落任何文件——不纳入
+    指纹的话，改提示词后 --resume 会复用旧提示词产出的阶段产物。按阶段
+    tag 排序后 json 序列化再 sha1，保证跨进程确定性。延迟导入规避模块级
+    循环依赖（pipeline_v2 -> manifest）；导入不可得时返回 None 跳过
+    （与 _gate0_rules_sha1 同款容错）。
+    """
+    try:
+        from .pipeline_v2 import V2_STAGE_PROMPTS
+        payload = {tag: V2_STAGE_PROMPTS[tag]
+                   for tag in sorted(V2_STAGE_PROMPTS)}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+        return hashlib.sha1(text.encode("utf-8")).hexdigest()
+    except Exception:
+        return None
+
+
 def instruction_source_files(cfg) -> list:
     """收集管线实际会读取的指令源文件（存在才收录），对齐加载侧
     pipeline_v2._load_v2_instruction 的读取集合：
@@ -341,6 +361,20 @@ _CONFIG_FIELDS = (
     "tm_learn_gate",
     "apply_glossary_stage1",
     "apply_glossary_stage2",
+    # v1.2.2 D1/D3：影响学习行为的开关——conflict_block 决定冲突条目
+    # 能否入库，learn_enabled 决定 learned 词库学习路径是否执行；
+    # 两者都改变后续产物内容，必须参与指纹
+    "glossary_conflict_block",
+    "glossary_learn_enabled",
+    # v1.2.2 C1：per-片语境 sidecar 注入开关直接影响 A/B 提示词内容，
+    # 必须参与指纹（sidecar 文件内容本身暂不参与指纹：同片修改 sidecar
+    # 后复用旧阶段产物属已知边界，用法上以 --force 重跑兜底）
+    "context_sidecar",
+    # v1.2.2 Beta：剧情自摘要开关与采样预算直接影响 A/B 提示词内容，
+    # 必须参与指纹（摘要文本与缓存本身不参与指纹：与 sidecar 内容同款
+    # 已知边界，换 --s1-model 或改采样行为后须 --force 重跑兜底）
+    "auto_synopsis",
+    "synopsis_max_chars",
     "fallback_local",
     "fallback_model",
 )
@@ -355,7 +389,9 @@ def compute_config_hash(cfg) -> str:
     - 对 cfg 用 getattr 取值，缺失字段记 None（容忍简易 cfg 对象）。
     - stages 逐个提取 provider/model/instructions/index/enabled/endpoint。
     - 指令源按"管线实际加载的文件内容"参与（角色卡 + translation_rules.yaml，
-      见 instruction_source_files）；不对 templates_dir 做整树哈希——CLI
+      见 instruction_source_files）；内置阶段提示词（V2_STAGE_PROMPTS）不落
+      文件，按其合成内容单独纳入（_v2_stage_prompts_sha1，D1）；不对
+      templates_dir 做整树哈希——CLI
       默认 "." 指向进程 CWD，整树哈希会把上一轮运行写出的 Temp/Logs 文件
       算进指纹，导致同配置 --resume 必拒绝复用且单次计算耗时数秒（D2）。
       同配置跨运行指纹必须稳定；旧 manifest 指纹失配可接受（force-resume
@@ -370,6 +406,7 @@ def compute_config_hash(cfg) -> str:
     payload["cleaner_config_dir_hash"] = compute_dir_hash(getattr(cfg, "cleaner_config_dir", None))
     payload["gate0_rules_sha1"] = _gate0_rules_sha1()
     payload["asr_meta_sha1"] = _asr_meta_sha1(cfg)
+    payload["v2_stage_prompts_sha1"] = _v2_stage_prompts_sha1()
     payload["stages"] = [
         {name: getattr(s, name, None) for name in _STAGE_FIELDS}
         for s in (getattr(cfg, "stages", None) or [])
