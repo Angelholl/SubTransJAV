@@ -37,6 +37,8 @@ import re
 
 import yaml
 
+from .post_validate import is_untranslated_text
+
 # YAML 必须包含的键路径（点号表示层级），缺失即视为损坏。
 # 每个检测类别必须带 example 证据样本（R7：防无据规则膨胀）。
 _REQUIRED_KEYS = (
@@ -590,11 +592,18 @@ _HANZI_RE = re.compile(r"[\u4e00-\u9fff]")
 def is_fluent_zh(text: str, untranslated_prefix: str = "[未翻译]") -> bool:
     """流畅中文判定代理：译文含 ≥2 个汉字且非 [未翻译] 前缀。
 
+    [未翻译] 判定统一走 post_validate.is_untranslated_text（兼容带/
+    不带尾空格两形态：生成侧常量带尾空格，提示词模板教的是无空格
+    形态）。untranslated_prefix 参数保留向后兼容：旧调用方显式传入
+    自定义前缀时仍按其字面值做开头匹配。
+
     这是"LLM 给源文幻觉编出通顺中文"的廉价代理判定（H5 评议拍板口径）：
     不追求语义真伪，只捕捉"乱码源文却被译成多字中文"的形态异常。
     """
     t = text or ""
     if untranslated_prefix and t.startswith(untranslated_prefix):
+        return False
+    if is_untranslated_text(t):
         return False
     return len(_HANZI_RE.findall(t)) >= 2
 

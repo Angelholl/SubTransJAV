@@ -1027,6 +1027,11 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
     print(f"[STAGE] {V2_STAGE_NAMES['B']}", flush=True)
     print("\n🔹 [阶段B 审校+抛光] 对照日文原文审核/补译/润色")
 
+    # [未翻译] 形态判定统一走共享函数：提示词模板教给 LLM 的是无空格
+    # "[未翻译]"，与生成侧常量 UNTRANSLATED_PREFIX（带尾空格）并存，
+    # 输入清洗与输出组装必须两形态都识别
+    from .post_validate import is_untranslated_text
+
     # 组装 B 输入：`日文原文 ||| 中文译文`
     # 日文参照按时间轴双指针对齐（同起点多条不会错配）
     aligned_orig = _align_orig_by_timing(a_result.entries, orig_entries)
@@ -1034,7 +1039,7 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
     for ae, orig in zip(a_result.entries, aligned_orig, strict=False):
         ja = (orig["text"] or "").strip() if orig else ""
         zh = ae["text"]
-        if zh.startswith(UNTRANSLATED_PREFIX):
+        if is_untranslated_text(zh):
             zh = ""                      # 交阶段B补译
         b_entries.append({
             "index": ae["index"], "timing": ae["timing"],
@@ -1087,7 +1092,7 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
         keep_flag = False
         if i in result.translations:
             text = clean_grammar_hint_residue(result.translations[i])
-        elif not ae["text"].startswith(UNTRANSLATED_PREFIX):
+        elif not is_untranslated_text(ae["text"]):
             text = ae["text"]            # B 缺译文回退 A 译文（不丢行）
             kept_a.append((i, text))
         else:
@@ -1098,7 +1103,7 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
             text = (orig["text"] or "").strip() if orig else ""
             if not text:
                 text = ae["text"]        # 无原文可退：保留阶段A 原文+标记
-            elif not text.startswith(UNTRANSLATED_PREFIX):
+            elif not is_untranslated_text(text):
                 text = UNTRANSLATED_PREFIX + text   # 统一标记（防二次加标）
             keep_flag = True
             kept_original.append((i, text))
@@ -1242,7 +1247,22 @@ def _filter_language(cfg: RefineConfig, entries: list, stage_idx: int) -> list:
     by_timing = {e["timing"]: e for e in normal}
     kept_timings = set()
     for e in kept_entries:
-        e["index"] = by_timing[e["timing"]]["index"]
+        if e["timing"] in by_timing:
+            e["index"] = by_timing[e["timing"]]["index"]
+        else:
+            # LLM 把「序号+时间码」写进条目正文时，_SRT_BLOCK 的前瞻会把
+            # 它拆成独立伪条目（Errors/dropped_entries.log 实证
+            # '1002\n01:37:10,439 --> 01:37:11,899' 形态），其 timing 不在
+            # 由 normal 构建的 by_timing 中。此时回退保留 parse_srt 给出的
+            # 临时编号（kept 条目必有 index 字段，缺省 0），不再抛 KeyError
+            # ——否则异常经 _run_single_v2 穿透 _process_file 兜底 except，
+            # 升级为整文件失败。产物排序按时间轴（_timing_span），不受
+            # 临时编号影响。
+            e["index"] = e.get("index", 0)
+            logger.warning(
+                "语言过滤：timing %r 不在原条目中（疑似 LLM 正文内嵌"
+                "「序号+时间码」伪条目），保留临时编号 %s",
+                e["timing"], e["index"])
         kept_timings.add(e["timing"])
     for e in normal:
         if e["timing"] not in kept_timings:
@@ -2256,9 +2276,14 @@ def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
     if conflict_spans is None:
         conflict_spans = set()
     try:
-        from .post_validate import scan_learn_defect
+        from .post_validate import is_untranslated_text, scan_learn_defect
     except Exception:
         scan_learn_defect = None
+
+        def is_untranslated_text(text: str) -> bool:
+            # post_validate 不可用时的降级判定（保持既有降级语义：
+            # 缺陷扫描层跳过，学习闸仍工作）
+            return (text or "").strip().startswith("[未翻译]")
 
     # 准入跳过计数器（按类别）
     skip_kana = skip_leak = skip_src_prefix = skip_placeholder = 0
@@ -2285,7 +2310,7 @@ def _learn_to_tm(tm: TranslationMemory, orig_entries: list,
                 src = (e["text"] or "").strip()
                 tgt = (final_entries[j]["text"] or "").strip()
                 if (src and tgt
-                        and not tgt.startswith(UNTRANSLATED_PREFIX)
+                        and not is_untranslated_text(tgt)
                         and tgt != src):         # 同文残留对不入库
                     # ---- 准入门槛 ----
                     # 层0：术语冲突观察闸转阻断（v1.2.2 D1）——独立于

@@ -39,6 +39,25 @@ class TestScanLearnDefect:
             "…時間は。",
             "（无对应条目）") == "placeholder"
 
+    def test_untranslated_with_space(self):
+        """[未翻译] 占位（生成侧形态，带尾空格）。"""
+        assert scan_learn_defect(
+            "こんにちは",
+            "[未翻译] Chicks。") == "untranslated"
+
+    def test_untranslated_no_space(self):
+        """[未翻译] 占位（提示词模板形态，无尾空格）。"""
+        assert scan_learn_defect(
+            "こんにちは",
+            "[未翻译]こんにちは") == "untranslated"
+
+    def test_untranslated_mark_inside_text_not_flagged(self):
+        """前缀在译文中部的正常引用：不判 untranslated（其余规则可能
+        命中其他类别，此处仅断言非 untranslated）。"""
+        assert scan_learn_defect(
+            "こんにちは",
+            "あの[未翻译]って何？") != "untranslated"
+
     def test_len_ratio_short_tgt(self):
         """长度比离群：长源文 + 极短译文。"""
         src = "学校のプールで水泳部の練習があって、みんな一生懸命頑張っている"

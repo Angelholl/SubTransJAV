@@ -319,6 +319,22 @@ def test_learn_to_tm_stores_final_pairs():
     assert tm.stored == [("こんにちは", "你好", 1)]   # 未翻译行不入库
 
 
+def test_learn_to_tm_blocks_untranslated_no_space():
+    """无空格形态 "[未翻译]xxx"（提示词模板教给 LLM 的形态）不入库。
+
+    缺陷背景：生成侧常量 UNTRANSLATED_PREFIX 带尾空格，只挡得住
+    "[未翻译] xxx"；LLM 输出的无空格占位（如 "[未翻译]Chicks。"）
+    此前可漏进 TM 学习，后续精确命中会把占位当译文回填终稿。
+    """
+    tm = FakeTM()
+    orig = _entries("こんにちは", "今日はいい天気だ。")
+    final = [{"index": 1, "timing": orig[0]["timing"],
+              "text": "[未翻译]Chicks。"},
+             {"index": 2, "timing": orig[1]["timing"], "text": "今天天气真好。"}]
+    pv._learn_to_tm(tm, orig, final)
+    assert tm.stored == [("今日はいい天気だ。", "今天天气真好。", 1)]
+
+
 # ---------------------------------------------------------------------------
 # 端到端（假客户端 + 假 TM + 临时目录）
 # ---------------------------------------------------------------------------
@@ -1025,6 +1041,62 @@ def test_quality_report_no_miss_threshold_lists_all():
     final = []
     report = build_quality_report(orig, final, "demo")
     assert "[实义漏覆盖] #1" in report
+
+
+def test_quality_report_miss_split_missing_entry_and_untranslated():
+    """漏覆盖双口径：整条缺失（missing_entry）与条目在但未译
+    （untranslated_content，[未翻译] 前缀兼容带/不带尾空格两形态）。"""
+    from subtransjav.refine.quality_report import build_quality_report
+    expected = [
+        # 1: 终稿无条目 → missing_entry（原口径回归）
+        {"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+         "text": "挿入する"},
+        # 2: 条目在，"[未翻译] "（带尾空格）→ untranslated_content
+        {"index": 2, "timing": "00:00:03,000 --> 00:00:04,000",
+         "text": "新しい部長"},
+        # 3: 条目在，"[未翻译]"（无空格）+ 残译文 → untranslated_content
+        {"index": 3, "timing": "00:00:05,000 --> 00:00:06,000",
+         "text": "可愛い娘"},
+        # 4: 正常译文 → 不计任何漏覆盖口径
+        {"index": 4, "timing": "00:00:07,000 --> 00:00:08,000",
+         "text": "一部始終"},
+    ]
+    final = [
+        {"index": 2, "timing": "00:00:03,000 --> 00:00:04,000",
+         "text": "[未翻译] 新しい部長"},
+        {"index": 3, "timing": "00:00:05,000 --> 00:00:06,000",
+         "text": "[未翻译]Chicks。"},
+        {"index": 4, "timing": "00:00:07,000 --> 00:00:08,000",
+         "text": "从头到尾"},
+    ]
+    report = build_quality_report(expected, final, "demo",
+                                  expected_entries=expected)
+    # 统计行：总口径 = 两口径之和，保持 X/Y (Z%) 形式 + 双口径拆分
+    assert ("实义内容漏覆盖: 3/4 (75.0%)"
+            "（整条缺失 1 + 条目在但未译 2）") in report
+    # 复核清单：两口径标签分列（条目号+时间轴）
+    assert "[实义漏覆盖] #1" in report
+    assert "[实义漏覆盖·条目在但未译] #2" in report
+    assert "[实义漏覆盖·条目在但未译] #3" in report
+    # 正常译文条目不进漏覆盖清单
+    assert "[实义漏覆盖] #4" not in report
+    assert "[实义漏覆盖·条目在但未译] #4" not in report
+    # 【结论】段区分两种成因
+    assert "漏覆盖 3（整条缺失 1 + 条目在但未译 2）" in report
+
+
+def test_quality_report_miss_untranslated_kana_only_not_counted():
+    """原文纯假名（无汉字）终稿 [未翻译] → 不计入任何漏覆盖口径（不误报）。"""
+    from subtransjav.refine.quality_report import build_quality_report
+    orig = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+             "text": "こんにちは"}]
+    final = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+              "text": "[未翻译] こんにちは"}]
+    report = build_quality_report(orig, final, "demo",
+                                  expected_entries=orig)
+    assert "实义内容漏覆盖: 0/0 (0.0%)" in report
+    assert "条目在但未译" not in report
+    assert "[实义漏覆盖" not in report
 
 
 def test_v2_config_new_fields():
@@ -2307,6 +2379,42 @@ def test_filter_language_marks_instead_of_dropping():
     assert texts[1] == pv.UNTRANSLATED_PREFIX + "こんにちは"
     assert texts[2] == "中文没有问题"
     assert texts[3] == pv.UNTRANSLATED_PREFIX + "あ"   # 不二次加标
+
+
+def test_filter_language_survives_pseudo_entry_unknown_timing():
+    """LLM 把「序号+时间码」写进条目正文 → _SRT_BLOCK 前瞻把它拆成
+    伪条目（timing 不在由 normal 构建的 by_timing 中）：旧版抛 KeyError
+    并升级为整文件失败；修复后伪条目保留自身编号留在产物（不丢行），
+    其余条目 index 照常回填，顺序仍按时间轴。"""
+    pseudo_text = "字幕内容三\n1002\n01:37:10,439 --> 01:37:11,899\n字幕内容四"
+    entries = _entries("中文第一句", "中文第二句")
+    entries.append({"index": 3, "timing": "00:00:03,000 --> 00:00:03,500",
+                    "text": pseudo_text})
+    kept = pv._filter_language(None, entries, 3)   # 旧版此处抛 KeyError
+    assert [e["index"] for e in kept] == [1, 2, 3, 1002]   # 不丢行
+    texts = {e["index"]: e["text"] for e in kept}
+    assert texts[1] == "中文第一句"                 # index 照常回填
+    assert texts[2] == "中文第二句"
+    assert texts[3] == "字幕内容三"                 # 正文被前瞻拆开
+    assert texts[1002] == "字幕内容四"              # 伪条目回退用自身编号
+    assert kept[-1]["timing"] == "01:37:10,439 --> 01:37:11,899"
+
+
+def test_filter_language_backfills_original_index_when_all_timings_hit():
+    """全部 timing 命中 by_timing 时行为与旧版一致：有效条目恢复原编号
+    （而非 build_srt 的重排号），无效条目加 [未翻译] 保留（D1），
+    产物按时间轴排序。"""
+    entries = [
+        {"index": 7, "timing": "00:00:03,000 --> 00:00:03,500", "text": "第三条"},
+        {"index": 5, "timing": "00:00:01,000 --> 00:00:01,500", "text": "こんにちは"},
+        {"index": 6, "timing": "00:00:02,000 --> 00:00:02,500", "text": "中文没有问题"},
+    ]
+    kept = pv._filter_language(None, entries, 3)
+    assert [e["index"] for e in kept] == [5, 6, 7]   # 原编号回填，时间轴序
+    texts = {e["index"]: e["text"] for e in kept}
+    assert texts[5] == pv.UNTRANSLATED_PREFIX + "こんにちは"   # D1 不丢行
+    assert texts[6] == "中文没有问题"
+    assert texts[7] == "第三条"
 
 
 def test_stage_b_missing_line_keeps_a_translation(tmp_path, monkeypatch):

@@ -173,6 +173,22 @@ def check_and_fix_translation_errors(
     return fixes, warnings, flagged_indexes
 
 
+# [未翻译] 占位标记的形态契约：生成侧 UNTRANSLATED_PREFIX（pipeline_v2，
+# 带尾空格）与提示词模板教给 LLM 的 "[未翻译]"（无尾空格）两种形态并存。
+# 判定统一收口到 is_untranslated_text：strip 后开头匹配，两形态同时兼容。
+_UNTRANSLATED_MARK = "[未翻译]"
+
+
+def is_untranslated_text(text: str) -> bool:
+    """判定文本是否为 [未翻译] 占位形态（带/不带尾空格均算）。
+
+    只做 strip 后的开头匹配："[未翻译] xxx"、"[未翻译]xxx"、纯
+    "[未翻译]" 均为 True；正常译文中部出现 "[未翻译]" 字样（引用/
+    注释）不受影响（不做全文 strip/替换）。
+    """
+    return (text or "").strip().startswith(_UNTRANSLATED_MARK)
+
+
 def scan_learn_defect(src: str, tgt: str) -> "str | None":
     """TM 学习准入扫描：返回缺陷类别名，干净返回 None。
 
@@ -181,6 +197,12 @@ def scan_learn_defect(src: str, tgt: str) -> "str | None":
 
     权重口径：CJK 字符计 1，非 CJK 计 0.5（与 quality_report._weight 一致）。
     """
+    # 0. [未翻译] 占位形态（带/不带尾空格两形态均算）：占位行绝不能
+    #    作为正常译文进入 TM 学习（否则 TM 精确命中会把占位当译文回填
+    #    终稿）。只判开头，正常译文中部引用该字样不受影响。
+    if is_untranslated_text(tgt):
+        return "untranslated"
+
     # 1. 翻译标记泄漏（LLM 协议残留）
     if 'Translation' in tgt:
         return "leak"
