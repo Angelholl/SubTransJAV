@@ -1255,7 +1255,10 @@ function closeAbout() {
       '<td style="padding:2px 4px;"><input class="form-input compact gl-src" ' +
       'style="width:100%;" value="' + esc(r[0]) + '"></td>' +
       '<td style="padding:2px 4px;"><input class="form-input compact gl-dst" ' +
-      'style="width:100%;" value="' + esc(r[1]) + '"></td>' +
+      'style="width:100%;" value="' + esc(r[1]) + '">' +
+      // 别名第三列只读展示（不由前端编辑；无别名不渲染，保存时后端保留）
+      (r[2] ? '<div style="font-size:11px; color:#888; margin-top:1px;">别名: ' +
+        esc(r[2]) + '</div>' : '') + '</td>' +
       '<td style="text-align:center;"><input type="checkbox" class="gl-sel"></td>' +
       '</tr>').join('');
     const cnt = $('refineGlCount');

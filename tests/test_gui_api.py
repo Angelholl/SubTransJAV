@@ -173,3 +173,49 @@ def test_refine_get_template_default_dir_still_works(gui_api_obj):
     """不误伤主路径：不传目录时走服务端默认 config/templates。"""
     result = gui_api_obj.refine_get_template("A", None)
     assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# 词库保存别名保留（v1.2.2 P2）：GUI 前端只收集两列行，保存时后端必须
+# 回填旧库 target_aliases 第三列，不得静默抹掉。词库锚在用户主目录下
+# （_resolve_safe_path 的 home 白名单内），测试产物在 finally 中清理。
+# ---------------------------------------------------------------------------
+
+def _home_glossary_dir() -> Path:
+    d = Path.home() / ("subtransjav_gl_test_" + uuid.uuid4().hex[:8])
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def test_refine_save_glossary_keeps_existing_aliases(gui_api_obj):
+    """旧库含别名：前端传两列行保存后，读回别名仍在第三列。"""
+    d = _home_glossary_dir()
+    try:
+        p = d / "glossary.csv"
+        p.write_text("ムラムラ,心痒,燥热|悸动\nIKU,去了\n", encoding="utf-8-sig")
+        saved = gui_api_obj.refine_save_glossary(
+            [["ムラムラ", "心痒"], ["IKU", "去了"]], str(p))
+        assert saved["success"] is True
+        assert saved["alias_kept"] == 1          # 仅一条带别名
+        got = gui_api_obj.refine_get_glossary(str(p))
+        assert got["success"] is True
+        assert got["rows"] == [["ムラムラ", "心痒", "燥热|悸动"],
+                               ["IKU", "去了", ""]]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_refine_save_glossary_no_alias_writes_two_columns(gui_api_obj):
+    """旧库无别名：保存后 CSV 不出现第三列（learned 行格式不受影响）。"""
+    d = _home_glossary_dir()
+    try:
+        p = d / "glossary.csv"
+        p.write_text("こんにちは,你好\n", encoding="utf-8-sig")
+        saved = gui_api_obj.refine_save_glossary([["こんにちは", "你好"]], str(p))
+        assert saved["success"] is True
+        assert saved["alias_kept"] == 0
+        assert p.read_text(encoding="utf-8-sig").strip() == "こんにちは,你好"
+        got = gui_api_obj.refine_get_glossary(str(p))
+        assert got["rows"] == [["こんにちは", "你好", ""]]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)

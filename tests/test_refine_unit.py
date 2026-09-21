@@ -6,7 +6,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from subtransjav.refine.config import LOCAL_BATCH_HARD_CAP, RefineConfig, StageConfig
 from subtransjav.refine.filters import build_srt, filter_placeholder_file, is_placeholder, parse_srt
-from subtransjav.refine.glossary import format_glossary_block, load_glossary, match_glossary, save_glossary
+from subtransjav.refine.glossary import (
+    format_glossary_block,
+    load_glossary,
+    load_glossary_ex,
+    match_glossary,
+    save_glossary,
+)
 from subtransjav.refine.instructions import write_effective_instructions
 
 SAMPLE_SRT = """1
@@ -39,6 +45,24 @@ def test_glossary_roundtrip(tmp_path):
     rows = [("a", "b"), ("c", "d")]
     save_glossary(p, rows)
     assert load_glossary(p) == rows
+
+
+def test_glossary_save_three_column_roundtrip(tmp_path):
+    """三列词条：aliases 经 `|` 写出，load_glossary_ex 读回别名相等。"""
+    p = str(tmp_path / "g3.csv")
+    rows = [("a", "b", ("x", "y")), ("c", "d", ())]
+    save_glossary(p, rows)
+    assert load_glossary_ex(p) == [("a", "b", ("x", "y")), ("c", "d", ())]
+    # 旧接口读三列文件：忽略第三列，仍返回两列元组
+    assert load_glossary(p) == [("a", "b"), ("c", "d")]
+
+
+def test_glossary_save_two_column_no_third_field(tmp_path):
+    """两列词条照旧写两列（无第三列文本），读回 aliases 为空元组。"""
+    p = str(tmp_path / "g2.csv")
+    save_glossary(p, [("a", "b")])
+    assert (tmp_path / "g2.csv").read_text(encoding="utf-8-sig").strip() == "a,b"
+    assert load_glossary_ex(p) == [("a", "b", ())]
 
 
 def test_glossary_block_format():

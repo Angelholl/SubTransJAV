@@ -1076,33 +1076,55 @@ class TranslateAPI:
             return {"success": False, "error": str(e)}
 
     def refine_get_glossary(self, path: str = None) -> dict[str, Any]:
-        """读取词库词条列表"""
+        """读取词库词条列表（含可选别名第三列）。
+
+        行格式 [src, dst, aliases]：aliases 为 `|` 分隔的别名文本，
+        无别名时为空字符串 ""（行长度恒为 3，便于前端渲染）。
+        """
         try:
             from subtransjav.refine.config import default_glossary_path
-            from subtransjav.refine.glossary import load_glossary
+            from subtransjav.refine.glossary import load_glossary_ex
             p = path or default_glossary_path()
             p = str(_resolve_safe_path(p))
-            rows = load_glossary(p)
-            return {"success": True, "path": p, "rows": [[s, d] for s, d in rows]}
+            rows = load_glossary_ex(p)
+            return {"success": True, "path": p,
+                    "rows": [[s, d, "|".join(a) if a else ""]
+                             for s, d, a in rows]}
         except Exception as e:
             _log_exc("refine_get_glossary")
             return {"success": False, "error": str(e)}
 
     def refine_save_glossary(self, rows: list[list[str]], path: str = None) -> dict[str, Any]:
-        """保存词库词条"""
+        """保存词库词条（保留别名：GUI 前端无别名编辑列，保存前先读
+        旧库回填别名第三列，避免两列清洗静默抹掉 target_aliases）。
+
+        返回值含 alias_kept = 实际写出时带别名的词条数。
+        """
         try:
             from subtransjav.refine.config import default_glossary_path
-            from subtransjav.refine.glossary import save_glossary
+            from subtransjav.refine.glossary import load_glossary_ex, save_glossary
             p = path or default_glossary_path()
             p = str(_resolve_safe_path(p))
+            old_aliases: dict[str, tuple] = {}
+            for src, _dst, aliases in load_glossary_ex(p):
+                old_aliases.setdefault(src, aliases)
             clean = []
+            alias_kept = 0
             for r in rows or []:
                 if len(r) >= 2 and str(r[0]).strip() and str(r[1]).strip():
-                    pair = (str(r[0]).strip(), str(r[1]).strip())
+                    src, dst = str(r[0]).strip(), str(r[1]).strip()
+                    aliases = old_aliases.get(src, ())
+                    if len(r) >= 3 and str(r[2]).strip():
+                        aliases = tuple(a.strip() for a in str(r[2]).split("|")
+                                        if a.strip())
+                    pair = (src, dst)
                     if pair not in clean:
-                        clean.append(pair)
+                        clean.append((src, dst, aliases) if aliases else pair)
+                        if aliases:
+                            alias_kept += 1
             save_glossary(p, clean)
-            return {"success": True, "count": len(clean), "path": p}
+            return {"success": True, "count": len(clean),
+                    "alias_kept": alias_kept, "path": p}
         except Exception as e:
             _log_exc("refine_save_glossary")
             return {"success": False, "error": str(e)}

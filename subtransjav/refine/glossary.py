@@ -50,11 +50,20 @@ def load_glossary_ex(path: str):
 
 
 def save_glossary(path: str, entries):
+    """保存词库（UTF-8 BOM CSV）。
+
+    entries 兼容两列 (src, dst) 与三列 (src, dst, aliases) 词条：
+    aliases 为非空元组/列表时写第三列 `|` 分隔别名；否则只写两列
+    （两列行为与旧版完全一致，向后兼容）。
+    """
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        for src, dst in entries:
-            w.writerow([src, dst])
+        for entry in entries:
+            if len(entry) >= 3 and entry[2]:
+                w.writerow([entry[0], entry[1], "|".join(entry[2])])
+            else:
+                w.writerow([entry[0], entry[1]])
 
 
 def match_glossary(text: str, glossary):
