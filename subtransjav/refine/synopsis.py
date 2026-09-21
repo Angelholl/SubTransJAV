@@ -14,6 +14,7 @@
   超时独立收敛为 min(timeout_llm, 300s)（由调用方在 client 上设置）。
 """
 
+import contextlib
 import hashlib
 import math
 import os
@@ -183,10 +184,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
             os.fsync(f.fileno())
         os.replace(tmp, path)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
 
 
 def request_synopsis(client, sampled_text: str, *, provider: str, model: str,
@@ -222,8 +221,7 @@ def request_synopsis(client, sampled_text: str, *, provider: str, model: str,
         out = (out or "").strip()
         if not out:
             return None
-        try:
+        # 缓存写失败不影响本次摘要可用性
+        with contextlib.suppress(OSError):
             _atomic_write_text(cpath, out)
-        except OSError:
-            pass                       # 缓存写失败不影响本次摘要可用性
         return out
