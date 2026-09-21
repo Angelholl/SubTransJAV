@@ -679,7 +679,7 @@ keep-list 白名单优先级最高，高于任何档位；H6 黄金集对两个�
 
 **后续风险跟踪**：① 新搭配首部正片三方抽检（heretic>heretic / heretic>hauhau 对照）+ 别停/クリ/部長で 考点复核；② 学习通道重开前提=成因分析与清洗缺陷修复完成且抽检通过；③ .abtest/ 原始证据仅本地保留，磁盘清理前须先固化 manifest。
 
-## [2026-09-22] [D2026-0921-03] Mimosa git-gate 阻塞裁决与本轮标准运行模式 [已拍板，执行证据待追记]
+## [2026-09-22] [D2026-0921-03] Mimosa git-gate 阻塞裁决与本轮标准运行模式 [已执行]
 
 **背景**：Mimosa 插件 git-gate（ZCode Bash 工具层 PreToolUse，非 .git/hooks 原生钩子）在 commit/push 前对全仓做静态快扫并强制拦截。本轮 1.2.2 收尾的 20 件变更（17 改 + 3 新，以提交时刻 git status 为准）被阻塞。核查事实：① 快扫报 27 个高危全部位于历史文件与被忽略的本地文件（create_shortcut.py、tests/test_secrets.py、tools/ 旧脚本、Temp/ 脚本、api.py 旧代码），与待提交 20 件零交集——且这些历史文件已随既有历史公开于 origin（本地与 origin/main 同步），对其拦截无保护价值；② 两次带 seal 正式扫描（normal + deep）对 26 条 findings 复核层全部裁定 verdictEffect=none、无 proofGaps（静态误报：本地单机工具硬编码 localhost、脚本内部构造路径、pytest tmp_path 测试夹具模式）；③ tests/test_secrets.py 上一轮已为过扫描改写字面量、本轮仍被同一规则命中——改写正常代码满足全仓扫描不可收敛；④ 插件 payload 为 Ed25519 签名混淆包，无扫描范围配置项；payload 文档核实 `mimosa validate` 的 allowlist 为内置窄域 Oracle，**当前版本无用户可配置的 findings baseline/allowlist**；⑤ 计数口径：hook 快扫 27 高危（实时工作树，含 Temp/ 脚本）vs 密封扫描 26 findings（快照口径 24 高 + 2 低），两套引擎范围时点不同，双口径分列、不强行核平。
 
@@ -696,4 +696,9 @@ keep-list 白名单优先级最高，高于任何档位；H6 黄金集对两个�
 
 **0916/0918 历史 TM 备份**：保持不动，处置权在用户。
 
-**执行追记（待补）**：六段 commit hash、三查输出、blobs 复扫摘要、push 结果——推送后补录于本节（该追记留工作区，随下一轮标准运行模式入库）。
+**执行追记（2026-09-22 补录，状态转已执行）**：
+- **六段提交**（b30f93f → 8223106，顺序与裁决一致）：b30f93f chore: ignore private glossary backups and evidence dirs → f94de78 chore: set glossary_learn_enabled default False → 66d259f fix: harden language filter and unify untranslated prefix → f64b79d feat: detect untranslated content in quality report + tests → 9701473 fix: preserve target_aliases on GUI save → 8223106 docs: finalize decision log and handoff/model matrix runner（含本条 D2026-0921-03 归档）
+- **三查**：工作树干净（porcelain 空）；git log 恰六段语义提交；fetch 后 ahead 6、无分叉
+- **blobs 复扫**：HEAD~6..HEAD 新增 1964 行 × 10 模式（aws/github/google/slack token、私钥块、Bearer、JWT、键值对字面量、hex32/hex40）全部零命中
+- **push**：首次执行未达远程（远程仍 745cb04，原因未查明，疑似凭据/工作目录问题）；重推成功 `745cb04..8223106 main -> main`，ls-remote 复核 origin/main=8223106，本地与远程完全同步
+- 本追记为工作区唯一未提交变更，随下一轮标准运行模式入库（其提交前流程照旧：定向扫描 → 终端直提 → 三查 → blobs 复扫 → push）
