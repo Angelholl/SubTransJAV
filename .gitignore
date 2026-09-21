@@ -21,7 +21,16 @@ Temp/
 config/api_keys.bin
 config/glossary_learned.csv
 config/glossary.csv
+config/glossary.csv.bak-*
 create_shortcut.py
+
+# TM 备份（私有翻译数据，严禁入库）
+tm.db.bak-*
+tm_full_backup_*.csv
+
+# 本地测试证据（体积大且含片名/路径，不入库；仓库只留 manifest/README）
+.abtest/
+.tmp374/
 
 # 本地工具数据
 .zcode/
