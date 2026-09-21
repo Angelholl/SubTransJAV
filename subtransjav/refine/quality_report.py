@@ -11,7 +11,8 @@
   仅陈述事实，不做幻觉/未译断言，交人工确认）；
 - [未翻译] 条目单列一节（D1：不再删除、带前缀保留在终稿）；
 - 闸门0 删除台账单列【处置】一节（总数/分类/样本，全量见归档日志）；
-- 实义漏覆盖逐条列出（无门槛，上限 20 条）；
+- 实义漏覆盖逐条列出（无门槛，上限 20 条；拆"整条缺失/条目在但未译"
+  两口径，总数 = 之和）；
 - post_validate 告警逐条进入复核清单，warn_only=false 的硬性告警一并呈现；
 - 统计段含条数核对恒等式（原文 = 闸门0删除 + 预合并合并 + 规则清洗
   合并 + 规则清洗删除 + 隔离区移出 + 终稿），不平则以 ⚠️ 显式呈现，
@@ -80,6 +81,17 @@ def _clip(text: str, limit: int = 60) -> str:
     if len(t) > limit:
         return t[:limit] + "…"
     return t
+
+
+def _is_untranslated(text: str) -> bool:
+    """判定文本是否为 [未翻译] 残留（实义漏覆盖"条目在但未译"口径专用）。
+
+    同时容忍两种前缀形态："[未翻译] "（带尾空格，pipeline_v2 的
+    UNTRANSLATED_PREFIX 现值）与 "[未翻译]"（无空格，提示词教出的形态，
+    与本文件既有硬编码一致）；前缀后的残译文（如 "[未翻译] Chicks。"）
+    不影响判定——仍是未译。
+    """
+    return (text or "").startswith("[未翻译]")
 
 
 # 分歧"可选"区展示上限（超出部分注明见分歧复核 CSV）
@@ -589,19 +601,41 @@ def build_quality_report(orig_entries: list, final_entries: list,
         untranslated_lines.append(
             f"  #{e['index']} {_fmt_timing(e['timing'])} 原文: {src_show[:60]}")
 
-    # 3) 实义内容漏覆盖（含汉字原文行，终稿无对应条目或译文为空；
-    #    无门槛全部列出，上限 _MISS_LIST_LIMIT 条）
+    # 3) 实义内容漏覆盖（含汉字原文行），按终稿成因拆两个口径：
+    #    - missing_entry（整条缺失）：终稿该时间轴 span 完全无条目（原口径）；
+    #    - untranslated_content（条目在但未译）：span 有条目，但命中条目
+    #      文本均以 [未翻译] 前缀开头（兼容带/不带尾空格两种形态，
+    #      前缀后的残译文不影响判定——仍是未译）。
+    #    两口径互斥，总数 = 之和；无门槛全部列出，上限 _MISS_LIST_LIMIT 条。
     kanji_orig = [e for e in expected if _KANJI_RE.search(e["text"] or "")]
-    missed = [e for e in kanji_orig
-              if not any(final_by_span.get(_timing_span(e["timing"])) or [])]
-    for e in missed[:_MISS_LIST_LIMIT]:
-        items.append(("漏覆盖", [
-            f"[实义漏覆盖] #{e['index']} {_fmt_timing(e['timing'])}",
-            f"   源: {(e['text'] or '')[:60]}",
-            "   （终稿中无对应条目或译文为空）",
-        ]))
-    if missed:
-        concl.append(f"漏覆盖 {len(missed)}")
+    missed = []               # 口径1：整条缺失
+    missed_untranslated = []  # 口径2：条目在但未译
+    for e in kanji_orig:
+        hits = final_by_span.get(_timing_span(e["timing"])) or []
+        if not hits:
+            missed.append(e)
+        elif all(_is_untranslated(h.get("text") or "") for h in hits):
+            missed_untranslated.append(e)
+    missed_total = len(missed) + len(missed_untranslated)
+    missed_review = ([(e, False) for e in missed]
+                     + [(e, True) for e in missed_untranslated])
+    for e, untranslated_hit in missed_review[:_MISS_LIST_LIMIT]:
+        if untranslated_hit:
+            items.append(("漏覆盖", [
+                f"[实义漏覆盖·条目在但未译] #{e['index']} "
+                f"{_fmt_timing(e['timing'])}",
+                f"   源: {(e['text'] or '')[:60]}",
+                "   （终稿条目在，但译文为 [未翻译] 残留）",
+            ]))
+        else:
+            items.append(("漏覆盖", [
+                f"[实义漏覆盖] #{e['index']} {_fmt_timing(e['timing'])}",
+                f"   源: {(e['text'] or '')[:60]}",
+                "   （终稿中无对应条目或译文为空）",
+            ]))
+    if missed_total:
+        concl.append(f"漏覆盖 {missed_total}（整条缺失 {len(missed)}"
+                     f" + 条目在但未译 {len(missed_untranslated)}）")
 
     # 4) 校验告警（post_validate；含"主语误判"的单独归类）
     subject_warns = [w for w in validator_warnings if "主语误判" in w]
@@ -648,7 +682,7 @@ def build_quality_report(orig_entries: list, final_entries: list,
     aligned = sum(1 for e in final_entries
                   if _timing_span(e["timing"]) in expected_by_span)
     align_rate = (aligned / len(final_entries) * 100) if final_entries else 0.0
-    miss_rate = (len(missed) / len(kanji_orig) * 100) if kanji_orig else 0.0
+    miss_rate = (missed_total / len(kanji_orig) * 100) if kanji_orig else 0.0
 
     # 长度比分布（对期望条目）
     ratios = []
@@ -776,8 +810,9 @@ def build_quality_report(orig_entries: list, final_entries: list,
         for i, (_, block) in enumerate(items, 1):
             lines.append(f"{i}. " + block[0])
             lines.extend(block[1:])
-        if len(missed) > _MISS_LIST_LIMIT:
-            lines.append(f"（漏覆盖其余 {len(missed) - _MISS_LIST_LIMIT} 条略）")
+        if missed_total > _MISS_LIST_LIMIT:
+            lines.append(
+                f"（漏覆盖其余 {missed_total - _MISS_LIST_LIMIT} 条略）")
         lines.append("-" * 60)
     # [未翻译] 小节（D1：带前缀保留在终稿；逐条列出，上限 20 条）
     if untranslated:
@@ -835,8 +870,12 @@ def build_quality_report(orig_entries: list, final_entries: list,
     lines.append(f"时间轴对齐率（对预合并后期望时间轴）: {align_rate:.1f}%"
                  f"（未对齐 {len(misaligned)} 条"
                  f"{'，见清单' if misaligned else ''}）")
-    lines.append(f"实义内容漏覆盖: {len(missed)}/{len(kanji_orig)} "
+    miss_line = (f"实义内容漏覆盖: {missed_total}/{len(kanji_orig)} "
                  f"({miss_rate:.1f}%)")
+    if missed_total:
+        miss_line += (f"（整条缺失 {len(missed)}"
+                      f" + 条目在但未译 {len(missed_untranslated)}）")
+    lines.append(miss_line)
     lines.append(f"长度比中位数: {median_ratio:.2f}"
                  f"（离群<0.3 占比 {outlier_rate:.1f}%）")
     lines.append(
