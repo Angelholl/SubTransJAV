@@ -377,7 +377,8 @@ class TestLearnEnabledGate:
         import subtransjav.refine.glossary_learn as gl
         monkeypatch.setattr(gl, "learn_from_s2_output",
                             lambda *a, **k: calls.append((a, k)) or 0)
-        cfg_on = RefineConfig(auto_glossary=True)
+        # D2026-0921-02 起默认 False：学习路径需显式开启
+        cfg_on = RefineConfig(auto_glossary=True, glossary_learn_enabled=True)
         assert cfg_on.glossary_learn_enabled is True
         pv._auto_learn_glossary(cfg_on, "in.srt", "out.srt", threads=None)
         assert len(calls) == 1
@@ -431,10 +432,10 @@ class TestLearnedResetTool:
 def test_config_defaults_and_fingerprint():
     cfg = RefineConfig()
     assert cfg.glossary_conflict_block is False     # 默认仅观察
-    assert cfg.glossary_learn_enabled is True       # 默认开
+    assert cfg.glossary_learn_enabled is False      # D2026-0921-02 起默认关
     base = _cch(cfg)
     assert _cch(RefineConfig(glossary_conflict_block=True)) != base
-    assert _cch(RefineConfig(glossary_learn_enabled=False)) != base
+    assert _cch(RefineConfig(glossary_learn_enabled=True)) != base
 
 
 # ---------------------------------------------------------------------------

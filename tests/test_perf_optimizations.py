@@ -310,7 +310,8 @@ def test_slow_glossary_learn_does_not_block_and_warns(tmp_path, monkeypatch):
     monkeypatch.setattr(pv, "_LEARN_JOIN_TIMEOUT", 0.3)
 
     inputs = _setup_files(tmp_path, monkeypatch, ["demo.japanese.srt"])
-    cfg = _v2_cfg(tmp_path, auto_glossary=True)
+    # 学习路径默认关闭（D2026-0921-02），本测试专测异步学习须显式开启
+    cfg = _v2_cfg(tmp_path, auto_glossary=True, glossary_learn_enabled=True)
     cfg.inputs = inputs
     summary = {}
     t0 = time.perf_counter()
@@ -329,7 +330,8 @@ def test_fast_glossary_learn_no_timeout_warning(tmp_path, monkeypatch):
 
     monkeypatch.setattr(gmod, "learn_from_s2_output", lambda *a, **k: 0)
     inputs = _setup_files(tmp_path, monkeypatch, ["demo.japanese.srt"])
-    cfg = _v2_cfg(tmp_path, auto_glossary=True)
+    # 学习路径默认关闭（D2026-0921-02），本测试专测学习完成路径须显式开启
+    cfg = _v2_cfg(tmp_path, auto_glossary=True, glossary_learn_enabled=True)
     cfg.inputs = inputs
     summary = {}
     pv.run_v2(cfg, summary_sink=summary)

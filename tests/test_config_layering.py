@@ -273,3 +273,17 @@ def test_premerge_entries_uses_cfg_thresholds():
 
 def test_user_settings_path_under_config_dir(tmp_path):
     assert user_settings_path() == str(tmp_path / "user_settings.json")
+
+
+def test_d20260921_defaults_glossary_learn_off_and_prod_pair():
+    """D2026-0921-01/02 收尾落位：学习开关默认关闭（显式 True 仍可开）、
+    生产默认 A>B = joyfox27b>heretic35b（本地 lmstudio）。"""
+    cfg = RefineConfig()
+    assert cfg.glossary_learn_enabled is False
+    cfg.glossary_learn_enabled = True          # 显式开启路径保留
+    assert cfg.glossary_learn_enabled is True
+    a, b = cfg.stages[0], cfg.stages[2]
+    assert (a.provider, a.model) == (
+        "lmstudio", "qwen3.8-27b-uncensored-joyfox-aggressive")
+    assert (b.provider, b.model) == (
+        "lmstudio", "qwen3.6-35b-a3b-uncensored-heretic-apex")

@@ -225,9 +225,10 @@ class RefineConfig:
     inputs: list = field(default_factory=list)   # 输入 SRT 路径列表
     output_dir: str = ""            # 空 = 与各输入同目录
     stages: list = field(default_factory=lambda: [
-        StageConfig(0, True, "lmstudio", ""),
+        # 生产默认搭配（D2026-0921-01 用户拍板）：A=joyfox27b > B=heretic35b
+        StageConfig(0, True, "lmstudio", "qwen3.8-27b-uncensored-joyfox-aggressive"),
         StageConfig(1, True, "deepseek", ""),
-        StageConfig(2, True, "lmstudio", ""),
+        StageConfig(2, True, "lmstudio", "qwen3.6-35b-a3b-uncensored-heretic-apex"),
         StageConfig(3, True, "lmstudio", ""),
     ])
     templates_dir: str = ""         # 角色卡所在目录（默认 = 输入文件目录）
@@ -258,9 +259,11 @@ class RefineConfig:
     batch_size_stable: bool = True   # 固定批次大小（提高缓存命中率）
     # 自动词库学习
     auto_glossary: bool = False     # S1 完成后自动提取术语
-    # v1.2.2 D3 learned 自学习治理开关：False 时跳过 glossary_learned
+    # v1.2.2 D3 learned 自学习词库治理开关：False 时跳过 glossary_learned
     # 学习路径（跳过计数入日志）。影响学习行为，须入 manifest 指纹。
-    glossary_learn_enabled: bool = True
+    # 2026-09-21 起默认 False（D2026-0921-02：清洗缺陷修复完成前学习通道
+    # 保持关闭）；显式传 glossary_learn_enabled=True 仍可开启。
+    glossary_learn_enabled: bool = False
     # v1.2.2 D1 术语冲突观察闸：False=仅观察（默认，冲突只落 CSV/JSON
     # 与报告小节）；True=冲突条目禁止进入 TM 学习（_learn_to_tm 入库前
     # 检查，冲突即跳过并计数）。转阻断与否由用户裁决，系统不自动切换。
