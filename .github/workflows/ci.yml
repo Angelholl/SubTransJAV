@@ -25,6 +25,10 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -e ".[dev]"
       - name: Lint
         run: ruff check subtransjav tests
+      # mypy report-only（分阶段策略：阶段一仅采集基线不阻断；阶段二收口时去掉 || true 改为门禁）
+      - name: Type check (report-only)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: mypy subtransjav || true
       - name: Test
         shell: bash
         run: python -m pytest tests -q --cov=subtransjav --cov-report=term

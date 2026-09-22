@@ -1082,7 +1082,10 @@ function closeAbout() {
       fallback_model: (($('refineFallbackModel') || {}).value || '').trim(),
       cleaner_config_dir: (($('refineCleanerConfig') || {}).value || '').trim(),
       resume: !!($('resumeToggle') && $('resumeToggle').checked),
-      verbose: !!($('debugLogging') || {}).checked
+      verbose: !!($('debugLogging') || {}).checked,
+      source_filter: (($('refineSourceFilter') || {}).value || 'default'),
+      auto_synopsis: !($('refineAutoSynopsis') && !$('refineAutoSynopsis').checked),
+      dry_run: !!($('refineDryRun') || {}).checked
     };
   }
 

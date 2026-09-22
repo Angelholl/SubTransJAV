@@ -702,3 +702,42 @@ keep-list 白名单优先级最高，高于任何档位；H6 黄金集对两个�
 - **blobs 复扫**：HEAD~6..HEAD 新增 1964 行 × 10 模式（aws/github/google/slack token、私钥块、Bearer、JWT、键值对字面量、hex32/hex40）全部零命中
 - **push**：首次执行未达远程（远程仍 745cb04，原因未查明，疑似凭据/工作目录问题）；重推成功 `745cb04..8223106 main -> main`，ls-remote 复核 origin/main=8223106，本地与远程完全同步
 - 本追记为工作区唯一未提交变更，随下一轮标准运行模式入库（其提交前流程照旧：定向扫描 → 终端直提 → 三查 → blobs 复扫 → push）
+
+## [2026-09-22] [D2026-0922-01] 1.2.3/1.3 版本划分与 GUI 参数裁剪定版 [已拍板→执行中]
+
+**背景**：1.2.2 已收尾发布（六段 745cb04..8223106 加 SIM105 轮 92ebcea/952f6f4，本地与 origin/main 同步）。下一版本规划经两路探索调研与 decision-critic 评议形成推荐，含三项待终选。
+
+**裁决（用户终选，2026-09-22）**：
+1. **划分方式：两段式**——1.2.3 收尾+加固小版本（A2 残译清洗修复、A5 漏覆盖口径收口、A4 glossary_learned 零产出成因核验、quality_report/pass_disagreement 补测、mypy report-only 进 CI、GUI 裁剪参数、补打 v1.2.2/v1.2.3 tag、生产型号归档、决策包三项拍板）→ 1.3.0 架构版（pipeline_v2 拆分[验收门=全量测试+黄金集+CI 全绿，行为等价不过即回退]、词表覆盖层+加载优先级改造、GUI i18n+完整参数面板、LRU、文档修正、lockfile）→ 1.3.1 行为变更版（H4b 条目级阈值自适应、legacy providers 清理执行、guard 脚本、Mimosa 21 项甄别）。
+2. **GUI 参数：裁剪版进 1.2.3**——仅暴露 source_filter、auto_synopsis、dry_run、verbose 四个安全参数；敏感开关（force_resume、glossary_learn 等）留 1.3 与 i18n 一并做。
+3. **1.2.3 现在开工**。
+
+**硬依赖**：①批次 E（TM 清洗+全新重跑+8 项指标验收）必须用 A5 修正后口径执行；②1.2.3 测试补齐是 1.3 拆分安全网；③A4 结论是 1.3 词表覆盖层改造前置输入。
+
+**边界事实**：A5 双口径拆分（missing_entry/untranslated_content）已随 1.2.2 收尾批 f64b79d 落地并带验收测试（quality_report.py:604-638，test_pipeline_v2.py:1046 起）；1.2.3 内完成独立补测与复核收口，确认无残余缺口即结项，有缺口则补改。
+
+**决策性质**：规划层裁决（延续 D2026-0921-01/02 评审链）；规划稿已经 decision-critic 评议（无 HIGH_RISK_OBJECTION），本次为用户终选，不另加评。
+
+**是否 [PRESSURE-OVERRIDE]**：否。
+
+**后续风险跟踪**：①批次 E 待 A5 结项后由用户执行；②A2/A4 修复结论与决策包三件拍板结果随执行追记回填本条或另立新条目归档。
+
+## [2026-09-22] [D2026-0922-02] 1.2.3 决策包三件处置定版：v2_file_parallel 保留 / legacy providers 全表清理 / 4槽结构保留与槽位语义对齐 [已拍板]
+
+**决策问题**：1.2.3（收尾+加固小版本，只决策不改码）对三件遗留项的处置裁决：①`v2_file_parallel` 休眠开关去留；②legacy providers（glm/groq 等孤立配置条目）清理范围；③v2 槽位 1/3 占位处置与 config 默认工厂语义对齐。
+
+**评议方式**：decision-critic 独立评议。材料清单核验通过（三件事实逐条以代码只读抽查复核，含跨 git 历史对照 v1.1.0 era 与现 1.2.2 的 TM stage 写法）；主模型裁定后回传决策日志文本归档。
+
+**裁决一（v2_file_parallel 保留，无修订）**：维持保留，2.0 规划时重议去留。依据：`config.py:331` 默认 False + 注释明示「P1-6 云端多文件并行（opt-in，默认关）……预留 2.0，当前恒为关闭（O10）」；`pipeline_v2.py:1388-1400` 有真实分支逻辑（云端服务商才启用）；无任何生产启用通道（不在 TUNABLE_FIELD_TYPES、无 env/CLI/GUI 入口）；`test_config_layering.py:79` 锁默认 False、`test_perf_optimizations.py:256/269/284` 显式 True 覆盖分支。删除是纯减法且测试有依赖，无维护收益。论据核验：`_file_parallel_enabled` 本地档恒 False，与分支注释/测试三方自洽；1.2.3 无净新增动作。
+
+**裁决二（legacy providers 清理，范围采纳扩大）**：采纳评议的范围一致性补充——清理标准统一为「本项目全部入口（CLI choices / config.py PROVIDER_* 常量 / GUI / 文档）零暴露且仓内零引用」，据此范围扩大为 PROVIDER_CONFIGS 全表六条孤立条目：glm/groq/openrouter/gemini/claude/gpt（translate/providers.py:18-56，全仓仅自引用、无消费点；translate/__init__.py 已声明 legacy PySubtrans 引擎移除，v2 用 LLMClient 直连）。删除时对旧配置手写 `provider=<已删名>` 的路径补友好校验报错（禁静默空回退，注意 config.py:443 PROVIDER_MODEL_DEFAULTS.get() 的静默空值兜底语义需一并处理）；不采用「保留条目名只删字段」折中。执行窗口：1.3.1 执行删除，1.2.3 只记录决策。
+
+**裁决三（槽位 1/3 占位处置，论据修正采纳）**：结论维持——保留 4 槽结构不动、压缩为 2 槽永久不做；「config 默认槽1/3 enabled 改 False」的语义对齐排 1.3.0 执行（1.2.3 不动码）。论据修正（采纳评议代码核验）：原论据「TM 按 stage 编号索引、压缩 2 槽致历史 TM 数据索引错位」不成立——v2 管线对 TM 读写恒为字面量 stage=1（pipeline_v2.py:979 lookup / :2376 store，git 历史 v1.1.0 era 起即如此），TM stage 编号体系（legacy 1/2/3，tm.py:10）与槽位数解耦。修正后归档论据：保留 4 槽的硬约束是五条路径多点联动耦合——①V2_STAGE_SLOT={"A":0,"B":2}（pipeline_v2.py:99-100）；②STAGE_NAMES 4 槽语义注释（config.py:100-101）；③manifest._V2_STAGE_SLOTS（manifest.py:219，契约测试钉住防两处漂移）；④GUI by_stage 阶段展示重建逻辑（webview_gui/api.py:1022-1036）；⑤历史配置 stages 数组默认工厂（config.py:227-233）。压缩成本高（五处联动改写+配置兼容+清单指纹）收益低，故永久不压缩。1.3.0 对齐附带要求：①顺带核对 GUI 阶段展示语义不被误导（api.py:1022 阶段重建逻辑）；②考虑一并厘清 StageConfig.name / STAGE_NAMES 索引语义（config.py:218-220），避免只改 enabled 留下第二个隐晦点。语义不一致根因确认：config.py:227-233 默认工厂槽1/3 enabled=True 与 cli.py:172-181 硬编码 False 确实矛盾；enabled 仅影响 manifest/GUI 阶段展示，对 v2 业务流程（按 tag→槽位取数）无行为影响。
+
+**评议结论**：三件决策均无 [HIGH_RISK_OBJECTION]（均低风险、可逆）；一处论据修正（裁决三）与一处范围扩大（裁决二）均采纳；异议级别全部为普通，无异议保留项。
+
+**是否 [PRESSURE-OVERRIDE]**：否。
+
+**执行排期**：1.2.3 三件只记录决策、不引入行为变更；1.3.0 槽1/3 enabled 默认值对齐 False（含 GUI 展示语义核对、STAGE_NAMES/StageConfig.name 索引语义厘清）；1.3.1 PROVIDER_CONFIGS 全表六条孤立条目按统一标准审计后删除，旧配置 `provider=<已删名>` 路径补友好校验报错。
+
+**后续风险跟踪**：①1.3.1 删除前复核一次全仓引用面（GLM_API_KEY/GROQ_API_KEY 等 env_var 占用无残留），删除后确认 config.py 校验路径对未知 provider 给出明确报错而非静默空值；②1.3.0 槽位对齐触及 config.py 默认工厂，需回归 test_config_layering.py / test_pipeline_v2.py / test_manifest_model.py 契约测试，防默认值改动影响清单指纹；③v2_file_parallel 休眠开关保持注释与测试锁定状态，2.0 规划时凭本条目重议去留。

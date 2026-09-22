@@ -152,6 +152,30 @@ V2_STAGE_PROMPTS = {
 DEEPSEEK_BASE_URL = DEEPSEEK_BASE_DEFAULT
 UNTRANSLATED_PREFIX = "[未翻译] "
 
+# [未翻译] 标记裸形态（无尾空格，与 post_validate._UNTRANSLATED_MARK 同值；
+# 因循环导入风险本地再声明，判定口径统一走 is_untranslated_text）。
+_UNTRANSLATED_MARK_LOCAL = "[未翻译]"
+
+
+def _normalize_untranslated_marker(text: str, orig_text: str) -> str:
+    """A2 残译清洗：[未翻译] 前缀后跟非空残译文（如 "[未翻译] Chicks。"）
+    的污染形态规范化。
+
+    - 原文可得 → UNTRANSLATED_PREFIX + 日文原文（与阶段A 失败回退一致）；
+    - 原文不可得 → 剥掉残译文只留纯前缀 "[未翻译]"；
+    - 纯占位形态（前缀后无内容）原样返回，防二次加标；
+    - 只做 strip 后开头匹配，正文中部合法出现 "[未翻译]" 的译文不碰。
+    """
+    s = (text or "").strip()
+    if not s.startswith(_UNTRANSLATED_MARK_LOCAL):
+        return text
+    residue = s[len(_UNTRANSLATED_MARK_LOCAL):].strip()
+    if not residue:
+        return text                    # 纯占位：保持现状
+    orig = (orig_text or "").strip()
+    return UNTRANSLATED_PREFIX + orig if orig else UNTRANSLATED_PREFIX.rstrip()
+
+
 # 闸门0 删除样本上限（供质量报告【处置】章节与归档日志，防大文件撑爆）
 _GATE0_REPORT_SAMPLE_CAP = 50
 
@@ -1107,6 +1131,11 @@ def _run_stage_b(cfg: RefineConfig, a_result: StageAResult, orig_entries: list,
                 text = UNTRANSLATED_PREFIX + text   # 统一标记（防二次加标）
             keep_flag = True
             kept_original.append((i, text))
+        # A2 残译清洗：无论残译从哪条路径进来（B 回显已带标记的
+        # "[未翻译] Chicks。" 等），终稿落盘前统一规范化（只改 text，
+        # 条目数不变；详见 _normalize_untranslated_marker）。
+        text = _normalize_untranslated_marker(
+            text, (orig["text"] or "") if orig else "")
         if not text:
             continue                     # 空正文不进终稿（D1 下仅防御性保留）
         entry = {"index": i, "timing": ae["timing"], "text": text}

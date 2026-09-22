@@ -258,11 +258,12 @@ class RefineConfig:
     # 缓存优化
     batch_size_stable: bool = True   # 固定批次大小（提高缓存命中率）
     # 自动词库学习
-    auto_glossary: bool = False     # S1 完成后自动提取术语
+    auto_glossary: bool = False     # S1 完成后自动提取术语（与 glossary_learn_enabled 双闸门 AND）
     # v1.2.2 D3 learned 自学习词库治理开关：False 时跳过 glossary_learned
     # 学习路径（跳过计数入日志）。影响学习行为，须入 manifest 指纹。
-    # 2026-09-21 起默认 False（D2026-0921-02：清洗缺陷修复完成前学习通道
-    # 保持关闭）；显式传 glossary_learn_enabled=True 仍可开启。
+    # 默认 False 系 D2026-0921-02 用户拍板，长期保持（非等条件解除）；
+    # 原「[未翻译] 残译清洗缺陷」已于 2026-09-22（1.2.3）修复，但学习通道
+    # 重开须显式传 glossary_learn_enabled=True（配合 auto_glossary）。
     glossary_learn_enabled: bool = False
     # v1.2.2 D1 术语冲突观察闸：False=仅观察（默认，冲突只落 CSV/JSON
     # 与报告小节）；True=冲突条目禁止进入 TM 学习（_learn_to_tm 入库前

@@ -2,6 +2,12 @@
 
 本项目的所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [1.2.3] - 2026-09-22
+
+### 概述
+
+- 残译清洗修复（[未翻译] 残译形态）、漏覆盖口径补测收口、GUI 四参数、mypy report-only、生产型号归档（详见 `models/README.md`）。
+
 ## [1.2.2] - 2026-09-18
 
 ### 新增

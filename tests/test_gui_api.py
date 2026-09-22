@@ -64,6 +64,39 @@ def test_build_refine_args_dash_prefixed_input_guard():
     assert args[args.index("-i") + 1] == "normal.srt"
 
 
+def test_build_refine_args_new_safety_params_absent_by_default():
+    """四个安全参数缺省时均不产生 CLI 旗标。"""
+    args = _build_refine_args({"inputs": ["a.srt"]})
+    for flag in ("--source-filter", "--no-auto-synopsis", "--dry-run"):
+        assert flag not in args
+
+
+def test_build_refine_args_source_filter_non_default():
+    """source_filter 传合法非默认值时产生 --source-filter；默认值不传。"""
+    args = _build_refine_args({"inputs": ["a.srt"], "source_filter": "strict"})
+    i = args.index("--source-filter")
+    assert args[i + 1] == "strict"
+    args = _build_refine_args({"inputs": ["a.srt"], "source_filter": "default"})
+    assert "--source-filter" not in args
+
+
+def test_build_refine_args_auto_synopsis_inverted_only_when_false():
+    """auto_synopsis 仅显式 False 时产生 --no-auto-synopsis。"""
+    for v in (None, True):
+        options = {"inputs": ["a.srt"]}
+        if v is not None:
+            options["auto_synopsis"] = v
+        assert "--no-auto-synopsis" not in _build_refine_args(options)
+    args = _build_refine_args({"inputs": ["a.srt"], "auto_synopsis": False})
+    assert "--no-auto-synopsis" in args
+
+
+def test_build_refine_args_dry_run_flag():
+    args = _build_refine_args({"inputs": ["a.srt"], "dry_run": True})
+    assert "--dry-run" in args
+    assert "--dry-run" not in _build_refine_args({"inputs": ["a.srt"]})
+
+
 # ---------------------------------------------------------------------------
 # scan_resume_states：断点恢复三态 + 信任边界（未登记路径跳过）
 # ---------------------------------------------------------------------------

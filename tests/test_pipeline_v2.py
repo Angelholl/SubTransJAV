@@ -209,6 +209,89 @@ def test_retry_chain_both_fail_keeps_original(tmp_path, monkeypatch):
     assert texts[1] == pv.UNTRANSLATED_PREFIX + "こんにちは"    # D1: 回退日文原文并加 [未翻译] 标记
 
 
+# ---- A2：[未翻译] 残译清洗（前缀后跟非空残译文的污染形态）----
+
+
+def test_untranslated_marker_residue_normalized_in_stage_b(
+        tmp_path, monkeypatch):
+    """A2 回归：阶段B 回传 "[未翻译] Chicks。"（已带标记但带残译文）
+    → 终稿规范化为 前缀+日文原文，条目数不变。"""
+    cfg = _make_cfg(tmp_path)
+    entries = _entries("こんにちは", "さようなら")
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: FakeClient())
+    a = pv._run_stage_a(cfg, entries, None, str(tmp_path), [])
+
+    class ResidueClient(FakeClient):
+        """B 阶段对 #1 回显带标记的残译文。"""
+
+        def translate_entries(self, entries, **kw):
+            result = super().translate_entries(entries, **kw)
+            if any("|||" in e["text"] for e in entries) and \
+                    1 not in result.failed and 1 not in result.deleted:
+                result.translations[1] = "[未翻译] Chicks。"
+            return result
+
+    fake = ResidueClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
+    final = pv._run_stage_b(cfg, a, entries, str(tmp_path), [])
+    assert len(final) == 2                                  # 条目数守恒
+    texts = {e["index"]: e["text"] for e in final}
+    assert texts[1] == pv.UNTRANSLATED_PREFIX + "こんにちは"  # 规范化：前缀+原文
+    assert texts[2] == "审2"
+
+
+def test_normalize_untranslated_marker_unit():
+    """A2 单元：清洗函数原文可得/不可得两分支及不误伤形态。"""
+    f = pv._normalize_untranslated_marker
+    # 残译 + 原文可得 → 前缀+原文
+    assert f("[未翻译] Chicks。", "こんにちは") == \
+        pv.UNTRANSLATED_PREFIX + "こんにちは"
+    # 无空格标记形态同样处理
+    assert f("[未翻译]Chicks。", "こんにちは") == \
+        pv.UNTRANSLATED_PREFIX + "こんにちは"
+    # 残译 + 原文不可得 → 纯前缀（strip 后的 "[未翻译]"）
+    assert f("[未翻译] Chicks。", "") == "[未翻译]"
+    assert f("[未翻译] Chicks。", None) == "[未翻译]"
+    # 纯占位：原样返回（防二次加标）
+    assert f("[未翻译]", "こんにちは") == "[未翻译]"
+    assert f(pv.UNTRANSLATED_PREFIX, "こんにちは") == pv.UNTRANSLATED_PREFIX
+    # 规范形态幂等
+    assert f(pv.UNTRANSLATED_PREFIX + "こんにちは", "こんにちは") == \
+        pv.UNTRANSLATED_PREFIX + "こんにちは"
+    # 正文中部含 "[未翻译]" 的正常译文不碰；无标记文本原样返回
+    assert f("他说「[未翻译]是什么意思」", "こんにちは") == \
+        "他说「[未翻译]是什么意思」"
+    assert f("你好", "こんにちは") == "你好"
+
+
+def test_untranslated_pure_placeholder_not_double_prefixed(
+        tmp_path, monkeypatch):
+    """A2 防御：B 回传纯占位 "[未翻译]" 不加双前缀；正文中部含
+    "[未翻译]" 的正常译文不被改动。"""
+    cfg = _make_cfg(tmp_path)
+    entries = _entries("こんにちは", "さようなら")
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: FakeClient())
+    a = pv._run_stage_a(cfg, entries, None, str(tmp_path), [])
+
+    class MixedClient(FakeClient):
+        """B 阶段：#1 回纯占位，#2 回正文中部含标记的译文。"""
+
+        def translate_entries(self, entries, **kw):
+            result = super().translate_entries(entries, **kw)
+            if any("|||" in e["text"] for e in entries):
+                result.translations[1] = "[未翻译]"
+                result.translations[2] = "她说「[未翻译]是什么」"
+            return result
+
+    fake = MixedClient()
+    monkeypatch.setattr(pv, "_make_client", lambda cfg, tag: fake)
+    final = pv._run_stage_b(cfg, a, entries, str(tmp_path), [])
+    assert len(final) == 2
+    texts = {e["index"]: e["text"] for e in final}
+    assert texts[1] == "[未翻译]"                    # 纯占位保持，不加双前缀
+    assert texts[2] == "她说「[未翻译]是什么」"        # 中部标记不误改
+
+
 class MergeTwoLinesClient(FakeClient):
     """D7：模型恒定把两行并成一行返回（每两行只回第一行的译文）。"""
 

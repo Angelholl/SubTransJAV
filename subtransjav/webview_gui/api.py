@@ -160,6 +160,9 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
       v2_concurrency: int              批间并发数（1-5，缺省1）
       lmstudio_endpoint / zen_endpoint / custom_endpoint: str
       deepseek_key / zen_key / custom_key: str
+      source_filter: str                闸门0 源侧幻觉检测档位 strict|default|off（缺省 default 不传参）
+      auto_synopsis: bool               剧情自摘要（默认 True；显式 False 才传 --no-auto-synopsis）
+      dry_run: bool                     试运行（仅生成执行计划，不调用模型）
       verbose: bool
     """
     args = [sys.executable, "-u", "-m", "subtransjav.refine.cli"]
@@ -239,6 +242,19 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
 
     if options.get("verbose"):
         args.append("--verbose")
+
+    # 闸门0 源侧幻觉检测档位（仅非默认值时传递，choices 与 cli.py 保持一致）
+    sf = options.get("source_filter")
+    if sf and sf != "default":
+        args.extend(["--source-filter", str(sf)])
+
+    # 剧情自摘要（默认开启；仅显式关闭时传反转开关）
+    if options.get("auto_synopsis") is False:
+        args.append("--no-auto-synopsis")
+
+    # 试运行：仅生成执行计划，不调用模型、不产出字幕
+    if options.get("dry_run"):
+        args.append("--dry-run")
 
     # 批量处理参数
     if options.get("input_dir"):

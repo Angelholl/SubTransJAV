@@ -285,6 +285,20 @@
       <label style="display:flex; align-items:center; gap:4px;" title="向子进程传递 --verbose 输出调试日志">
         <input type="checkbox" id="debugLogging"> 详细日志
       </label>
+      <label style="display:flex; align-items:center; gap:4px;" title="闸门0 送翻前源侧幻觉检测档位：严格=叠加启发式删除 | 标准=仅明确幻觉删除 | 关闭=关闭检测">
+        源侧检测
+        <select id="refineSourceFilter" class="form-select compact" style="width:70px;">
+          <option value="strict">严格</option>
+          <option value="default" selected>标准</option>
+          <option value="off">关闭</option>
+        </select>
+      </label>
+      <label style="display:flex; align-items:center; gap:4px;" title="剧情自摘要（Beta）：默认开启，摘要仅注入翻译提示词，不产生任何输出内容">
+        <input type="checkbox" id="refineAutoSynopsis" checked> 剧情自摘要
+      </label>
+      <label style="display:flex; align-items:center; gap:4px;" title="试运行：仅生成执行计划，不调用模型、不产出字幕">
+        <input type="checkbox" id="refineDryRun"> 试运行
+      </label>
       <label style="display:flex; align-items:center; gap:4px;"
              title="云端阶段遭遇限流/宕机/持续解析失败时，自动切换本地模型完成剩余批次">
         <input type="checkbox" id="refineFallbackLocal"> 云端故障时本地接管
