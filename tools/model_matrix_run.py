@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """5 本地模型 × A/B 两阶段全搭配无人值守跑批器（仅标准库，不联网）。
 
 管线事实（已对照源码核实，文件:行号）：
@@ -31,17 +30,27 @@
       --validate-diff --model <key> --file 子串 | --pilot |
       --mida-plan | --mida-queue（第二轮 mida-559：TM 启用全新模拟，4×4 全序对）
 """
-import argparse, csv, hashlib, json, os, re, shutil, subprocess, sys, threading, time
+import argparse
+import contextlib
+import csv
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3  # 第二轮 mida-559 段使用（tm.db 清零）；标准库导入无副作用，安全上移
+import subprocess
+import sys
+import threading
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
 from urllib import request as _urlreq
 
 for _s in (sys.stdout, sys.stderr):                     # 自身输出强制 UTF-8
-    try:
+    with contextlib.suppress(Exception):
         _s.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
 
 MODELS = {  # key -> LM Studio 模型 id（/v1/models 已确认）
     "trans8b":    "translate-ja-zh-qwen3-8b",
@@ -332,10 +341,8 @@ def clean_stem_artifacts(cdir, stem):
     """重试前只清该 stem 产物（final_cn/质量报告/manifest/refine_A/两个csv/.done）。"""
     for suf in ("_final_cn.srt", "_质量报告.txt", "_manifest.json",
                 "_refine_A.srt", "_分歧复核.csv", "_术语冲突观察.csv", ".done.json"):
-        try:
+        with contextlib.suppress(OSError):
             (Path(cdir) / f"{stem}{suf}").unlink()
-        except OSError:
-            pass
 
 
 def kill_tree(pid):
@@ -391,7 +398,9 @@ def run_pipeline(a_id, b_id, fpath, out_dir, log_path, timeout_s,
                 stop.wait(0.5)
         wt = threading.Thread(target=_watch, daemon=True)
         wt.start()
-    logf = open(log_path, "w", encoding="utf-8", errors="replace")
+    # noqa: SIM115 —— 日志句柄需跨进程生命周期长驻：传给 _pump 线程写 tee 日志，
+    # 只能在子进程结束后（下方 finally）统一 close，无法用 with 块包裹。
+    logf = open(log_path, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
     t0 = time.time()
     proc = subprocess.Popen(build_cmd(a_id, b_id, fpath, out_dir), cwd=REPO,
                             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -438,10 +447,8 @@ def assess_run(res, cdir, stem, mode, syn0=None):
         new, lost = set(s1) - set(syn0 or []), set(syn0 or []) - set(s1)
         if new or lost:
             for name in new:                         # 回滚本次新增，保持零污染
-                try:
+                with contextlib.suppress(OSError):
                     (SYNOPSIS_DIR / name).unlink()
-                except OSError:
-                    pass
             return "suspect_synopsis", f"synopsis-delta:new={len(new)},lost={len(lost)}"
     return "done", f"rc={res['rc']},reuse={res['marks']['reuse']}"
 
@@ -763,7 +770,7 @@ def pilot_p2(key):
                     if size < pos:                   # 日志被截断重写
                         pos = 0
                     if size > pos:
-                        with open(lp, "r", encoding="utf-8", errors="replace") as f:
+                        with open(lp, encoding="utf-8", errors="replace") as f:
                             f.seek(pos)
                             for ln in f:
                                 print(f"[P2-run1-log] {ln.rstrip()}", flush=True)
@@ -793,10 +800,8 @@ def pilot_p2(key):
     tl_stop.set()
     mt.join(5)
     tt.join(5)
-    try:
+    with contextlib.suppress(OSError):
         proc.stdout.close()
-    except OSError:
-        pass
     if not killed[0]:
         log("P2 FAIL：未能在阶段A两件套落盘后中断")
         return False
@@ -906,7 +911,6 @@ def cmd_pilot():
 # 按 MIDA_B_ORDER 序；无种子/无阶段A复用——每个组合都是完整管线（阶段A→阶段B），
 # --resume --force-resume 仅用于同组合崩溃重试续跑。
 # ============================================================================
-import sqlite3
 
 MIDA_SRC = r"E:\新建文件夹\未刮削\4k2.me@mida-559.ja.merged.whisperjav.srt"  # 只读
 MIDA_ROOT = r"E:\新建文件夹\未刮削\mida559矩阵"   # 输出根目录（<A>__<B>）
@@ -1061,7 +1065,8 @@ def mida_run_pipeline(a_id, b_id, fpath, out_dir, log_path, timeout_s):
     wt = threading.Thread(target=_watch, daemon=True) if a_id != b_id else None
     if wt:
         wt.start()
-    logf = open(log_path, "w", encoding="utf-8", errors="replace")
+    # noqa: SIM115 —— 同 run_pipeline：句柄传 _pump 线程，进程结束后 finally 统一 close。
+    logf = open(log_path, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
     t0 = time.time()
     proc = subprocess.Popen(mida_build_cmd(a_id, b_id, fpath, out_dir), cwd=REPO,
                             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
