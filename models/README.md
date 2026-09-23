@@ -30,7 +30,7 @@ mida-559 两轮 25+16 组合矩阵盲评与成因分层评测后定版：joyfox-
 - LM Studio 请求必须传完整模型 ID：传 key 会被在载模型模糊顶替，造成静默错配。
 - 中途换模策略与看门狗详见 `docs/模型测试两轮交接.md`。
 - 引擎加载/卸载已由管线自动化（`utils/lmstudio.py`，D2026-0923-01）：目标模型未载、
-  已载 ctx 与 `--v2-ctx` 不符时，自动 `lms unload --all` →
+  已载 ctx 与 `--v2-ctx` 不符、并发与 `--v2-concurrency` 不符时，自动 `lms unload --all` →
   `lms load -y --gpu max -c <v2-ctx> --parallel <v2-concurrency>`；GUI 手工加载值会被管线对齐覆盖，
   引擎参数以管线配置为唯一事实来源（引擎/管线两侧同步由构造保证）。
 
