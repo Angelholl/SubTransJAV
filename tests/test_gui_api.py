@@ -45,6 +45,22 @@ def test_build_refine_args_no_resume_by_default():
     assert "--resume" not in args
 
 
+def test_build_refine_args_draft_and_ctx_passthrough():
+    """draft 模型与上下文窗口经 GUI 透传为对应 CLI 旗标（D2026-0923-01）。"""
+    args = _build_refine_args({"inputs": ["a.srt"], "v2_ctx": 22272,
+                               "s1_draft_model": "qwen3.5-0.8b"})
+    assert args[args.index("--v2-ctx") + 1] == "22272"
+    assert args[args.index("--s1-draft-model") + 1] == "qwen3.5-0.8b"
+    assert "--s3-draft-model" not in args      # 空值不传
+
+
+def test_build_refine_args_no_draft_or_ctx_by_default():
+    args = _build_refine_args({"inputs": ["a.srt"]})
+    assert "--s1-draft-model" not in args
+    assert "--s3-draft-model" not in args
+    assert "--v2-ctx" not in args
+
+
 def test_build_refine_args_always_ndjson_event_format():
     """GUI 子进程恒以 ndjson 事件流输出（GUI 侧解析依赖）。"""
     for options in ({"inputs": ["a.srt"]},

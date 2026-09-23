@@ -135,6 +135,10 @@
             <option value="">（点 ⟳ 刷新模型列表）</option>
           </select>
           <button type="button" id="refineRefreshS1" class="btn btn-secondary btn-compact" title="在线拉取模型列表">⟳</button>
+          <select id="refineS1Draft" class="form-select compact" style="min-width:170px;"
+                  title="投机解码 draft 模型（可选）：加速阶段A生成，须与主模型同词表；留空=不挂，不影响质量">
+            <option value="" selected>（不挂 draft）</option>
+          </select>
           <button type="button" id="refineTestS1" class="btn btn-secondary btn-compact" title="测试该阶段连通性">测试</button>
           <span id="refineTestS1Status" style="font-size:12px; color:#888; max-width:200px;"></span>
         </div>
@@ -164,6 +168,10 @@
             <option value="">（点 ⟳ 刷新模型列表）</option>
           </select>
           <button type="button" id="refineRefreshS3" class="btn btn-secondary btn-compact" title="在线拉取模型列表">⟳</button>
+          <select id="refineS3Draft" class="form-select compact" style="min-width:170px;"
+                  title="投机解码 draft 模型（可选）：加速阶段B生成，须与主模型同词表；留空=不挂，不影响质量">
+            <option value="" selected>（不挂 draft）</option>
+          </select>
           <button type="button" id="refineTestS3" class="btn btn-secondary btn-compact" title="测试该阶段连通性">测试</button>
           <span id="refineTestS3Status" style="font-size:12px; color:#888; max-width:200px;"></span>
         </div>
@@ -183,6 +191,12 @@
             <option value="local" selected>本地·严格</option>
             <option value="cloud">云端·宽松</option>
           </select>
+        </label>
+        <label style="display:flex; align-items:center; gap:4px; font-size:12px;"
+               title="本地模型上下文窗口：启动后管线自动按此值对齐引擎（覆盖 LM Studio 手工设置），并据此收紧批大小。16GB 显存建议 16384~22272">
+          上下文窗口
+          <input type="number" id="refineV2Ctx" class="form-input compact" style="width:92px;"
+                 value="22272" min="4096" step="1024">
         </label>
         <label style="display:flex; align-items:center; gap:4px; font-size:12px; flex:1;">
           净语配置目录

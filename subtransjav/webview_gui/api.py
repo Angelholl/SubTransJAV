@@ -152,12 +152,16 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
       output_dir: str                  输出目录（'source' 哨兵=随输入）
       profile: str                     兜底档位 local|cloud
       s1_provider / s1_model           阶段A 服务商与模型（槽位0）
+      s1_draft_model / s3_draft_model  投机解码 draft 模型（可选；仅 lmstudio 生效，
+                                       未下载时管线自动降级不挂，质量无损）
       s3_provider / s3_model           阶段B 服务商与模型（槽位2）
       templates_dir: str               角色卡目录
       glossary: str                    词库 CSV 路径
       apply_glossary_stage1/2: bool
       batch_local / batch_cloud: int
       v2_concurrency: int              批间并发数（1-5，缺省1）
+      v2_ctx: int                      本地模型上下文窗口（显式对齐引擎与管线两侧；
+                                       缺省不传=CLI 默认 32768）
       lmstudio_endpoint / zen_endpoint / custom_endpoint: str
       deepseek_key / zen_key / custom_key: str
       source_filter: str                闸门0 源侧幻觉检测档位 strict|default|off（缺省 default 不传参）
@@ -190,6 +194,9 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
         mv = options.get(f"s{n}_model")
         if mv:
             args.extend([f"--s{n}-model", str(mv)])
+        dv = (options.get(f"s{n}_draft_model") or "").strip()
+        if dv:
+            args.extend([f"--s{n}-draft-model", str(dv)])
 
     if options.get("templates_dir"):
         args.extend(["--templates-dir", options["templates_dir"]])
@@ -215,6 +222,15 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
     from subtransjav.refine.config import resolve_tunable
     n_max = int(resolve_tunable("v2_concurrency_max"))
     args.extend(["--v2-concurrency", str(max(1, min(n_max, n_conc)))])
+
+    # 本地模型上下文窗口：GUI 显式传值即对齐引擎与管线两侧（引擎加载 -c
+    # 由管线内 ensure_lmstudio_model 派生自同一配置，见 utils/lmstudio.py）
+    try:
+        n_ctx = int(options.get("v2_ctx") or 0)
+    except (TypeError, ValueError):
+        n_ctx = 0
+    if n_ctx > 0:
+        args.extend(["--v2-ctx", str(n_ctx)])
 
     for key, flag in (("lmstudio_endpoint", "--lmstudio-endpoint"),
                       ("ollama_endpoint", "--ollama-endpoint"),
