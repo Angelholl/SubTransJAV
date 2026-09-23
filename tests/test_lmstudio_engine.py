@@ -33,12 +33,13 @@ class _FakeRequests:
 
 class _FakeRun:
     def __init__(self, req, ps_payload='{"data": []}', fail_load=False,
-                 ps_timeout=False):
+                 ps_timeout=False, ps_returncode=0):
         self.req = req
         self.calls = []
         self.ps_payload = ps_payload
         self.fail_load = fail_load
         self.ps_timeout = ps_timeout
+        self.ps_returncode = ps_returncode
 
     def __call__(self, args, capture_output, text, timeout):
         self.calls.append(list(args))
@@ -46,8 +47,8 @@ class _FakeRun:
         if sub == ["ps"]:
             if self.ps_timeout:
                 raise lm.subprocess.TimeoutExpired(cmd="lms ps", timeout=timeout)
-            return types.SimpleNamespace(returncode=0, stdout=self.ps_payload,
-                                         stderr="")
+            return types.SimpleNamespace(returncode=self.ps_returncode,
+                                         stdout=self.ps_payload, stderr="")
         if sub == ["unload"]:
             self.req.v1_ids.clear()
         if sub == ["load"] and not self.fail_load:
@@ -91,7 +92,7 @@ def test_unloads_others_then_loads_with_full_args(env):
     assert run.calls[1] == ["lms-fake", "load", "m1", "-y", "--gpu", "max",
                             "-c", "16384", "--parallel", "2"]
     # 防投机解码（draft）回归锁：load 命令不得再携带 speculative 旗标
-    assert not any("speculative" in str(a).lower() for a in run.calls[1])
+    _assert_no_speculative(run.calls[1])
 
 
 def test_ctx_mismatch_on_loaded_model_forces_reload(env):
@@ -168,7 +169,10 @@ def _ps(entries):
 
 
 def _m1_entry(parallel):
-    """fixture 换成测试模型 m1 的同构条目。"""
+    """fixture 换成测试模型 m1 的同构条目。
+
+    parallel=_MISSING（模块级哨兵对象）时删除该字段，模拟 ps 条目缺 parallel。
+    """
     e = dict(PS_ENTRY, identifier="m1", modelKey="m1",
              indexedModelIdentifier="m1")
     if parallel is _MISSING:
@@ -178,21 +182,16 @@ def _m1_entry(parallel):
     return e
 
 
-def _with_parallel(entry, value):
-    """复制 fixture 并改写/删除 parallel 字段（value=KeyError 哨兵则删除）。"""
-    e = dict(entry)
-    if value is _MISSING:
-        e.pop("parallel", None)
-    else:
-        e["parallel"] = value
-    return e
-
-
 _MISSING = object()
 
 
 def _no_reload(run):
     return not any(c[1:2] in (["unload"], ["load"]) for c in run.calls)
+
+
+def _assert_no_speculative(cmd):
+    """回归锁：load 命令不得携带 speculative 旗标（防 draft 回归）。"""
+    assert not any("speculative" in str(a).lower() for a in cmd)
 
 
 def test_parallel_mismatch_forces_reload_with_flag(env):
@@ -205,7 +204,7 @@ def test_parallel_mismatch_forces_reload_with_flag(env):
     assert loads == [["lms-fake", "load", "m1", "-y", "--gpu", "max",
                       "-c", "16384", "--parallel", "2"]]
     # 回归锁：load 命令不得携带 speculative 旗标
-    assert not any("speculative" in str(a).lower() for a in loads[0])
+    _assert_no_speculative(loads[0])
 
 
 def test_parallel_match_passes_early(env):
@@ -217,14 +216,37 @@ def test_parallel_match_passes_early(env):
 
 
 def test_parallel_undetectable_fails_open(env):
-    # 字段缺失 / 0 / 字符串 / null → 一律不重载（fail-open）
-    for value in (_MISSING, 0, "2", None):
+    # 字段缺失 / 0 / 非法值（字符串/浮点/布尔）→ 一律不重载（fail-open）
+    # "4"：与目标 2 不等的字符串数字，钉死「不因字符串巧合相等/不等而误判失配」
+    for value in (_MISSING, 0, "4", "2", 2.5, None, True, False):
         ps = _ps([_m1_entry(value)])
         fr, run = env(v1_ids=["m1"], v0=V0_M1, ps_payload=ps)
         ok, msg = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
                                            parallel=2)
         assert ok and msg == "模型已加载", f"parallel={value!r} 不应触发重载"
         assert _no_reload(run), f"parallel={value!r} 不应触发重载"
+
+
+def test_ps_nonzero_exit_fails_open(env):
+    fr, run = env(v1_ids=["m1"], v0=V0_M1, ps_returncode=1)
+    logs = []
+    ok, msg = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384, parallel=2,
+                                       log=logs.append)
+    assert ok and msg == "模型已加载"
+    assert _no_reload(run)
+    assert any("退出码非零" in m for m in logs)
+
+
+def test_ps_missing_entry_fails_open(env):
+    # ps 正常返回但无该模型条目（如 []）→ 跳过判定、不重载
+    ps = _ps([])
+    fr, run = env(v1_ids=["m1"], v0=V0_M1, ps_payload=ps)
+    logs = []
+    ok, msg = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384, parallel=2,
+                                       log=logs.append)
+    assert ok and msg == "模型已加载"
+    assert _no_reload(run)
+    assert any("未找到该模型的在载条目" in m for m in logs)
 
 
 def test_parallel_bad_json_or_timeout_fails_open(env):

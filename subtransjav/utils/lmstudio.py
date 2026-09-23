@@ -21,6 +21,8 @@ import subprocess
 
 import requests
 
+_PS_TIMEOUT_S = 30  # lms ps 探测专用短超时，避免 ps 挂死拖满 load 超时
+
 _LMS_CANDIDATES = (
     os.path.expanduser(r"~\.lmstudio\bin\lms.exe"),
     r"C:\Program Files\LM Studio\lms.exe",
@@ -90,7 +92,7 @@ def _loaded_parallel(lms: str, model: str, timeout: float, log=None) -> int:
         warn("   ⚠️ 并发检测跳过: 未找到 lms CLI，无法读取引擎并发实值")
         return 0
     try:
-        proc = _run_lms(lms, ["ps", "--json"], timeout)
+        proc = _run_lms(lms, ["ps", "--json"], _PS_TIMEOUT_S)
         if proc.returncode != 0:
             warn(f"   ⚠️ 并发检测跳过: lms ps 退出码非零 (exit {proc.returncode})")
             return 0
@@ -105,12 +107,7 @@ def _loaded_parallel(lms: str, model: str, timeout: float, log=None) -> int:
                               "indexedModelIdentifier")}:
                 continue
             v = entry.get("parallel")
-            if isinstance(v, bool):
-                warn(f"   ⚠️ 并发检测跳过: ps 条目 parallel 值非法 ({v!r})")
-                return 0
-            try:
-                v = int(v)
-            except (TypeError, ValueError):
+            if isinstance(v, bool) or not isinstance(v, int):
                 warn(f"   ⚠️ 并发检测跳过: ps 条目 parallel 值非法 ({v!r})")
                 return 0
             if v <= 0:
@@ -174,7 +171,7 @@ def ensure_lmstudio_model(endpoint: str, model: str,
         ctx_mismatch = actual > 0 and actual != int(ctx_tokens)
     parallel_mismatch = False
     parallel_actual = 0
-    if (not need_load) and parallel is not None:
+    if (not need_load) and parallel is not None and int(parallel) > 0:
         parallel_actual = _loaded_parallel(_find_lms(), model, load_timeout,
                                            log=log)
         parallel_mismatch = (parallel_actual > 0
