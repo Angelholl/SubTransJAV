@@ -948,3 +948,22 @@ keep-list 白名单优先级最高，高于任何档位；H6 黄金集对两个�
 - **并发对齐判定（commit be83c25，4 文件 +223/−13）**：`_loaded_parallel()` + 三项对齐判定 + 六分支 fail-open + 重载后复核不循环 + ctx 跳过告警；新增 7 例测试含真实 ps schema fixture。验证：ruff 绿、定向 14 passed、全量 **967 passed + 1 skipped**（只增不减 +7）、冒烟过、预扫描 26=基线（scan-…18-18-45）、提交后复扫 26=基线（scan-…18-21-07）。
 - **批次 2 运维裁决**：BatchE_WD 计划任务**在本机已不存在**（C:\Windows\System32\Tasks 与 schtasks 全量 verbose 均无命中；判断为已被删除，非仅禁用——与 batch-e-test-20260922 记忆"BatchE_Run 计划任务已不存在"一致），无需 enable/Disable 处置，废弃另立生产任务的建议保持；恢复命令备查 `schtasks /change /tn BatchE_WD /enable`（现状不可用，任务本体已无）。双 GUI 实例：核查时点零 python/GUI 进程，无双实例并发；G:\python 侧 GUI 未在运行，收敛达成（.venv 为唯一入口）。
 - **决策日志字段（decision-critic 协议）**：异议 1 为 [HIGH_RISK_OBJECTION]，主模型已明确采纳回应，异议保留、执行层面服从，无二次复议；无 [PRESSURE-OVERRIDE]。后续风险跟踪：①引擎对 --parallel 静默钳制（重载后复核告警观测）；②fail-open 判定随 lms 升级静默退化（跳过告警 + 真实 schema fixture 兜底）；③实施后首跑若意外重载，回退=撤 _loaded_parallel 判定、保留命令断言；④测试基线 967 passed + 1 skipped 只增不减。
+
+## [2026-09-24] [D2026-0924-02] llm_client 请求期 400 "Model unloaded" 自动恢复 [已拍板·已执行]
+
+### 一、背景
+ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，后续请求全部 `400 - {'error': 'Model unloaded by user or API request.'}`；llm_client `_TRANSIENT_STATUS={408,429,500,502,503,504}` 不含 400 → 不重试 → 批级兜底退化为整文件 [未翻译] 降级。定版排班批次 5 验收目标：「不再因 400 中断」。
+
+### 二、decision-critic 评议与主模型回应（全部采纳）
+- **[HIGH_RISK_OBJECTION] 1（实现点失效）**：原设计「pipeline_v2 捕获 LLMError 后调 ensure」不可达——llm_client 批循环 `except Exception` 吞异常只记日志，LLMError 永不冒泡至管线。**采纳修正**：恢复点改为 llm_client 批循环回调注入（`unloaded_recovery` 参数，pipeline 构建客户端时传 `_ensure_lmstudio_engine` 同参闭包），llm_client 保持引擎无关，异常冒泡契约不变。
+- **[HIGH_RISK_OBJECTION] 2（并发竞态）**：v2_concurrency=2 时双批在途（ThreadPoolExecutor），双 400 → 双 ensure 竞态；`unload --all` 会打断另一在途批（其行由缺行定向重试吸收，可恢复）。**采纳修正**：recovery_lock + 每实例恢复信用至多 1 次；等待线程拿锁后信用=0 直接走现状路径；上限 1/客户端实例、本地文件并行已被 `_file_parallel_enabled` 排除。
+- 异议 3（误伤面）：匹配稳定长串 `model unloaded by user`（大小写不敏感），云端 "model unloaded due to inactivity" 等不命中。采纳。
+- 异议 4（指纹一致性）：ensure 与批处理 client 同源 cfg.v2_ctx_local/v2_concurrency，无增量。查证闭环。
+
+### 三、裁定与执行留痕
+- llm_client：`ModelUnloadedError(LLMError)` + 特征串判定 `_is_model_unloaded`（在瞬态判定之前抛出，不进 5s 退避）；批循环捕获 → 持锁 → 信用检查 → 同步回调（ensure 幂等对齐，未载自动重载 60-120s）→ 整批重试一次；信用耗尽/回调异常 → 现状路径（批失败→缺行定向重试→降级），异常契约不变。
+- pipeline_v2：仅 lmstudio provider 注入（_make_client 与 _make_fallback_client 两处，与首载完全同参）；云端不受影响。
+- 测试 +8：类型判定/长串不误判/不进瞬态/批级恢复/并发双 400 单次恢复/回调异常回退/普通 400 不触发/仅 lmstudio 注入。
+- **verify：ruff 绿；全量 987 passed + 1 skipped**（合并基线：969+1 → +7 E3 → +3 v2-ctx → +8 本决策，只增不减；本地 .venv 口径，与 CI 同解释器）；Mimosa 预扫描+提交后复扫 26 findings=基线零新增。提交 1f83c8c（含 e3-benchmark-script b8d42b5、v2-ctx-default-fix db0fa1c 同窗）。
+- 口径补记：af93ce8/be83c25 提交信息中的基线数（960/967）均为本地 .venv 口径（与 CI 同解释器），本条为 D2026-0922-01 环境条款要求的补记。
+- 后续风险跟踪：①引擎反复被外部卸载时每客户端实例仅自动恢复 1 次（设计上限，防循环），第二次依赖现状路径降级——若生产出现高频卸载场景再议上调；②unload 打断在途批的缺行重试有额外请求成本（低频路径，可接受）。
