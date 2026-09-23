@@ -536,3 +536,12 @@ def test_config_hash_tracks_v2_stage_prompts(monkeypatch):
     h1 = compute_config_hash(_make_cfg())
     monkeypatch.setitem(pv_d1.V2_STAGE_PROMPTS, "B", "changed prompt")
     assert compute_config_hash(_make_cfg()) != h1
+
+
+def test_config_hash_sensitive_to_stage_draft_model():
+    """engine_draft_model：换 draft 即换引擎行为口径，必须参与阶段指纹
+    （D2026-0923-01 投机解码配套）。"""
+    base = compute_config_hash(_make_cfg())
+    changed = _make_cfg()
+    changed.stages[0].engine_draft_model = "qwen3.5-0.8b"
+    assert compute_config_hash(changed) != base

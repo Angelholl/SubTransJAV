@@ -27,6 +27,22 @@ def test_config_from_args_builds_v2_slots(tmp_path):
     assert not cfg.stages[1].enabled and not cfg.stages[3].enabled
 
 
+def test_cli_draft_model_flags_land_in_stage_slots(tmp_path):
+    """--s1/s3-draft-model 落对应槽位 engine_draft_model；缺省为空（不挂 draft）。"""
+    args = build_parser().parse_args([
+        "-i", str(tmp_path / "x.srt"),
+        "--s1-draft-model", "qwen3.5-0.8b",
+        "--s3-draft-model", "draft-b",
+    ])
+    cfg = config_from_args(args)
+    assert cfg.stages[0].engine_draft_model == "qwen3.5-0.8b"
+    assert cfg.stages[2].engine_draft_model == "draft-b"
+    cfg_default = config_from_args(build_parser().parse_args(
+        ["-i", str(tmp_path / "x.srt")]))
+    assert cfg_default.stages[0].engine_draft_model == ""
+    assert cfg_default.stages[2].engine_draft_model == ""
+
+
 def test_cli_multi_input_accumulates(tmp_path):
     """回归：GUI 文件夹模式发多个 -i，必须累积而非覆盖（曾只翻译最后一个文件）。"""
     args = build_parser().parse_args([

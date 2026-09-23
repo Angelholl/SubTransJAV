@@ -720,6 +720,27 @@ def _split_instruction_file(path: str) -> tuple:
     return system_text, user_prompt
 
 
+def _ensure_lmstudio_engine(cfg: RefineConfig, model: str, base_url: str,
+                            draft_model: str = "", label: str = ""):
+    """lmstudio 阶段建客户端前对齐引擎状态。
+
+    未加载 / 已载但 ctx 与 v2_ctx_local 不符 / 配置了 draft 但无法确认已生效
+    时：卸载在载模型 → `lms load` 带参加载（ctx/parallel/gpu/draft 全部由管线
+    配置派生，构造性保证引擎与管线两侧同步，D2026-0923-01 条件③）。
+    独立成函数便于测试 monkeypatch（CI 无 LM Studio，不触网）。
+    """
+    from subtransjav.utils.lmstudio import ensure_lmstudio_model
+    ok, msg = ensure_lmstudio_model(
+        base_url, model, log=print,
+        ctx_tokens=cfg.v2_ctx_local,
+        parallel=max(1, cfg.v2_concurrency),
+        draft_model=draft_model,
+    )
+    if not ok:
+        raise RefineError(f"{label or 'LM Studio'}: {msg}")
+    print(f"   ⚙️ LM Studio 引擎就绪: {model}（{msg}）")
+
+
 def _make_client(cfg: RefineConfig, tag: str):
     """按阶段槽位的服务商配置构建 LLMClient。"""
     from subtransjav.translate.llm_client import ClientConfig, LLMClient
@@ -758,6 +779,13 @@ def _make_client(cfg: RefineConfig, tag: str):
     if not model:
         raise RefineError(f"{V2_STAGE_NAMES[tag]}: 未指定模型名")
 
+    if provider == "lmstudio":
+        _ensure_lmstudio_engine(
+            cfg, model, base_url,
+            draft_model=(getattr(stage_cfg, "engine_draft_model", "")
+                         or "").strip(),
+            label=V2_STAGE_NAMES[tag])
+
     cc = ClientConfig(
         base_url=base_url, api_key=api_key or "", model=model,
         temperature=temperature, concurrency=concurrency, n_ctx=n_ctx,
@@ -787,8 +815,11 @@ class StageAResult:
 def _make_fallback_client(cfg: RefineConfig):
     """本地接管客户端（LM Studio + fallback_model，低温串行）。"""
     from subtransjav.translate.llm_client import ClientConfig, LLMClient
+    base_url = cfg.resolve_endpoint("lmstudio") or "http://localhost:1234/v1"
+    _ensure_lmstudio_engine(cfg, cfg.fallback_model.strip(), base_url,
+                            label="本地接管")
     cc = ClientConfig(
-        base_url=cfg.resolve_endpoint("lmstudio") or "http://localhost:1234/v1",
+        base_url=base_url,
         api_key=os.environ.get("LMSTUDIO_API_KEY", "lm-studio"),  # 本地端点占位
         model=cfg.fallback_model.strip(),
         temperature=cfg.temperature_local,

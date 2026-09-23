@@ -235,7 +235,9 @@ def test_config_hash_insensitive_to_timeout_and_concurrency_max():
 # 散点真正引用 config：客户端构造链穿入
 # ---------------------------------------------------------------------------
 
-def test_make_client_threads_temperature_and_timeout_from_config():
+def test_make_client_threads_temperature_and_timeout_from_config(monkeypatch):
+    # lmstudio 建客户端前的引擎对齐需要本机 LM Studio，CI 无服务 → 打桩
+    monkeypatch.setattr(pv, "_ensure_lmstudio_engine", lambda *a, **k: None)
     cfg = RefineConfig(temperature_local=0.2, timeout_llm=321.0)
     cfg.stages = [StageConfig(0, True, "lmstudio", "m1")]
     client = pv._make_client(cfg, "A")

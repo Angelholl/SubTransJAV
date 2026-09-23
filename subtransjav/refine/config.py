@@ -214,6 +214,10 @@ class StageConfig:
     model: str = ""                 # 空则用 PROVIDER_MODEL_DEFAULTS
     instructions: str = ""          # 指令模板文件路径（空则在 templates_dir 找默认名）
     endpoint: str = ""              # 覆盖 PROVIDER_ENDPOINT_DEFAULTS
+    # LM Studio 投机解码 draft 模型 ID（空=不挂；仅 provider=lmstudio 生效）。
+    # 必须与目标模型同词表（如 joyfox 27B 配 Qwen3.5-0.8B），下载后填完整 ID。
+    # draft 体积/质量只影响猜中率（速度），不影响输出正确性。入 manifest 指纹。
+    engine_draft_model: str = ""
 
     @property
     def name(self) -> str:

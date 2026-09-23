@@ -379,8 +379,10 @@ _CONFIG_FIELDS = (
     "fallback_model",
 )
 
-# 每个阶段参与指纹的字段
-_STAGE_FIELDS = ("index", "enabled", "provider", "model", "instructions", "endpoint")
+# 每个阶段参与指纹的字段（engine_draft_model：draft 换模型即换引擎行为，
+# 影响产物内容口径，必须参与指纹）
+_STAGE_FIELDS = ("index", "enabled", "provider", "model", "instructions",
+                 "endpoint", "engine_draft_model")
 
 
 def compute_config_hash(cfg) -> str:
