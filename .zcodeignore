@@ -1,0 +1,77 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+# models/ 为本地模型产物沙箱（不入库）；生产型号归档 README 例外入库
+models/*
+!models/README.md
+
+# 运行数据
+Logs/
+Errors/
+Temp/
+测试文件/
+.analysis_tmp/
+
+# 敏感数据（严禁入库）
+config/api_keys.bin
+config/glossary_learned.csv
+config/glossary.csv
+config/glossary.csv.bak-*
+create_shortcut.py
+
+# TM 备份（私有翻译数据，严禁入库）
+tm.db.bak-*
+tm_full_backup_*.csv
+
+# 本地测试证据（体积大且含片名/路径，不入库；仓库只留 manifest/README）
+.abtest/
+.tmp374/
+
+# 本地工具数据
+.zcode/
+.mimosa/
+
+# 快捷方式
+*.lnk
+
+# 发布传输工件（本地临时，不入库）
+subtransjav-d1-d5-commit.txt
+subtransjav-d1-d5.bundle
+subtransjav-d1-d5.patch
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
