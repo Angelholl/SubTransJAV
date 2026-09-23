@@ -24,6 +24,7 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
@@ -105,6 +106,19 @@ class BatchResult:
 class LLMError(Exception):
     """整批调用最终失败（瞬态重试耗尽/连接失败）。调用方可据此触发 fallback。"""
 
+
+class ModelUnloadedError(LLMError):
+    """本地引擎被卸载（HTTP 400 + "model unloaded by user" 特征串）。
+
+    不属于瞬态错误（重载引擎需 60-120s，5s 退避重试无意义），
+    由批循环通过 unloaded_recovery 回调做一次引擎重对齐后整批重试。
+    """
+
+
+# D2026-0924-02：LM Studio 用户/API 卸载模型的 400 响应特征串。
+# 用长特征串防误伤：云端 400 的 "model unloaded due to inactivity"
+# 或模型名恰好含 "unloaded" 均不命中。
+_MODEL_UNLOADED_MARKER = "model unloaded by user"
 
 # 瞬态 HTTP 状态码与错误特征（自 deletion_patch 的瞬态重试逻辑收编）
 _TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
@@ -221,11 +235,19 @@ def _loopback_http_client(base_url: str, timeout: float):
 class LLMClient:
     """OpenAI 兼容字幕翻译客户端。"""
 
-    def __init__(self, config: ClientConfig, log=None):
+    def __init__(self, config: ClientConfig, log=None,
+                 unloaded_recovery: Callable[[], None] | None = None):
         self.config = config
         self._log = log or (lambda msg: None)
         self._lock = threading.Lock()
         self._openai_client = None    # 复用 HTTP 连接池（openai client 线程安全）
+        # D2026-0924-02：引擎卸载恢复回调（translate_entries 未显式传入时
+        # 作为默认值），由管线侧注入（仅本地 provider）
+        self._unloaded_recovery_default = unloaded_recovery
+        # 恢复信用：每客户端实例至多做一次引擎重对齐；双批并发 400 时
+        # 由 _recovery_lock 串行化，先到者消耗信用，后到者走现状路径
+        self._recovery_lock = threading.Lock()
+        self._recovery_credit = 1
 
     # -- 单批请求 -----------------------------------------------------------
 
@@ -300,6 +322,11 @@ class LLMClient:
                 return content
             except Exception as e:   # noqa: BLE001 统一退避判定
                 last_err = e
+                # D2026-0924-02：引擎被卸载（400 + 特征串）→ 专用异常类型，
+                # 不进瞬态退避（重载引擎 60-120s，5s 重试无意义），由批循环
+                # 的 unloaded_recovery 回调负责重对齐后整批重试
+                if self._is_model_unloaded(e):
+                    raise ModelUnloadedError(f"LLM 调用失败: {e}") from e
                 if attempt >= cfg.max_retries or not self._is_transient(e):
                     raise LLMError(f"LLM 调用失败: {e}") from e
                 wait = cfg.backoff_time * (2 ** attempt)
@@ -329,6 +356,20 @@ class LLMClient:
             "connection refused", "econnrefused", "10061",
             "unable to connect to proxy", "cannot connect to proxy",
             "积极拒绝", "拒绝连接"))
+
+    @staticmethod
+    def _is_model_unloaded(err: Exception) -> bool:
+        """识别「HTTP 400 + model unloaded by user」引擎卸载错误（大小写
+        不敏感）。status_code 缺失时仅凭特征串判定（openai 包装层可能
+        丢失结构化字段）。非 400 状态不命中，401/403 短路不受影响。"""
+        status = getattr(err, "status_code", None)
+        if status is not None:
+            try:
+                if int(status) != 400:
+                    return False
+            except (TypeError, ValueError):
+                pass    # 状态码非数字 → 交由特征串兜底判定
+        return _MODEL_UNLOADED_MARKER in str(err).lower()
 
     @staticmethod
     def _is_transient(err: Exception) -> bool:
@@ -420,7 +461,9 @@ class LLMClient:
                           user_prompt: str, max_batch_size: int = 30,
                           scene_threshold: float = 60.0,
                           allow_empty_deletions: bool = False,
-                          progress=None) -> BatchResult:
+                          progress=None,
+                          unloaded_recovery: Callable[[], None] | None = None,
+                          ) -> BatchResult:
         """全量翻译：分批 → 并发/串行执行 → 缺行定向重试一次。
 
         返回 BatchResult；failed 为重试后仍缺失的 index（调用方按
@@ -435,14 +478,43 @@ class LLMClient:
         done = [0]
 
         def _run_batch(batch):
-            n = self.config.n_ctx
-            mot = (compute_max_output_tokens(len(batch), n,
-                                             self.config.token_budget)
-                   if n else None)
-            return self.translate_batch(
-                batch, system_text=system_text, user_prompt=user_prompt,
-                allow_empty_deletions=allow_empty_deletions,
-                max_output_tokens=mot)
+            def _attempt():
+                n = self.config.n_ctx
+                mot = (compute_max_output_tokens(len(batch), n,
+                                                 self.config.token_budget)
+                       if n else None)
+                return self.translate_batch(
+                    batch, system_text=system_text, user_prompt=user_prompt,
+                    allow_empty_deletions=allow_empty_deletions,
+                    max_output_tokens=mot)
+
+            try:
+                return _attempt()
+            except ModelUnloadedError:
+                # D2026-0924-02：引擎被卸载 → 加锁 + 恢复信用（每实例一次），
+                # 同步重对齐引擎后整批重试一次；信用耗尽/回调失败则按现状
+                # 路径走（批失败 → 缺行定向重试 → [未翻译]）。异常仍在本层
+                # 消化，不冒泡。
+                recovery = (unloaded_recovery
+                            if unloaded_recovery is not None
+                            else self._unloaded_recovery_default)
+                if recovery is None:
+                    raise
+                with self._recovery_lock:
+                    if self._recovery_credit <= 0:
+                        self._log("[llm] Model unloaded 恢复信用已耗尽，"
+                                  "按现状路径处理")
+                        raise
+                    self._recovery_credit -= 1
+                    self._log("[llm] 检测到 Model unloaded，"
+                              "尝试重新对齐引擎后重试")
+                    try:
+                        recovery()
+                    except Exception as e:   # noqa: BLE001 回调失败走现状路径
+                        self._log(f"[llm] 引擎恢复回调失败"
+                                  f"（按现状路径处理）: {e}")
+                        raise
+                    return _attempt()
 
         def _report(fut):
             with self._lock:

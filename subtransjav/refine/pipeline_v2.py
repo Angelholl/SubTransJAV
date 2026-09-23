@@ -778,17 +778,26 @@ def _make_client(cfg: RefineConfig, tag: str):
     if not model:
         raise RefineError(f"{V2_STAGE_NAMES[tag]}: 未指定模型名")
 
+    recovery = None
     if provider == "lmstudio":
         _ensure_lmstudio_engine(
             cfg, model, base_url,
             label=V2_STAGE_NAMES[tag])
+
+        def recovery():
+            # D2026-0924-02：运行期 "Model unloaded" 自动恢复——用与首载
+            # 完全相同的参数重对齐引擎，保证指纹一致；回调异常由
+            # llm_client 批循环捕获并转化为「现状路径」，不会炸批循环
+            _ensure_lmstudio_engine(
+                cfg, model, base_url,
+                label=V2_STAGE_NAMES[tag])
 
     cc = ClientConfig(
         base_url=base_url, api_key=api_key or "", model=model,
         temperature=temperature, concurrency=concurrency, n_ctx=n_ctx,
         timeout=cfg.timeout_llm,
     )
-    return LLMClient(cc, log=print)
+    return LLMClient(cc, log=print, unloaded_recovery=recovery)
 
 
 def _provider_default_model(cfg: RefineConfig, provider: str) -> str:
@@ -815,6 +824,12 @@ def _make_fallback_client(cfg: RefineConfig):
     base_url = cfg.resolve_endpoint("lmstudio") or "http://localhost:1234/v1"
     _ensure_lmstudio_engine(cfg, cfg.fallback_model.strip(), base_url,
                             label="本地接管")
+
+    def recovery():
+        # D2026-0924-02：同 _make_client，运行期卸载自动恢复（同参重对齐）
+        _ensure_lmstudio_engine(cfg, cfg.fallback_model.strip(), base_url,
+                                label="本地接管")
+
     cc = ClientConfig(
         base_url=base_url,
         api_key=os.environ.get("LMSTUDIO_API_KEY", "lm-studio"),  # 本地端点占位
@@ -824,7 +839,7 @@ def _make_fallback_client(cfg: RefineConfig):
         n_ctx=cfg.v2_ctx_local,
         timeout=cfg.timeout_llm,
     )
-    return LLMClient(cc, log=print)
+    return LLMClient(cc, log=print, unloaded_recovery=recovery)
 
 
 def _fallback_enabled(cfg: RefineConfig, tag: str) -> bool:

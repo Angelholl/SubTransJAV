@@ -105,8 +105,13 @@ class FakeServer:
                     resp = resp(body)
                 if isinstance(resp, dict) and resp.get("__status__"):
                     status = resp["__status__"]
+                    body = json.dumps(resp.get(
+                        "__body__", {"error": {"message": ""}})).encode("utf-8")
                     self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
+                    self.wfile.write(body)
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -504,3 +509,174 @@ def test_connection_refused_fails_fast_without_backoff(monkeypatch):
     with pytest.raises(LLMError):
         client._chat("sys", "user")
     assert sleeps == []                      # 未发生任何退避等待
+
+
+# ---------------------------------------------------------------------------
+# D2026-0924-02：请求期 "Model unloaded" 识别与自动恢复
+# ---------------------------------------------------------------------------
+
+from subtransjav.translate.llm_client import (  # noqa: E402
+    ModelUnloadedError,
+)
+
+_UNLOADED_400 = {"__status__": 400,
+                 "__body__": {"error":
+                              "Model unloaded by user or API request."}}
+
+
+class _Err400Unloaded(Exception):
+    status_code = 400
+
+    def __str__(self):
+        return "Error code: 400 - {'error': 'Model unloaded by user or API request.'}"
+
+
+class _Err400Other(Exception):
+    status_code = 400
+
+    def __str__(self):
+        return "Error code: 400 - {'error': 'model unloaded due to inactivity'}"
+
+
+def test_model_unloaded_400_raises_dedicated_type():
+    """400 + 特征串 → ModelUnloadedError（保留原错误信息）。"""
+    server = FakeServer([_UNLOADED_400])
+    try:
+        with pytest.raises(ModelUnloadedError, match="Model unloaded"):
+            _client(server).translate_batch(
+                _entries("こんにちは"), system_text="", user_prompt="p",
+                allow_empty_deletions=False)
+    finally:
+        server.stop()
+
+
+def test_other_400_not_misjudged_as_unloaded():
+    """400 其他消息（云端 inactivity 卸载）→ 普通 LLMError，不误判。"""
+    server = FakeServer([{"__status__": 400,
+                          "__body__": {"error":
+                                       "model unloaded due to inactivity"}}])
+    try:
+        with pytest.raises(LLMError) as ei:
+            _client(server).translate_batch(
+                _entries("こんにちは"), system_text="", user_prompt="p",
+                allow_empty_deletions=False)
+        assert not isinstance(ei.value, ModelUnloadedError)
+    finally:
+        server.stop()
+
+
+def test_unloaded_error_is_not_transient():
+    """unloaded 400 不被 _is_transient 判真（不进 5s 退避重试）。"""
+    assert LLMClient._is_transient(_Err400Unloaded()) is False
+    assert LLMClient._is_model_unloaded(_Err400Unloaded()) is True
+    assert LLMClient._is_model_unloaded(_Err400Other()) is False
+
+
+def test_batch_recovery_via_unloaded_callback():
+    """首请求抛 unloaded 400 → 回调恢复后整批重试成功；回调恰一次。"""
+    calls = []
+    server = FakeServer([
+        _UNLOADED_400,
+        "#1\nTranslation>\n你好",
+    ])
+    try:
+        r = _client(server).translate_entries(
+            _entries("こんにちは"), system_text="", user_prompt="p",
+            max_batch_size=10,
+            unloaded_recovery=lambda: calls.append(1))
+        assert r.translations == {1: "你好"}
+        assert r.failed == []
+        assert calls == [1]
+    finally:
+        server.stop()
+
+
+def test_concurrent_unloaded_recovery_called_once():
+    """并发=2 双批同时 unloaded：锁+信用生效，回调恰一次，两批收敛，无死锁。"""
+    import re as _re
+    import time as _time
+    calls = []
+    counts = {}
+    lk = threading.Lock()
+
+    def respond(body):
+        text = body["messages"][-1]["content"]
+        idx = _re.search(r"#(\d+)", text).group(1)
+        with lk:
+            n = counts.get(idx, 0) + 1
+            counts[idx] = n
+        if n == 1:
+            _time.sleep(0.1)     # 模拟重载窗口内另一批也 400
+            return _UNLOADED_400
+        return f"#{idx}\nTranslation>\n译{idx}"
+
+    server = FakeServer([respond, respond, respond, respond])
+    try:
+        r = _client(server, concurrency=2).translate_entries(
+            _entries("a", "b"), system_text="", user_prompt="p",
+            max_batch_size=1,
+            unloaded_recovery=lambda: _time.sleep(0.2) or calls.append(1))
+        assert calls == [1]      # 锁 + 每实例信用 → 恰一次
+        assert len(r.translations) + len(r.failed) == 2   # 收敛、无死锁
+    finally:
+        server.stop()
+
+
+def test_recovery_callback_exception_falls_back_to_current_path():
+    """回调抛异常 → 走现状路径（批失败→定向重试），不炸批循环。"""
+    def _boom():
+        raise RuntimeError("reload failed")
+
+    server = FakeServer([
+        _UNLOADED_400,      # 首请求 unloaded
+        _UNLOADED_400,      # 缺行定向重试仍失败
+    ])
+    try:
+        r = _client(server).translate_entries(
+            _entries("こんにちは"), system_text="", user_prompt="p",
+            max_batch_size=10, unloaded_recovery=_boom)
+        assert r.failed == [1]
+    finally:
+        server.stop()
+
+
+def test_plain_400_does_not_trigger_recovery():
+    """非 unloaded 的 400 → 行为与现状一致，不调回调。"""
+    calls = []
+    server = FakeServer([
+        {"__status__": 400, "__body__": {"error": "bad request"}},
+        {"__status__": 400, "__body__": {"error": "bad request"}},
+    ])
+    try:
+        r = _client(server).translate_entries(
+            _entries("こんにちは"), system_text="", user_prompt="p",
+            max_batch_size=10,
+            unloaded_recovery=lambda: calls.append(1))
+        assert r.failed == [1]
+        assert calls == []
+    finally:
+        server.stop()
+
+
+def test_pipeline_injects_recovery_for_lmstudio_only(monkeypatch):
+    """管线接线：lmstudio provider 注入回调，云端 provider 不注入。"""
+    from subtransjav.refine import pipeline_v2 as pv
+    from subtransjav.refine.config import RefineConfig, StageConfig
+    from subtransjav.refine.pipeline_v2 import V2_STAGE_SLOT
+
+    monkeypatch.setattr(pv, "_ensure_lmstudio_engine",
+                        lambda *a, **kw: None)
+    cfg = RefineConfig(inputs=[])
+    cfg.stages = [
+        StageConfig(0, True, "lmstudio", "fake-model"),
+        StageConfig(1, False, "deepseek", ""),
+        StageConfig(2, True, "lmstudio", "fake-model"),
+        StageConfig(3, False, "lmstudio", ""),
+    ]
+    local = pv._make_client(cfg, "A")
+    cfg.stages[2].provider = "deepseek"      # 阶段B 切云端（槽位2）
+    cfg.stages[2].model = "deepseek-chat"
+    cloud = pv._make_client(cfg, "B")
+    assert callable(local._unloaded_recovery_default)
+    assert cloud._unloaded_recovery_default is None
+    assert V2_STAGE_SLOT["A"] == 0    # 槽位契约不变（守卫断言）
