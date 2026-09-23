@@ -171,9 +171,16 @@ def ensure_lmstudio_model(endpoint: str, model: str,
         return False, (f"模型 {model} 未在 LM Studio 中下载，"
                        f"可用模型: {', '.join(sorted(downloaded)) or '（未知）'}")
     if draft_model and downloaded and draft_model not in downloaded:
-        log(f"   ⚠️ draft 模型 {draft_model} 未下载，本次不挂投机解码"
-            f"（不影响质量，仅无提速）")
-        draft_model = ""
+        # GUI 下拉的值可能带 @quant 后缀（显示格式）；按基础名解析真实下载 ID
+        resolved = next((d for d in sorted(downloaded)
+                         if draft_model == d or draft_model.startswith(d + "@")),
+                        "")
+        if resolved:
+            draft_model = resolved
+        else:
+            log(f"   ⚠️ draft 模型 {draft_model} 未下载，本次不挂投机解码"
+                f"（不影响质量，仅无提速）")
+            draft_model = ""
 
     # 3) 对齐判定
     need_load = model not in loaded

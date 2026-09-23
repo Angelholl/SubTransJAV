@@ -188,6 +188,20 @@ def test_second_call_same_draft_hits_process_cache(env):
     assert run.calls == []
 
 
+def test_draft_quant_suffix_resolves_to_base_id(env):
+    """GUI 下拉的 draft 值带 @quant 显示后缀：应解析为真实下载 ID 再挂载
+    （2026-09-23 实测：后缀值被'未下载'保护误拦）。"""
+    v0 = {"data": [{"id": "m1"}, {"id": "qwen3.5-0.8b-heretic"}]}
+    fr, run = env(v1_ids=[], v0=v0,
+                  ps_payload='{"modelKey": "m1"}')
+    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
+                                     draft_model="qwen3.5-0.8b-heretic@q6_k")
+    assert ok
+    load = next(c for c in run.calls if c[1:2] == ["load"])
+    assert "qwen3.5-0.8b-heretic" in load
+    assert not any("@q6_k" in str(c) for c in run.calls)
+
+
 def test_cache_dropped_when_draft_removed(env):
     # 预置缓存命中 → 不重载；改配置为不挂 draft → 缓存必须清除防陈旧
     fr, run = env(v1_ids=["m1"], v0=V0_M1,
