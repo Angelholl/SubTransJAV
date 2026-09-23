@@ -1069,10 +1069,8 @@ function closeAbout() {
       v2_ctx: readRefineCtx(),
       s1_provider: ($('refineS1Provider') || {}).value,
       s1_model: ($('refineS1Model') || {}).value || '',
-      s1_draft_model: (($('refineS1Draft') || {}).value || '').trim(),
       s3_provider: ($('refineS3Provider') || {}).value,
       s3_model: ($('refineS3Model') || {}).value || '',
-      s3_draft_model: (($('refineS3Draft') || {}).value || '').trim(),
       templates_dir: ($('refineTemplatesDir') || {}).value || '',
       glossary: ($('refineGlossary') || {}).value || '',
       custom_key: stageKeyFor('custom'),
@@ -1217,32 +1215,6 @@ function closeAbout() {
   // 页面加载时自动刷新接管模型列表
   document.addEventListener('DOMContentLoaded', function() {
     setTimeout(refreshFallbackModels, 1000);
-  });
-
-  // ---- 投机解码 draft 下拉刷新（已下载全集，含未加载；保留已选值）----
-  async function refreshDraftModels() {
-    const endpoint = stageEndpointFor('lmstudio') || 'http://localhost:1234/v1';
-    for (const n of [1, 3]) {
-      const sel = $('refineS' + n + 'Draft');
-      if (!sel) continue;
-      try {
-        const r = await pywebview.api.list_local_models(endpoint);
-        if (r.success && r.models && r.models.length) {
-          const cur = sel.value;
-          sel.innerHTML = '<option value="">（不挂 draft）</option>' +
-            r.models.map(m =>
-              '<option value="' + esc(m) + '">' + esc(m) + '</option>').join('');
-          if (cur && r.models.includes(cur)) sel.value = cur;
-        }
-      } catch (e) {
-        // 静默失败：保留现有选项（留空=不挂 draft，安全缺省）
-      }
-    }
-  }
-
-  // 页面加载时自动刷新 draft 下拉（晚于接管列表，避免并发请求拥挤）
-  document.addEventListener('DOMContentLoaded', function() {
-    setTimeout(refreshDraftModels, 1500);
   });
 
   // ---- 单阶段测试 ----
@@ -1483,9 +1455,7 @@ function closeAbout() {
     try {
       const r = await pywebview.api.refine_save_stage_settings(stages, null,
         { v2_concurrency: readRefineConcurrency(),
-          v2_ctx: readRefineCtx(),
-          s1_draft_model: (($('refineS1Draft') || {}).value || '').trim(),
-          s3_draft_model: (($('refineS3Draft') || {}).value || '').trim() });
+          v2_ctx: readRefineCtx() });
       if (st) {
         st.style.color = r.success ? 'green' : 'crimson';
         st.textContent = r.success ? '💾 接口配置已保存，下次启动自动加载' : '❌ ' + r.error;
@@ -1505,21 +1475,11 @@ function closeAbout() {
         const sel = $('refineConcurrency');
         if (sel && n >= 1 && n <= 5) sel.value = String(n);
       }
-      // 回填上下文窗口与 draft 选择（非法/缺省保持控件默认值）
+      // 回填上下文窗口（非法/缺省保持控件默认值）
       if (r.settings && r.settings.v2_ctx != null) {
         const c = parseInt(r.settings.v2_ctx, 10);
         const ctxEl = $('refineV2Ctx');
         if (ctxEl && Number.isFinite(c) && c >= 4096) ctxEl.value = String(c);
-      }
-      for (const n of [1, 3]) {
-        const dv = r.settings ? r.settings['s' + n + '_draft_model'] : null;
-        const dsel = $('refineS' + n + 'Draft');
-        if (dsel && typeof dv === 'string') {
-          if (dv === '' ||
-              Array.from(dsel.options || []).some(o => o.value === dv)) {
-            dsel.value = dv;
-          }
-        }
       }
       for (const s of (r.stages || [])) {
         const n = parseInt(s.stage);

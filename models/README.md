@@ -30,13 +30,9 @@ mida-559 两轮 25+16 组合矩阵盲评与成因分层评测后定版：joyfox-
 - LM Studio 请求必须传完整模型 ID：传 key 会被在载模型模糊顶替，造成静默错配。
 - 中途换模策略与看门狗详见 `docs/模型测试两轮交接.md`。
 - 引擎加载/卸载已由管线自动化（`utils/lmstudio.py`，D2026-0923-01）：目标模型未载、
-  已载 ctx 与 `--v2-ctx` 不符、或挂 draft 未生效时，自动 `lms unload --all` →
+  已载 ctx 与 `--v2-ctx` 不符时，自动 `lms unload --all` →
   `lms load -y --gpu max -c <v2-ctx> --parallel <v2-concurrency>`；GUI 手工加载值会被管线对齐覆盖，
   引擎参数以管线配置为唯一事实来源（引擎/管线两侧同步由构造保证）。
-- 投机解码 draft（`--s1-draft-model` / `--s3-draft-model`，即 `StageConfig.engine_draft_model`）：
-  须与主模型同词表（Qwen3.5 族 248320）；定选 Qwen3.5-0.8B（2B/4B 显存放不下）；
-  joyfox GGUF 为 no-mtp，只能走独立 draft（Draft Simple）路线；draft 未下载自动降级不挂（质量无损）。
-  已入 manifest 指纹（_STAGE_FIELDS），换 draft 即失效旧产物需重跑。
 
 ---
 2026-09-22，1.2.3 收尾归档。

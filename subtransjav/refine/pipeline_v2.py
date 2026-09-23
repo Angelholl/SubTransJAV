@@ -721,12 +721,12 @@ def _split_instruction_file(path: str) -> tuple:
 
 
 def _ensure_lmstudio_engine(cfg: RefineConfig, model: str, base_url: str,
-                            draft_model: str = "", label: str = ""):
+                            label: str = ""):
     """lmstudio 阶段建客户端前对齐引擎状态。
 
-    未加载 / 已载但 ctx 与 v2_ctx_local 不符 / 配置了 draft 但无法确认已生效
-    时：卸载在载模型 → `lms load` 带参加载（ctx/parallel/gpu/draft 全部由管线
-    配置派生，构造性保证引擎与管线两侧同步，D2026-0923-01 条件③）。
+    未加载 / 已载但 ctx 与 v2_ctx_local 不符时：卸载在载模型 → `lms load`
+    带参加载（ctx/parallel/gpu 全部由管线配置派生，构造性保证引擎与管线
+    两侧同步，D2026-0923-01 条件③）。
     独立成函数便于测试 monkeypatch（CI 无 LM Studio，不触网）。
     """
     from subtransjav.utils.lmstudio import ensure_lmstudio_model
@@ -734,7 +734,6 @@ def _ensure_lmstudio_engine(cfg: RefineConfig, model: str, base_url: str,
         base_url, model, log=print,
         ctx_tokens=cfg.v2_ctx_local,
         parallel=max(1, cfg.v2_concurrency),
-        draft_model=draft_model,
     )
     if not ok:
         raise RefineError(f"{label or 'LM Studio'}: {msg}")
@@ -782,8 +781,6 @@ def _make_client(cfg: RefineConfig, tag: str):
     if provider == "lmstudio":
         _ensure_lmstudio_engine(
             cfg, model, base_url,
-            draft_model=(getattr(stage_cfg, "engine_draft_model", "")
-                         or "").strip(),
             label=V2_STAGE_NAMES[tag])
 
     cc = ClientConfig(

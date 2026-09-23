@@ -152,8 +152,6 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
       output_dir: str                  输出目录（'source' 哨兵=随输入）
       profile: str                     兜底档位 local|cloud
       s1_provider / s1_model           阶段A 服务商与模型（槽位0）
-      s1_draft_model / s3_draft_model  投机解码 draft 模型（可选；仅 lmstudio 生效，
-                                       未下载时管线自动降级不挂，质量无损）
       s3_provider / s3_model           阶段B 服务商与模型（槽位2）
       templates_dir: str               角色卡目录
       glossary: str                    词库 CSV 路径
@@ -194,9 +192,6 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
         mv = options.get(f"s{n}_model")
         if mv:
             args.extend([f"--s{n}-model", str(mv)])
-        dv = (options.get(f"s{n}_draft_model") or "").strip()
-        if dv:
-            args.extend([f"--s{n}-draft-model", str(dv)])
 
     if options.get("templates_dir"):
         args.extend(["--templates-dir", options["templates_dir"]])

@@ -50,9 +50,6 @@ def build_parser():
                        help=f"{label} 服务商（槽位 s{n}）")
         g.add_argument(f"--s{n}-model", help=f"{label} 模型名（槽位 s{n}）")
         g.add_argument(f"--s{n}-instructions", help=f"{label} 指令模板文件（槽位 s{n}）")
-        g.add_argument(f"--s{n}-draft-model", default="",
-                       help=f"{label} LM Studio 投机解码 draft 模型 ID（空=不挂；"
-                            f"须与主模型同词表，如 joyfox27b 配 Qwen3.5-0.8B）")
 
     p.add_argument("--templates-dir", default=".",
                    help="角色卡所在目录（默认在当前目录查找 角色-净语翻译.txt / 角色-审校抛光.txt 两张 v2 角色卡）")
@@ -176,12 +173,10 @@ def config_from_args(args):
     # 槽1/3 为占位禁用槽（v2 未用，保留 4 槽结构以兼容 TM by_stage 历史数据）
     stages = [
         StageConfig(0, True, args.s1_provider or "lmstudio",
-                    args.s1_model or "", args.s1_instructions or "",
-                    engine_draft_model=(args.s1_draft_model or "").strip()),
+                    args.s1_model or "", args.s1_instructions or ""),
         StageConfig(1, False, "deepseek", "", ""),
         StageConfig(2, True, args.s3_provider or "lmstudio",
-                    args.s3_model or "", args.s3_instructions or "",
-                    engine_draft_model=(args.s3_draft_model or "").strip()),
+                    args.s3_model or "", args.s3_instructions or ""),
         StageConfig(3, False, "lmstudio", "", ""),
     ]
 

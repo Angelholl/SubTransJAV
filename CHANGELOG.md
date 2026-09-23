@@ -2,6 +2,12 @@
 
 本项目的所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布]
+
+### 移除
+
+- **投机解码 draft 功能彻底移除**：LM Studio draft 挂载全链路清理——GUI 下拉与回填/保存（app.js / index.html）、CLI `--s1/s3-draft-model` 旗标（cli.py）、`StageConfig.engine_draft_model` 字段（config.py）、manifest 阶段指纹字段（manifest.py）、api 透传（webview_gui/api.py）、`ensure_lmstudio_model` 的 draft 形参/`lms ps` 痕迹探测/进程内挂载缓存/speculative 旗标拼接（utils/lmstudio.py）及配套测试。LM Studio 引擎自动化（自动加载/卸载、ctx 对齐、GPU 拉满、并发参数）完整保留；重载命价新增断言不含任何 speculative 旗标，防 draft 回归。
+
 ## [1.2.3] - 2026-09-22
 
 ### 概述

@@ -61,7 +61,6 @@ def env(monkeypatch):
         monkeypatch.setattr(lm, "requests", fr)
         monkeypatch.setattr(lm.subprocess, "run", run)
         monkeypatch.setattr(lm, "_find_lms", lambda: "lms-fake")
-        monkeypatch.setattr(lm, "_DRAFT_LOADED", {})   # 进程内挂载缓存隔离
         return fr, run
 
     return _install
@@ -81,14 +80,13 @@ def test_already_loaded_and_ctx_matches_passes_without_subprocess(env):
 
 def test_unloads_others_then_loads_with_full_args(env):
     fr, run = env(v1_ids=["other-model"], v0=V0_M1)
-    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                     parallel=2, draft_model="qwen3.5-0.8b")
+    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384, parallel=2)
     assert ok
     assert run.calls[0] == ["lms-fake", "unload", "--all"]
     assert run.calls[1] == ["lms-fake", "load", "m1", "-y", "--gpu", "max",
-                            "-c", "16384", "--parallel", "2",
-                            "--speculative-draft-simple",
-                            "--speculative-draft-model", "qwen3.5-0.8b"]
+                            "-c", "16384", "--parallel", "2"]
+    # 防投机解码（draft）回归锁：load 命令不得再携带 speculative 旗标
+    assert not any("speculative" in str(a).lower() for a in run.calls[1])
 
 
 def test_ctx_mismatch_on_loaded_model_forces_reload(env):
@@ -97,38 +95,6 @@ def test_ctx_mismatch_on_loaded_model_forces_reload(env):
     ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384)
     assert ok
     assert any(c[1:2] == ["load"] for c in run.calls)
-
-
-def test_draft_without_trace_in_ps_triggers_reload(env):
-    # m1 已载、ctx 对齐，但 ps 输出无任何 spec/draft 痕迹 → 重载挂 draft
-    fr, run = env(v1_ids=["m1"], v0=V0_M1,
-                  ps_payload='{"data": [{"id": "m1", "state": "loaded"}]}')
-    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                     draft_model="qwen3.5-0.8b")
-    assert ok
-    assert any(c[1:2] == ["load"] for c in run.calls)
-
-
-def test_draft_with_trace_in_ps_skips_reload(env):
-    # ps 输出已含 draft 痕迹 → 视为已生效，不重载（ps 探测本身允许发生）
-    fr, run = env(v1_ids=["m1"], v0=V0_M1,
-                  ps_payload='{"data": [{"id": "m1", "speculative": {"draft": "qwen3.5-0.8b"}}]}')
-    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                     draft_model="qwen3.5-0.8b")
-    assert ok
-    assert not any(c[1:2] in (["load"], ["unload"]) for c in run.calls)
-
-
-def test_draft_configured_but_not_downloaded_is_dropped(env):
-    v0 = {"data": [{"id": "m1"}]}       # 无 qwen3.5-0.8b
-    fr, run = env(v1_ids=[], v0=v0)
-    logs = []
-    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                     draft_model="qwen3.5-0.8b", log=logs.append)
-    assert ok
-    load = next(c for c in run.calls if c[1:2] == ["load"])
-    assert "--speculative-draft-simple" not in load
-    assert any("未下载" in m for m in logs)
 
 
 def test_main_model_not_downloaded_fails_with_hint(env):
@@ -162,55 +128,3 @@ def test_ctx_unreadable_loaded_model_keeps_state(env):
     assert ok and msg == "模型已加载"
     assert run.calls == []
 
-
-def test_modelkey_entry_without_trace_reloads(env):
-    # 真实 ps schema：条目用 modelKey（无 id 字段）——回归 2026-09-23 挂载失败
-    fr, run = env(v1_ids=["m1"], v0=V0_M1,
-                  ps_payload='{"modelKey": "m1", "contextLength": 16384}')
-    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                     draft_model="qwen3.5-0.8b")
-    assert ok
-    assert any(c[1:2] == ["load"] for c in run.calls)
-
-
-def test_second_call_same_draft_hits_process_cache(env):
-    # 同进程第二次调用：缓存命中不重载，也不因 ps 无痕迹反复重载
-    fr, run = env(v1_ids=["m1"], v0=V0_M1,
-                  ps_payload='{"modelKey": "m1"}')
-    ok1, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                      draft_model="qwen3.5-0.8b")
-    assert ok1
-    assert any(c[1:2] == ["load"] for c in run.calls)
-    run.calls.clear()
-    ok2, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                      draft_model="qwen3.5-0.8b")
-    assert ok2
-    assert run.calls == []
-
-
-def test_draft_quant_suffix_resolves_to_base_id(env):
-    """GUI 下拉的 draft 值带 @quant 显示后缀：应解析为真实下载 ID 再挂载
-    （2026-09-23 实测：后缀值被'未下载'保护误拦）。"""
-    v0 = {"data": [{"id": "m1"}, {"id": "qwen3.5-0.8b-heretic"}]}
-    fr, run = env(v1_ids=[], v0=v0,
-                  ps_payload='{"modelKey": "m1"}')
-    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                     draft_model="qwen3.5-0.8b-heretic@q6_k")
-    assert ok
-    load = next(c for c in run.calls if c[1:2] == ["load"])
-    assert "qwen3.5-0.8b-heretic" in load
-    assert not any("@q6_k" in str(c) for c in run.calls)
-
-
-def test_cache_dropped_when_draft_removed(env):
-    # 预置缓存命中 → 不重载；改配置为不挂 draft → 缓存必须清除防陈旧
-    fr, run = env(v1_ids=["m1"], v0=V0_M1,
-                  ps_payload='{"modelKey": "m1"}')
-    lm._DRAFT_LOADED["m1"] = "qwen3.5-0.8b"
-    ok1, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                      draft_model="qwen3.5-0.8b")
-    assert ok1 and run.calls == []
-    ok2, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
-                                      draft_model="")
-    assert ok2 and run.calls == []
-    assert "m1" not in lm._DRAFT_LOADED
