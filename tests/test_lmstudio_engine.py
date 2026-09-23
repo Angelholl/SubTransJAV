@@ -103,6 +103,15 @@ def test_ctx_mismatch_on_loaded_model_forces_reload(env):
     assert any(c[1:2] == ["load"] for c in run.calls)
 
 
+def test_production_locked_ctx_22272_no_reload(env):
+    """生产锁定值回归锁：引擎实载 22272，请求 22272 → 对齐，不触发重载。"""
+    v0 = {"data": [{"id": "m1", "loaded_context_length": 22272}]}
+    fr, run = env(v1_ids=["m1"], v0=v0)
+    ok, msg = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=22272)
+    assert ok and msg == "模型已加载"
+    assert run.calls == []
+
+
 def test_main_model_not_downloaded_fails_with_hint(env):
     fr, run = env(v1_ids=[], v0={"data": [{"id": "other"}]})
     ok, msg = lm.ensure_lmstudio_model(EP, "m1")

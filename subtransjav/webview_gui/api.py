@@ -159,7 +159,7 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
       batch_local / batch_cloud: int
       v2_concurrency: int              批间并发数（1-5，缺省1）
       v2_ctx: int                      本地模型上下文窗口（显式对齐引擎与管线两侧；
-                                       缺省不传=CLI 默认 32768）
+                                       缺省不传=CLI 默认 22272）
       lmstudio_endpoint / zen_endpoint / custom_endpoint: str
       deepseek_key / zen_key / custom_key: str
       source_filter: str                闸门0 源侧幻觉检测档位 strict|default|off（缺省 default 不传参）

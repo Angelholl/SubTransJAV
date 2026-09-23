@@ -262,3 +262,18 @@ def test_cli_asr_meta_wired_to_config(tmp_path):
         "-i", str(tmp_path / "x.srt"), "--asr-meta", str(meta_path)])
     cfg = config_from_args(args)
     assert cfg.asr_meta == str(meta_path)
+
+
+def test_cli_v2_ctx_default_is_production_locked_22272(tmp_path):
+    """防回退锁：CLI 不传 --v2-ctx 时缺省=生产锁定 22272，不得把引擎 22272 重载回 32768。"""
+    args = build_parser().parse_args(["-i", str(tmp_path / "x.srt")])
+    cfg = config_from_args(args)
+    assert cfg.v2_ctx_local == 22272
+
+
+def test_cli_v2_ctx_explicit_override(tmp_path):
+    """显式 --v2-ctx 时正确覆盖缺省值（LM Studio 手工改过 ctx 的场景）。"""
+    args = build_parser().parse_args([
+        "-i", str(tmp_path / "x.srt"), "--v2-ctx", "16384"])
+    cfg = config_from_args(args)
+    assert cfg.v2_ctx_local == 16384
