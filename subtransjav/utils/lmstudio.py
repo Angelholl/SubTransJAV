@@ -78,40 +78,54 @@ def _loaded_ctx(root: str, model: str) -> int:
     return 0
 
 
-def _spec_draft_active(lms: str, model: str) -> bool:
-    """best-effort：lms ps --json 里递归找该模型的 spec/draft 痕迹。
+# 进程内记忆：本进程刚以 draft 旗标成功加载的 target → draft ID。
+# lms ps 是否暴露 draft 信息无 schema 承诺：有此缓存，重载至多每进程一次，
+# 不随 ps 探测能力漂移（同进程内只有本模块负责加载模型）。
+_DRAFT_LOADED: dict = {}
 
-    schema 无承诺：找不到 lms、ps 失败、JSON 异常一律返回 True（视为已生效
-    不重载）——宁可不挂 draft 也不能造成每次调用都重载的循环。
+
+def _has_draft_trace(obj) -> bool:
+    """递归找 spec/draft 相关键（键名含 spec/draft 且值真）。"""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            kl = str(k).lower()
+            if ("spec" in kl or "draft" in kl) and v:
+                return True
+            if _has_draft_trace(v):
+                return True
+    elif isinstance(obj, list):
+        return any(_has_draft_trace(x) for x in obj)
+    return False
+
+
+def _spec_draft_trace(lms: str, model: str) -> bool | None:
+    """best-effort：lms ps --json 里找该模型的投机解码痕迹。
+
+    返回 True=条目匹配且含 spec/draft 痕迹；False=条目匹配但无痕迹；
+    None=ps 不可用/解析失败/找不到该模型条目（schema 无承诺，无法判定）。
+    匹配字段不承诺：modelKey/identifier/id/path/displayName 任一包含即命中
+    （实测返回 modelKey 且无 id 字段——2026-09-23 ftkd-030 挂载失败教训）。
     """
     if not lms:
-        return True
+        return None
     try:
         proc = subprocess.run([lms, "ps", "--json"], capture_output=True,
                               text=True, timeout=_PS_TIMEOUT_S)
         if proc.returncode != 0:
-            return True
-
-        def _has_draft_trace(obj) -> bool:
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    kl = str(k).lower()
-                    if ("spec" in kl or "draft" in kl) and v:
-                        return True
-                    if _has_draft_trace(v):
-                        return True
-            elif isinstance(obj, list):
-                return any(_has_draft_trace(x) for x in obj)
-            return False
-
+            return None
         entries = json.loads(proc.stdout or "{}")
         data = entries.get("data") if isinstance(entries, dict) else entries
         for entry in data or []:
-            if isinstance(entry, dict) and model in str(entry.get("id", "")):
+            if not isinstance(entry, dict):
+                continue
+            haystack = " ".join(str(entry.get(k, "")) for k in
+                                ("modelKey", "identifier", "id", "path",
+                                 "displayName"))
+            if model in haystack:
                 return _has_draft_trace(entry)
-        return True     # 没找到该模型条目：不做判定，视为已生效
+        return None     # 找不到该模型条目：无法判定（不据此放行）
     except Exception:
-        return True
+        return None
 
 
 def _run_lms(lms: str, args: list, timeout: float) -> subprocess.CompletedProcess:
@@ -169,9 +183,15 @@ def ensure_lmstudio_model(endpoint: str, model: str,
         ctx_mismatch = actual > 0 and actual != int(ctx_tokens)
     spec_unverified = False
     if (not need_load) and draft_model:
-        spec_unverified = not _spec_draft_active(_find_lms(), model)
+        if _DRAFT_LOADED.get(model) == draft_model:
+            pass    # 本进程刚以此 draft 加载成功，视为已挂载
+        else:
+            # True=确认已挂；False=确认未挂；None=无法判定——除确认已挂外重载
+            spec_unverified = _spec_draft_trace(_find_lms(), model) is not True
 
     if not (need_load or ctx_mismatch or spec_unverified):
+        if not draft_model:
+            _DRAFT_LOADED.pop(model, None)      # 配置改回不挂 draft：清缓存防陈旧
         return True, "模型已加载"
 
     # 4) 清场 + 带参加载
@@ -209,6 +229,10 @@ def ensure_lmstudio_model(endpoint: str, model: str,
     try:
         loaded = _loaded_ids(root)
         if model in loaded:
+            if draft_model:
+                _DRAFT_LOADED[model] = draft_model
+            else:
+                _DRAFT_LOADED.pop(model, None)
             return True, "模型已按管线配置加载"
     except Exception:
         pass

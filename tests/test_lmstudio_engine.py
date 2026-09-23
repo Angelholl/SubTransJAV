@@ -61,6 +61,7 @@ def env(monkeypatch):
         monkeypatch.setattr(lm, "requests", fr)
         monkeypatch.setattr(lm.subprocess, "run", run)
         monkeypatch.setattr(lm, "_find_lms", lambda: "lms-fake")
+        monkeypatch.setattr(lm, "_DRAFT_LOADED", {})   # 进程内挂载缓存隔离
         return fr, run
 
     return _install
@@ -160,3 +161,42 @@ def test_ctx_unreadable_loaded_model_keeps_state(env):
     ok, msg = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384)
     assert ok and msg == "模型已加载"
     assert run.calls == []
+
+
+def test_modelkey_entry_without_trace_reloads(env):
+    # 真实 ps schema：条目用 modelKey（无 id 字段）——回归 2026-09-23 挂载失败
+    fr, run = env(v1_ids=["m1"], v0=V0_M1,
+                  ps_payload='{"modelKey": "m1", "contextLength": 16384}')
+    ok, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
+                                     draft_model="qwen3.5-0.8b")
+    assert ok
+    assert any(c[1:2] == ["load"] for c in run.calls)
+
+
+def test_second_call_same_draft_hits_process_cache(env):
+    # 同进程第二次调用：缓存命中不重载，也不因 ps 无痕迹反复重载
+    fr, run = env(v1_ids=["m1"], v0=V0_M1,
+                  ps_payload='{"modelKey": "m1"}')
+    ok1, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
+                                      draft_model="qwen3.5-0.8b")
+    assert ok1
+    assert any(c[1:2] == ["load"] for c in run.calls)
+    run.calls.clear()
+    ok2, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
+                                      draft_model="qwen3.5-0.8b")
+    assert ok2
+    assert run.calls == []
+
+
+def test_cache_dropped_when_draft_removed(env):
+    # 预置缓存命中 → 不重载；改配置为不挂 draft → 缓存必须清除防陈旧
+    fr, run = env(v1_ids=["m1"], v0=V0_M1,
+                  ps_payload='{"modelKey": "m1"}')
+    lm._DRAFT_LOADED["m1"] = "qwen3.5-0.8b"
+    ok1, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
+                                      draft_model="qwen3.5-0.8b")
+    assert ok1 and run.calls == []
+    ok2, _ = lm.ensure_lmstudio_model(EP, "m1", ctx_tokens=16384,
+                                      draft_model="")
+    assert ok2 and run.calls == []
+    assert "m1" not in lm._DRAFT_LOADED
