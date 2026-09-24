@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
@@ -240,7 +241,7 @@ class LLMClient:
         self.config = config
         self._log = log or (lambda msg: None)
         self._lock = threading.Lock()
-        self._openai_client = None    # 复用 HTTP 连接池（openai client 线程安全）
+        self._openai_client: Any = None    # 复用 HTTP 连接池（openai client 线程安全）
         # D2026-0924-02：引擎卸载恢复回调（translate_entries 未显式传入时
         # 作为默认值），由管线侧注入（仅本地 provider）
         self._unloaded_recovery_default = unloaded_recovery
@@ -422,7 +423,7 @@ class LLMClient:
             return h * 3600 + mi * 60 + s + ms / 1000.0
 
         batches = []
-        cur = []
+        cur: list = []
         prev_start = None
         for e in entries:
             start = _start_sec(e)
@@ -584,8 +585,8 @@ class LLMClient:
                 MISSING_RETRY_BUDGET, len(still_missing))
 
         translations, deleted, failed = {}, set(), []
-        for e in entries:
-            idx = e["index"]
+        for entry in entries:
+            idx = entry["index"]
             if idx in results:
                 text = results[idx]
                 if text == "":

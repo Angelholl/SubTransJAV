@@ -112,7 +112,7 @@ def terminate_process_tree(
                 "errors": [list of error messages]
             }
     """
-    result = {
+    result: dict[str, Any] = {
         "success": True,
         "terminated": [],
         "killed": [],
@@ -141,7 +141,7 @@ def terminate_process_tree(
 
     # Collect all processes to terminate (children first, then parent)
     # Killing children first prevents orphan creation
-    processes_to_kill = []
+    processes_to_kill: list[Any] = []
 
     try:
         children = parent.children(recursive=True)
@@ -229,7 +229,7 @@ def kill_process_tree(pid: int, include_parent: bool = True) -> dict[str, Any]:
     Returns:
         dict with kill results (same format as terminate_process_tree)
     """
-    result = {
+    result: dict[str, Any] = {
         "success": True,
         "terminated": [],
         "killed": [],
@@ -253,7 +253,7 @@ def kill_process_tree(pid: int, include_parent: bool = True) -> dict[str, Any]:
         return result
 
     # Collect all processes (children first, then parent)
-    processes_to_kill = []
+    processes_to_kill: list[Any] = []
 
     try:
         children = parent.children(recursive=True)
