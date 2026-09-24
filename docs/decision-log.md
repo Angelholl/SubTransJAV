@@ -1092,6 +1092,21 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **A2 已执行**（2026-09-25）：见 D2026-0924-04"留存回填"小节；A1 主体（状态字段×2、:949 修正、sakura 补注、批次补记、已知问题清单）随本条目同批入库；树外项目介绍稿核实无涉、未改动。
 - 本条目后续执行追记（A3-A7 逐项 verify、B1-B5 回填、组 C 显式延后记录）随各轮提交按 D2026-0921-03 标准运行模式入库（定向 secret 扫描 → 终端直提 → 三查 → blobs 复扫 → push → ls-remote 复核）。
 
+### 执行追记（2026-09-25 组A 全件+B1 收口，拆分前置三件套闭合）
+
+**执行模式**：用户指示"除方案讨论/拍板外全部由主模型直接负责；可并行任务分发智能体"。本轮实现经 4 路 coding 并行（文件集互不相交）+ 主模型集成验证收口。
+
+- **A3 ✅（f1858b2）**：tools/hro2_gate.py（410 行，capture/compare 双子命令）+ tests/test_hro2_gate.py（8 例）。HRO-1 两条件入 harness：①归一化白名单=报告时间戳头与 TM 摘要行两规则；②capture 每跑全新空 TM（cfg.tm_db_path）。watch advice 有状态实锤（evaluate_watch 依赖全局观察文件累计历史）→ capture 打桩 pv.default_watch_path 每跑重定向；打桩点三处（_make_client/refine_tmp_dir/default_watch_path）均 try/finally 恢复。
+- **A4 ✅（bc8f32b）**：M3 mypy 31 错清零（process_manager 28+llm_client 3；含 ：588 循环变量 e→entry 两行零行为改名）。全仓 mypy 70→39 错/10 文件（M1 管线批按拍板顺延拆分后）。
+- **A5 ✅（97aa4fb）**：_backup_existing_outputs 备份表 4→6 项（+风险清单 md/json）；新增 _remove_stale_risk_reports 写前清陈旧（残留路径=上轮失败有清单无终稿）；设计裁定=风险清单属最终产物非恢复现场，不进 delete_resume_artifacts（成功路径调用点在 write_reports 之后，收编会误删新报告）；+3 契约测试（备份覆盖/空目录 no-op/清理与 write_reports 文件名双钉防漂移）。
+- **B1 ✅（1074b95）**：ctx 22272 三处（config 注释/cli help/index.html tooltip）+api docstring 统一标注"作者 16GB 单卡实测档案值，请按自身显存调整"；手册新增 §2.3 引擎自动化边界与缺省口径（仅覆盖 LM Studio 后端；管线配置为唯一事实来源；缺省数值零改动）。
+- **A6 ✅**：BatchE_WD 导出 XML 留痕（D:\SubTransJAV-internal-archive\BatchE_WD_export_20260925.xml，注册 2026-09-23T00:36:57/每 5 分钟触发/wscript 挂 %LOCALAPPDATA%\Temp\batche_wd_hidden.vbs）→ schtasks /delete 成功 → 复核不存在。
+- **A7 ✅**：判定="2 条"实为同一条目 hsoda-114 #499 的两次规则命中（post_validate climax_iku_variant，源文 いっちゃういっちゃう…イク高潮形态）；译文"好厉害好厉害。啊。"イク 语义整体丢失→**真实质量缺口非误报**；处置=不改 glossary.csv（イク→要去了 已在表；连用形 いっちゃう 的词条覆盖归 B3 E2-A/词表覆盖层批次统一判定，避免散点改词表抢跑），维持 watch 观察生效；**glossary sha1 冻结=4b90fa9e003d917569ef6b14e13cf01e49875358**（无改动现值）。
+- **集成验证**：ruff 全仓零告警；mypy 39 错/10 文件（M3 清零后基线）；全量 pytest **998 passed + 1 skipped**（987+1 → +8 harness +3 契约，只增不减）；CLI/harness --help 冒烟过；Mimosa 深扫提交前 seal 53010c48…26 findings=基线零新增（四段提交后复扫见下）。
+- **golden 基准快照（拆分第 0 动作第三件）✅**：位置 `D:\SubTransJAV-internal-archive\hro2-golden-baseline-20260925\pre-refactor-run1\`，git_head=1074b955227bfa656597304de1d77de991210285（与 B1 提交点一致），输入=树外 5 部 golden（sha256 与 ：1011 留存清单一致），词表 sha1=4b90fa9e…（冻结），配置指纹 ctx 22272/并发 1/TM on/synopsis off。**确定性自检 PASS**：同提交点连拍 run2 与 run1 互比=final 逐字节全等+报告归一化后全等（hro2_gate compare EXIT=0）；5 部 final+5 部报告+manifest 的 sha256 清单入同目录 _baseline_manifest.txt。**拆分动工前置三件套全部闭合**（留存确认 :1011 ✅ + 词表冻结 ✅ + golden 快照 ✅）——1.3.0 pipeline_v2 拆分正式解锁。
+- **风险跟踪勾验**：跟踪①（HRO-1 两条件入用例）✅ 已由 A3 harness 兑现；跟踪 2/3/4/5/6 状态不变。
+- **基线引用口径更新**：测试基线 **998 passed + 1 skipped**（@1074b95）；全仓 mypy 参考 39 错/10 文件；随拆分开工按执行契约"拆前快照冻结 mypy 基线、按模块清零缩减"。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。
