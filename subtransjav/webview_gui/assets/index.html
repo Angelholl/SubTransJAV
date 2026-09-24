@@ -185,7 +185,7 @@
           </select>
         </label>
         <label style="display:flex; align-items:center; gap:4px; font-size:12px;"
-               title="本地模型上下文窗口：启动后管线自动按此值对齐引擎（覆盖 LM Studio 手工设置），并据此收紧批大小。16GB 显存建议 16384~22272">
+               title="本地模型上下文窗口：启动后管线自动按此值对齐引擎（覆盖 LM Studio 手工设置），并据此收紧批大小。16GB 显存建议 16384~22272（缺省 22272 为作者 16GB 单卡实测档案值，请按自身显存调整）">
           上下文窗口
           <input type="number" id="refineV2Ctx" class="form-input compact" style="width:92px;"
                  value="22272" min="4096" step="1024">

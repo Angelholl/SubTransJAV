@@ -109,7 +109,7 @@ def build_parser():
     grp_v2.add_argument("--v2-concurrency", type=int, default=1,
                         help="批间并发数（1-5，默认1为串行，越界自动钳制）")
     grp_v2.add_argument("--v2-ctx", type=int, default=22272,
-                        help="本地模型上下文窗口（缺省=生产锁定22272，用于批大小与max_tokens预算；LM Studio 手工改过 ctx 时用本参数显式覆盖）")
+                        help="本地模型上下文窗口（缺省 22272=作者 16GB 单卡实测档案值，请按显存调整；LM Studio 手工改过 ctx 时用本参数显式覆盖）")
     grp_v2.add_argument("--force", action="store_true",
                         help="忽略已有产物强制重跑（覆盖前自动备份）")
     grp_v2.add_argument("--resume", action="store_true",

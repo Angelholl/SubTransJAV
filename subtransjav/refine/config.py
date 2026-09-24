@@ -277,7 +277,7 @@ class RefineConfig:
     # ------------------------------------------------------------------
     v2_profile: str = "local"       # local=strict兜底(cleaner+误译拦截) | cloud=lenient(仅通用校验)
     v2_concurrency: int = 1         # 批间并发数（1-5，默认1为串行，对所有服务商生效）
-    v2_ctx_local: int = 22272       # 本地模型上下文窗口（批大小/max_tokens 预算依据；22272=2026-09-24 生产锁定值，原 32768 为历史缺省）
+    v2_ctx_local: int = 22272       # 本地模型上下文窗口（批大小/max_tokens 预算依据；22272=作者 16GB 单卡实测档案值（生产锁定值），请按自身显存调整；原 32768 为历史缺省）
     v2_keep_untranslated: str = "original"   # D1 后仅兼容保留：A/B 双失败一律回退原文+[未翻译] 标记（原 original/empty 两档已并轨，不再删行）
     # 闸门0 送翻前源侧幻觉检测（预合并前对原始条目生效，两档 profile 均执行；
     # 规则库见 refine/defaults/source_hallucination.yaml）
