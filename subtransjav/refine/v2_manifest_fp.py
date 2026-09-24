@@ -78,9 +78,10 @@ def _tm_fingerprint(cfg, tm) -> str | None:
     try:
         conn = sqlite3.connect(db)
         try:
-            sql = (f"SELECT {', '.join(_TM_FINGERPRINT_COLUMNS)} "
-                   "FROM tm_entries ORDER BY content_hash, stage")
-            cursor = conn.execute(sql)      # 游标只建一次，fetchmany 顺序推进
+            # 列清单与排序键均为模块顶 _TM_FINGERPRINT_COLUMNS 同源的固定字面量
+            # （SQLite 标识符不可参数绑定；单行内联字面量，零拼接面——Mimosa L2 2026-09-25；
+            #   改列须同步常量与本地量，指纹用例护航）
+            cursor = conn.execute("SELECT content_hash, stage, source_text, target_text FROM tm_entries ORDER BY content_hash, stage")  # 游标只建一次，fetchmany 顺序推进
             while True:
                 rows = cursor.fetchmany(4096)
                 if not rows:
