@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import types
+from pathlib import Path
 
 from subtransjav.refine.config import StageConfig
 from subtransjav.refine.manifest import (
@@ -536,3 +537,68 @@ def test_config_hash_tracks_v2_stage_prompts(monkeypatch):
     h1 = compute_config_hash(_make_cfg())
     monkeypatch.setitem(pv_d1.V2_STAGE_PROMPTS, "B", "changed prompt")
     assert compute_config_hash(_make_cfg()) != h1
+
+
+# ---------------------------------------------------------------------------
+# D2026-0925-01 组A·A5：风险清单 md/json 备份与陈旧清理契约
+# ---------------------------------------------------------------------------
+
+def test_backup_existing_outputs_covers_risk_reports(tmp_path):
+    """--force 备份表必须覆盖全部 6 个产物（含风险清单 md/json），且同一次
+    调用共用同一时间戳（防漂移契约）。"""
+    from subtransjav.refine import pipeline_v2 as pv
+
+    names = [
+        "ep01_final_cn.srt",
+        "ep01_质量报告.txt",
+        "ep01_分歧复核.csv",
+        "ep01_术语冲突观察.csv",
+        "ep01_风险清单.md",
+        "ep01_风险清单.json",
+    ]
+    for n in names:
+        (tmp_path / n).write_text("x", encoding="utf-8")
+    pv._backup_existing_outputs(str(tmp_path), "ep01")
+    baks = sorted(p.name for p in tmp_path.iterdir() if "_bak_" in p.name)
+    assert len(baks) == 6
+    for n in names:
+        assert (tmp_path / n).is_file()          # 原文件仍在
+        stem, ext = n.rsplit(".", 1)
+        matched = [b for b in baks if b.startswith(stem + "_bak_")
+                   and b.endswith("." + ext)]
+        assert len(matched) == 1, (n, baks)
+    # 同一次调用时间戳一致
+    stamps = {b.rsplit("_bak_", 1)[1].rsplit(".", 1)[0] for b in baks}
+    assert len(stamps) == 1
+
+
+def test_backup_existing_outputs_noop_when_no_outputs(tmp_path):
+    """空目录调用：不产生任何 _bak_ 文件、不抛异常。"""
+    from subtransjav.refine import pipeline_v2 as pv
+
+    pv._backup_existing_outputs(str(tmp_path), "ep01")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_remove_stale_risk_reports_matches_writer_names(tmp_path):
+    """双钉契约：清理函数的文件名必须与 RiskCollector.write_reports 产出
+    完全一致；只删目标两文件，同目录无关文件不受影响。"""
+    from subtransjav.refine import pipeline_v2 as pv
+    from subtransjav.refine.risk import RiskCollector
+
+    unrelated = tmp_path / "ep01_final_cn.srt"
+    unrelated.write_text("1\n", encoding="utf-8")
+    collector = RiskCollector()
+    collector.add(stage="final", file="a.srt", reason="测试风险",
+                  action="忽略", severity="warning")
+    reports = collector.write_reports(str(tmp_path), "ep01")
+    assert reports is not None
+    written = {Path(reports["md"]).name, Path(reports["json"]).name}
+    removed = pv._remove_stale_risk_reports(str(tmp_path), "ep01")
+    assert set(removed) == written
+    assert sorted(removed) == ["ep01_风险清单.json", "ep01_风险清单.md"]
+    for n in removed:
+        assert not (tmp_path / n).exists()
+    assert unrelated.is_file()
+    # 无残留时再调：返回空列表
+    assert pv._remove_stale_risk_reports(str(tmp_path), "ep01") == []

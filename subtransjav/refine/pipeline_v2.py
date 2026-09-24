@@ -2166,6 +2166,9 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                               severity=SEVERITY_INFO)
 
         # ---- 风险清单报告（有风险才写 {stem}_风险清单.md/.json）----
+        removed_stale = _remove_stale_risk_reports(out_dir, stem)
+        if removed_stale:
+            print(f"🧹 已清理上轮残留风险清单: {', '.join(removed_stale)}")
         reports = collector.write_reports(out_dir, stem)
         if reports:
             print(f"\n📋 风险清单已生成: {Path(reports['md']).name}")
@@ -2201,12 +2204,33 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
     return out_final_path
 
 
+def _remove_stale_risk_reports(out_dir: str, stem: str) -> list:
+    """写入新风险清单前移除上一轮遗留的 {stem}_风险清单.md/.json。
+
+    风险清单属最终产物而非断点恢复现场（不进 delete_resume_artifacts，
+    否则成功路径会误删本轮刚写的新报告）；真实残留路径=上轮失败
+    有清单无终稿、本轮无风险——写前清理与隔离区"先清后写"同款纪律。
+    文件名与 risk.py 的 write_reports 双钉，契约测试防漂移。
+    """
+    removed = []
+    for suffix in ("_风险清单.md", "_风险清单.json"):
+        p = Path(out_dir) / f"{stem}{suffix}"
+        if p.is_file():
+            try:
+                p.unlink()
+                removed.append(p.name)
+            except OSError:
+                pass
+    return removed
+
+
 def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
                              file_name: str = None) -> None:
     """--force 重跑前的产物备份（仅精确匹配文件名，存在才备份）。
 
     对输出目录中确切名为 ``{stem}_final_cn.srt``、``{stem}_质量报告.txt``、
-    ``{stem}_分歧复核.csv``、``{stem}_术语冲突观察.csv`` 的文件，复制为同目录
+    ``{stem}_分歧复核.csv``、``{stem}_术语冲突观察.csv``、
+    ``{stem}_风险清单.md``、``{stem}_风险清单.json`` 的文件，复制为同目录
     ``{原名去扩展}_bak_YYYYMMDD_HHMMSS.{原扩展}``；同一次运行共用同一时间戳。
     精确匹配保证旧的 ``*_bak_*`` 文件不会被再次备份。
     """
@@ -2215,7 +2239,7 @@ def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     for suffix in ("_final_cn.srt", "_质量报告.txt", "_分歧复核.csv",
-                   "_术语冲突观察.csv"):
+                   "_术语冲突观察.csv", "_风险清单.md", "_风险清单.json"):
         p = Path(out_dir) / f"{stem}{suffix}"
         if not p.is_file():
             continue
