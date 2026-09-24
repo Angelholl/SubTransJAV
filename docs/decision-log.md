@@ -1108,6 +1108,15 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **风险跟踪勾验**：跟踪①（HRO-1 两条件入用例）✅ 已由 A3 harness 兑现；跟踪 2/3/4/5/6 状态不变。
 - **基线引用口径更新**：测试基线 **998 passed + 1 skipped**（@1074b95）；全仓 mypy 参考 39 错/10 文件；随拆分开工按执行契约"拆前快照冻结 mypy 基线、按模块清零缩减"。
 
+### 拆分执行追记（2026-09-25 拆分主线完成：六模块迁出+M1 清零，golden 门四次 PASS）
+
+- **拆分落地（75b9bca）**：批次 1 四模块并行逐字迁移（v2_premerge 213 行/v2_context_blocks 155 行/v2_manifest_fp 169 行/v2_outputs 244 行）+ 批次 2（v2_learn 239 行/v2_rules 166 行）+ facade 接线——pipeline_v2.py 2485→1528 行（-957），纯编排主干；**11 个含 patch 调用点的函数（_ensure_auto_synopsis/_load_v2_instruction/_make_client/_make_fallback_client/_run_with_fallback/_collect_grammar_hints/_run_stage_a/_run_stage_b/_finish_learn_threads/run_v2/_run_single_v2）与全部被 patch 名字（含 _ensure_lmstudio_engine/_read_v2_card/_GRAMMAR_CACHE_MAX/_LEARN_JOIN_TIMEOUT 的调用点）留驻 facade，patch 语义零变更**；迁出符号 from-import re-export 保持 pv.<name> 可解析；新模块零反向依赖（R1）、logger 字节级同名（R4）、tm_purge 等 import 期触面全部保持（R6）。
+- **模块单测（HRO-2 条款"每个新模块 ≥1 直接单测"）**：tests/test_v2_split_modules.py 13 例——六模块各 ≥1 + V2_STAGE_TAGS/SLOT 叶子副本值对齐钉 + re-export `is` 绑定钉 + **职责边界回归钉**（风险清单/成品与恢复现场清理清单互斥，A5 验收条款随迁验证）。
+- **golden 门四次 PASS（终审证据）**：①拆前确定性自检（run1↔run2）；②批次 1 接线后中途门；③批次 2 后终门；④M1 后复跑——均 post vs pre-refactor-run1 产物全等（final 逐字节/报告归一化，EXIT=0）。行为等价以产物级字节证据收口。
+- **M1 mypy 管线批清零（e7594d9）**：refine 面 21 错归零（9 文件；纯注解+except 变量零行为改名，golden 等价域语句零触碰，顺延 0）；全仓 mypy 39→**18 错**（余 M2 面 main 9/api 7/event_stream 2，另行排期）；mypy 基线文件机制按契约③待 M2 收口落地。
+- **基线再次更新**：全量测试 **1012 passed + 1 skipped**（999+1+13，只增不减）；全仓 mypy 参考 18 错/3 文件。
+- **拆分后队列**：解读层 CLI 侧（基准快照已拍，可开工）→ GUI i18n+参数面板+查看器+槽位对齐同批 → B3 E2-A 判定+词表覆盖层 → LRU/文档/lockfile 收尾；批次 6 债务（Mimosa 26 处+M2+pytest 双口径）排 1.3.0 后。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。
