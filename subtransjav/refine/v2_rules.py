@@ -59,11 +59,11 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
             logger.warning("post_validate: %s", w)
             print(f"   {w}")
         validator_warnings = warnings
-    except Exception as e:
-        print(f"   ⚠️ 兜底拦截失败（忽略）: {e}")
+    except Exception as exc:
+        print(f"   ⚠️ 兜底拦截失败（忽略）: {exc}")
         if collector is not None:
             collector.add(stage="A", file=file_name,
-                          reason=f"误译拦截失败: {e}",
+                          reason=f"误译拦截失败: {exc}",
                           action="跳过post_validate误译拦截",
                           affected_count=len(entries),
                           severity=SEVERITY_WARNING)

@@ -95,7 +95,7 @@ def _premerge_entries(entries: list, cfg: RefineConfig = None) -> list:
         max_count = int(getattr(cfg, "premerge_max_items", _PREMERGE_MAX_COUNT))
     if not entries:
         return entries
-    merged = []
+    merged: list[dict] = []
     for e in entries:
         prev = merged[-1] if merged else None
         if prev is None:

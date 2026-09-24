@@ -235,8 +235,8 @@ def filter_stage_output(srt_path: str, stage_index: int,
     try:
         with open(srt_path, encoding="utf-8") as _f:
             entries = parse_srt(_f.read())
-    except OSError as e:
-        log.warning(f"language-validate 读取失败: {e}")
+    except OSError as exc:
+        log.warning(f"language-validate 读取失败: {exc}")
         return 0, 0
 
     if not entries:

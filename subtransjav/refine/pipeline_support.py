@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 
 # 本次进程创建过的临时目录（供退出时清理）
-CREATED_TMP_DIRS = []
+CREATED_TMP_DIRS: list[str] = []
 _tmp_dirs_lock = threading.Lock()
 
 from .config import TEMP_DIR, RefineConfig  # noqa: E402  # 延迟导入规避循环依赖

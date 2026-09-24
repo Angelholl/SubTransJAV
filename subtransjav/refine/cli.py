@@ -5,6 +5,7 @@ subtransjav-refine 命令行入口
 import argparse
 import contextlib
 import os
+from typing import Any, cast
 
 
 def build_parser():
@@ -270,7 +271,8 @@ def _handle_tm_commands(args):
     # Windows GBK 终端兼容：确保 UTF-8 输出
     if _sys.stdout.encoding and _sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         with contextlib.suppress(Exception):
-            _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            cast(Any, _sys.stdout).reconfigure(encoding="utf-8",
+                                               errors="replace")
 
     tm = TranslationMemory(args.tm_db) if args.tm_db else TranslationMemory()
     try:
@@ -354,7 +356,7 @@ def main(argv=None):
             status = "✅ 成功（dry-run）" if ok else "❌ 失败（dry-run 配置错误）"
             exit_code = 0 if ok else 2
         else:
-            summary = {}
+            summary: dict[str, Any] = {}
             try:
                 from .pipeline_v2 import run_v2
                 out = run_v2(cfg, summary_sink=summary,

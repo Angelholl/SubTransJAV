@@ -106,8 +106,8 @@ def scan_glossary_conflicts(final_entries: list, orig_entries: list,
       {"term", "target", "aliases", "hits", "with_main", "with_alias",
        "with_neither", "samples": [{"entry_id", "timing", "actual_text"}]}
     """
-    conflicts = []
-    term_stats = []
+    conflicts: list[dict] = []
+    term_stats: list[dict] = []
     if not glossary:
         return {"conflicts": conflicts, "term_stats": term_stats}
     stats_by_term = {}

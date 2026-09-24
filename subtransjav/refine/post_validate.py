@@ -96,7 +96,7 @@ def check_and_fix_translation_errors(
     返回：(修正条数, 警告列表, flagged_indexes)
     """
     fixes = 0
-    warnings = []
+    warnings: list[str] = []
     flagged_indexes: set = set()
 
     rules = _get_compiled()

@@ -39,7 +39,7 @@ _DASH_RE = re.compile(r"^\s*-\s")
 _IDX_IN_WARNING_RE = re.compile(r"#(\d+)")
 
 # 敏感词提示集（过度净化检测用；与角色卡分级表非一一对应，仅做存在性检查）
-_SENSITIVE_HINTS = (
+_SENSITIVE_HINTS: tuple[str, ...] = (
 )
 
 # 漏覆盖清单上限（超出注明"其余 N 条略"）
@@ -323,7 +323,7 @@ def render_conflict_section(glossary_conflicts: list | None,
         return "\n".join(lines)
     lines.append(f"共 {total} 条：源文命中术语表源词，但译文既无主译法"
                  f"也无别名（观察闸，不阻断；请人工判定是否误伤）")
-    dist = {}
+    dist: dict[str, int] = {}
     for c in glossary_conflicts:
         dist[c.get("source_term", "")] = \
             dist.get(c.get("source_term", ""), 0) + 1
@@ -526,7 +526,7 @@ def build_quality_report(orig_entries: list, final_entries: list,
 
     # span → 条目列表 映射（同一时间轴可能多条，不能用单值 dict）
     def _index_by_span(entries: list) -> dict:
-        d = {}
+        d: dict[tuple, list] = {}
         for e in entries:
             span = _timing_span(e["timing"])
             if span[0] >= 0:

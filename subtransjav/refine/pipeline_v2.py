@@ -578,11 +578,11 @@ def _inject_stage_a_assists(cfg: RefineConfig, entries: list, todo: list,
             if refs:
                 print(f"   💬 TM 模糊参考注入: {len(refs)}/{len(todo)} 条"
                       f"（阈值 {cfg.tm_fuzzy_threshold}，仅供参考）")
-        except Exception as e:
-            print(f"   ⚠️ TM 模糊参考注入失败（忽略）: {e}")
+        except Exception as exc:
+            print(f"   ⚠️ TM 模糊参考注入失败（忽略）: {exc}")
             if collector is not None:
                 collector.add(stage="A", file=file_name,
-                              reason=f"TM 模糊参考注入失败: {e}",
+                              reason=f"TM 模糊参考注入失败: {exc}",
                               action="跳过TM模糊参考",
                               severity=SEVERITY_INFO)
 
@@ -619,8 +619,8 @@ def _run_stage_a(cfg: RefineConfig, entries: list, tm, tmp_dir: str,
         if batch_fn is not None:
             try:
                 raw = batch_fn([(e["text"] or "").strip() for e in entries], 1)
-            except Exception as e:
-                print(f"   ⚠️ TM 批量查询失败，回退逐条（忽略）: {e}")
+            except Exception as exc:
+                print(f"   ⚠️ TM 批量查询失败，回退逐条（忽略）: {exc}")
                 raw = None
         for e in entries:
             src = (e["text"] or "").strip()
@@ -1228,10 +1228,10 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
             try:
                 conflict_data = scan_glossary_conflicts(
                     final_entries, orig_entries, glossary)
-            except Exception as e:
-                print(f"   ⚠️ 术语冲突扫描失败（忽略）: {e}")
+            except Exception as exc:
+                print(f"   ⚠️ 术语冲突扫描失败（忽略）: {exc}")
                 collector.add(stage="final", file=fname,
-                              reason=f"术语冲突扫描失败: {e}",
+                              reason=f"术语冲突扫描失败: {exc}",
                               action="跳过术语冲突观察",
                               severity=SEVERITY_INFO)
         conflict_spans = {_timing_span(c.get("timing", ""))
@@ -1264,10 +1264,10 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                 from .pass_disagreement import collect_disagreement, probe_disagreement_mode
                 pass_mode = probe_disagreement_mode(in_path)
                 disag = collect_disagreement(in_path)
-            except Exception as e:
-                print(f"   ⚠️ 双引擎分歧采集失败（忽略）: {e}")
+            except Exception as exc:
+                print(f"   ⚠️ 双引擎分歧采集失败（忽略）: {exc}")
                 collector.add(stage="final", file=fname,
-                              reason=f"双引擎分歧采集失败: {e}",
+                              reason=f"双引擎分歧采集失败: {exc}",
                               action="跳过分歧采集（质量报告与必看门槛降级）",
                               severity=SEVERITY_INFO)
         must_see_spans = None
@@ -1278,10 +1278,10 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                     _split_disagreement_rows(disag.get("rows") or [])
                 must_see_spans = {
                     _timing_span(r.get("timing", "")) for r in must_see}
-            except Exception as e:
-                print(f"   ⚠️ 必看分歧行集合计算失败（忽略）: {e}")
+            except Exception as exc:
+                print(f"   ⚠️ 必看分歧行集合计算失败（忽略）: {exc}")
                 collector.add(stage="final", file=fname,
-                              reason=f"必看分歧行集合计算失败: {e}",
+                              reason=f"必看分歧行集合计算失败: {exc}",
                               action="跳过必看分歧行门槛",
                               severity=SEVERITY_INFO)
         learned_count = None
@@ -1315,7 +1315,7 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                     from .pass_disagreement import collect_disagreement, probe_disagreement_mode
                     pass_mode = probe_disagreement_mode(in_path)
                     disag = collect_disagreement(in_path)
-                merge_stats = {"premerge_merged": premerge_merged}
+                merge_stats: dict = {"premerge_merged": premerge_merged}
                 # H5 隔离区回捞：移出主稿进 *_隔离区.srt 的条数入账条数
                 # 恒等式（无隔离时为 0，报告中该项不显示）
                 merge_stats["quarantine_moved"] = len(quarantine_entries)
