@@ -2207,10 +2207,16 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
 def _remove_stale_risk_reports(out_dir: str, stem: str) -> list:
     """写入新风险清单前移除上一轮遗留的 {stem}_风险清单.md/.json。
 
-    风险清单属最终产物而非断点恢复现场（不进 delete_resume_artifacts，
-    否则成功路径会误删本轮刚写的新报告）；真实残留路径=上轮失败
-    有清单无终稿、本轮无风险——写前清理与隔离区"先清后写"同款纪律。
-    文件名与 risk.py 的 write_reports 双钉，契约测试防漂移。
+    主理由（职责边界，D2026-0925-01 A5 用户验收裁定）：风险清单与
+    final_cn.srt/质量报告.txt 同属最终交付物，而 delete_resume_artifacts
+    的契约是清理可重建的恢复现场——成品不进恢复现场清理清单，故不收编。
+    三类清理职责互斥：_backup_existing_outputs 保上一轮成品（备份不删）、
+    本函数清"有清单无终稿"的失败残留（写前清，与隔离区"先清后写"同款
+    纪律）、delete_resume_artifacts 清恢复现场（不碰成品）。
+    "成功路径调用点在 write_reports 之后，收编会误删新报告"仅为当前
+    实现下的辅证，不作裁定依据（调用点会随重构漂移）。
+    文件名与 risk.py 的 write_reports 双钉，契约测试防漂移；本语义
+    在 1.3.0 拆分中属行为等价验收范围，不进"有意变更"豁免清单。
     """
     removed = []
     for suffix in ("_风险清单.md", "_风险清单.json"):

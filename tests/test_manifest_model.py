@@ -530,6 +530,25 @@ def test_delete_resume_artifacts_deletes_only_targets(tmp_path):
     assert keep1.exists() and keep2.exists()               # 其余产物不动
 
 
+def test_delete_resume_artifacts_never_touches_final_deliverables(tmp_path):
+    """A5 职责边界防回退（D2026-0925-01 用户验收轮）：三类清理职责互斥——
+    _backup_existing_outputs 保上一轮成品、_remove_stale_risk_reports 清
+    "有清单无终稿"失败残留、delete_resume_artifacts 只清恢复现场。
+    风险清单/final_cn/质量报告属最终交付物，任何重构（含 1.3.0 拆分）
+    不得收编进恢复现场清理清单。"""
+    deliverables = ("ep01_final_cn.srt", "ep01_质量报告.txt",
+                    "ep01_分歧复核.csv", "ep01_术语冲突观察.csv",
+                    "ep01_风险清单.md", "ep01_风险清单.json")
+    recovery = ["ep01_manifest.json", "ep01_refine_A.srt",
+                "ep01_幻觉处置报告.json", "ep01_隔离区.srt"]
+    for name in deliverables + tuple(recovery):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    removed = delete_resume_artifacts(str(tmp_path), "ep01")
+    assert sorted(removed) == sorted(recovery)             # 恢复现场恰好四件
+    for name in deliverables:
+        assert (tmp_path / name).exists()                  # 成品一件不碰
+
+
 def test_config_hash_tracks_v2_stage_prompts(monkeypatch):
     """D1：内置阶段提示词（V2_STAGE_PROMPTS）参与 config_hash——
     不落盘的指令源变更后，--resume 必须拒绝复用旧提示词产出的阶段产物。"""
