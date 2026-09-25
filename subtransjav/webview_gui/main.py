@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 from subtransjav.utils.console import (
     print_missing_extra_error,
@@ -320,7 +321,7 @@ def create_window():
         except Exception:
             pass
 
-    window = webview.create_window(**window_kwargs)
+    window = webview.create_window(**cast(dict[str, Any], window_kwargs))
     return window
 
 

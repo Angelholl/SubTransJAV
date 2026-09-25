@@ -13,9 +13,11 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [pytest.mark.gui]
+
 pytest.importorskip("webview", reason="pywebview 为可选 gui extra，未安装时跳过 GUI API 测试", exc_type=ImportError)
 
-from subtransjav.webview_gui.api import (
+from subtransjav.webview_gui.api import (  # noqa: E402  须在 importorskip 之后
     SESSION_SELECTED_PATHS,
     TranslateAPI,
     _build_refine_args,
