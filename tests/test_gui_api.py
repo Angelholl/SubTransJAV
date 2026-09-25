@@ -134,6 +134,75 @@ def test_build_refine_args_no_tm_absent_when_tm_enabled():
 
 
 # ---------------------------------------------------------------------------
+# force 覆盖确认（D2026-0925-01 D6 终选）：
+# - _build_refine_args 仅在 options["force"] 为真时追加 --force；
+# - start_translation 检测到已完成终稿且未带 force 时不启动进程，
+#   返回 needs_confirm + existing 产物清单。
+# ---------------------------------------------------------------------------
+
+def test_build_refine_args_force_only_when_true():
+    """critic 要求的可回归约束：未带 force 不拼 --force，带 force 才含。"""
+    args = _build_refine_args({"inputs": ["a.srt"]})
+    assert "--force" not in args
+    args = _build_refine_args({"inputs": ["a.srt"], "force": False})
+    assert "--force" not in args
+    args = _build_refine_args({"inputs": ["a.srt"], "force": True})
+    assert "--force" in args
+
+
+def test_start_translation_needs_confirm_when_final_exists(tmp_path, gui_api_obj):
+    """已完成终稿（{stem}_final_cn.srt 存在）且未带 force：不启动进程，
+    返回结构化 needs_confirm 与 existing 产物文件名清单。"""
+    (tmp_path / "ep01_final_cn.srt").write_text("终稿", encoding="utf-8")
+    result = gui_api_obj.start_translation({"inputs": [str(tmp_path / "ep01.srt")]})
+    assert result["success"] is False
+    assert result["needs_confirm"] is True
+    assert result["existing"] == ["ep01_final_cn.srt"]
+    # 未启动任何子进程
+    assert getattr(gui_api_obj, "_translate_process", None) is None
+
+
+class _StopLaunch(Exception):
+    """fake Popen 哨兵：捕获拼好的 args 后终止启动流程。"""
+
+
+def _capture_popen(monkeypatch, captured, api_obj):
+    import threading
+
+    import subtransjav.webview_gui.api as api_mod
+
+    # _translate_lock 由 __init__ 创建；object.__new__ 实例需手动补齐
+    api_obj._translate_lock = threading.Lock()
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = list(args)
+        raise _StopLaunch("stop-before-spawn")
+
+    monkeypatch.setattr(api_mod.subprocess, "Popen", fake_popen)
+
+
+def test_start_translation_without_force_args_have_no_force_flag(
+        tmp_path, gui_api_obj, monkeypatch):
+    """无终稿走正常启动路径：mock 进程层捕获 args，未带 force 则不含 --force。"""
+    captured = {}
+    _capture_popen(monkeypatch, captured, gui_api_obj)
+    result = gui_api_obj.start_translation({"inputs": [str(tmp_path / "ep02.srt")]})
+    assert result["success"] is False  # _StopLaunch 被启动异常分支吞掉
+    assert "--force" not in captured["args"]
+
+
+def test_start_translation_with_force_args_include_force_flag(
+        tmp_path, gui_api_obj, monkeypatch):
+    """确认后带 force=True 重调：拼出的 args 含 --force（确认路径可达）。"""
+    captured = {}
+    _capture_popen(monkeypatch, captured, gui_api_obj)
+    result = gui_api_obj.start_translation(
+        {"inputs": [str(tmp_path / "ep01.srt")], "force": True})
+    assert result["success"] is False
+    assert "--force" in captured["args"]
+
+
+# ---------------------------------------------------------------------------
 # scan_resume_states：断点恢复三态 + 信任边界（未登记路径跳过）
 # ---------------------------------------------------------------------------
 

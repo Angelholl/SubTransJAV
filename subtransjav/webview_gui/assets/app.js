@@ -51,6 +51,12 @@ const MSG = {
     translationErrorLog: m => `翻译出错：${m}`,
     translationErrorTitle: '翻译出错',
     cancelledLog: '翻译已取消',
+    overwriteConfirm: files =>
+        '检测到已完成的终稿产物：\n'
+        + (files || []).join('\n')
+        + '\n\n· 旧产物将自动备份为 *_bak_时间戳 同目录文件\n'
+        + '· 备份失败将继续覆盖并在日志告警\n'
+        + '· 建议先用试运行预览\n\n是否覆盖并重新翻译？',
     completedLog: '翻译完成',
     translationFailedTitle: '翻译失败',
     unknownError: '未知错误',
@@ -901,7 +907,24 @@ const TranslatorManager = {
                 }
             }
 
-            const result = await pywebview.api.start_translation(options);
+            let result = await pywebview.api.start_translation(options);
+
+            // 已有终稿产物：needs_confirm 时弹确认框（D2026-0925-01 D6）
+            if (result && result.needs_confirm) {
+                const ok = window.confirm(
+                    MSG.overwriteConfirm(result.existing || []));
+                if (!ok) {
+                    // 用户取消：静默返回，仅复位按钮/状态
+                    this.state.isRunning = false;
+                    AppState.isRunning = false;
+                    FileListManager.updateButtons();
+                    ProgressManager.setIndeterminate(false);
+                    this.setStatus(MSG.idle);
+                    return;
+                }
+                options.force = true;
+                result = await pywebview.api.start_translation(options);
+            }
 
             if (result.success) {
                 ConsoleManager.log(MSG.translationStarted(result.pid), 'info');

@@ -291,6 +291,11 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
     if options.get("resume"):
         args.append("--resume")
 
+    # 覆盖已完成产物：仅 GUI 确认框确认后由前端显式传入 force=True 时追加
+    # （D2026-0925-01 D6 终选：force 仅作为确认路径可达）
+    if options.get("force"):
+        args.append("--force")
+
     # NDJSON 结构化事件流（GUI 侧解析进度/风险/心跳；同仓 CLI 固定支持）
     args.extend(["--event-format", "ndjson"])
 
@@ -541,6 +546,25 @@ class TranslateAPI:
         Args:
             options: Options collected by buildRefineOptionsV2() in app.js.
         """
+        # D2026-0925-01 D6：终稿覆盖确认。与 resume_state_for_path 同源判定
+        # （completed = {stem}_final_cn.srt 存在）；任一输入已完成且未带
+        # force=True 时不启动进程，返回结构化 needs_confirm 由前端弹确认框。
+        if not options.get("force"):
+            existing = []
+            for _p in (options.get("inputs") or []):
+                try:
+                    _st = resume_state_for_path(str(_p))
+                except Exception:
+                    continue
+                if _st.get("state") == "completed":
+                    existing.append(f"{_st['stem']}_final_cn.srt")
+            if existing:
+                return {
+                    "success": False,
+                    "needs_confirm": True,
+                    "existing": existing,
+                }
+
         self._init_translation_state()
 
         with self._translate_lock:
