@@ -142,6 +142,9 @@ MSG = {
     "ev_error": "✗ 错误：{e}",
     "processing": "处理中",
     "progress_text": "已翻译约 {done}/{total} 行（{label}）",
+
+    # ---- refine 阶段设置（app.js MSG 镜像；JS 侧专用，双表同步）----
+    "resume_fingerprint_hint": "（修改模型或窗口/并发参数后，旧断点将不可复用）",
 }
 
 

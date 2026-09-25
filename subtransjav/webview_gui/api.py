@@ -1031,7 +1031,8 @@ class TranslateAPI:
                                    keys: list[dict[str, Any]] = None,
                                    settings: dict[str, Any] = None) -> dict[str, Any]:
         """保存每阶段设置。
-        stages: [{"stage":1, "provider":"zen", "endpoint":"https://..."}, ...]
+        stages: [{"stage":1, "provider":"zen", "endpoint":"https://...",
+                  "model":"..."}, ...]
         keys:   [{"stage":1, "provider":"zen", "key":"sk-..."}, ...]  -> DPAPI 密钥库
         settings: {"v2_concurrency": 2, ...}  -> 写入 JSON 顶层 settings 字典
         """
@@ -1066,6 +1067,10 @@ class TranslateAPI:
                             entry["provider"] = str(item["provider"])
                         if item.get("endpoint") is not None:
                             entry["endpoint"] = str(item["endpoint"])
+                        # C1（D2026-0925-01）：模型缺省值档位随 stages 直存直读，
+                        # 不进 config.py 分层。
+                        if item.get("model") is not None:
+                            entry["model"] = str(item["model"])
                         by_stage[n] = entry
                         saved_eps += 1
                     data["stages"] = [by_stage[k] for k in sorted(by_stage)]

@@ -271,6 +271,7 @@ const MSG = {
     grammar_hint_on_title: '语法提示已启用 - 阶段A自动分析日语语法结构',
     grammar_hint_off_title: '语法提示未启用 - 安装 sudachipy 可启用',
     endpoints_saved: '💾 接口配置已保存，下次启动自动加载',
+    resume_fingerprint_hint: '（修改模型或窗口/并发参数后，旧断点将不可复用）',
     no_conclusions: '（无结论）',
     no_sections: '（无章节导读）',
     no_companions: '（无伴生文件信息）',
@@ -1712,7 +1713,8 @@ function closeAbout() {
       stages.push({
         stage: n,
         provider: ($('refineS' + n + 'Provider') || {}).value || '',
-        endpoint: stageEndpoint(n)
+        endpoint: stageEndpoint(n),
+        model: ($('refineS' + n + 'Model') || {}).value || ''
       });
     }
     try {
@@ -1721,7 +1723,9 @@ function closeAbout() {
           v2_ctx: readRefineCtx() });
       if (st) {
         st.style.color = r.success ? 'green' : 'crimson';
-        st.textContent = r.success ? MSG.endpoints_saved : '❌ ' + r.error;
+        st.textContent = r.success
+          ? MSG.endpoints_saved + MSG.resume_fingerprint_hint
+          : '❌ ' + r.error;
       }
     } catch (e) {
       if (st) { st.style.color = 'crimson'; st.textContent = '❌ ' + e; }
@@ -1752,6 +1756,17 @@ function closeAbout() {
         if (pv && s.provider) pv.value = s.provider;
         if (ep && s.endpoint) ep.value = s.endpoint;
         else if (ep && !ep.value) applyProviderEndpoint(n);
+        // C1：回填模型下拉选择（saved model 不在当前列表→保持现值，提示一次）
+        if (s.model) {
+          const sel = $('refineS' + n + 'Model');
+          if (sel) {
+            if ([...sel.options].some(o => o.value === s.model)) {
+              sel.value = s.model;
+            } else {
+              console.warn('[refine] 已保存模型不在当前列表，保持现值:', s.model);
+            }
+          }
+        }
       }
       for (const n of [1, 3]) {
         const ep = $('refineS' + n + 'Endpoint');

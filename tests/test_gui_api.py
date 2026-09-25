@@ -411,3 +411,55 @@ def test_read_output_artifact_corrupt_json(gui_api_obj, tmp_path):
     got = gui_api_obj.read_output_artifact(str(p))
     assert got["success"] is False
     assert "损坏" in got["error"]
+
+
+# ---------------------------------------------------------------------------
+# C1（D2026-0925-01）：stages[].model 持久化档位（直存直读，不进分层）
+# ---------------------------------------------------------------------------
+def test_refine_stage_settings_saves_model(gui_api_obj, tmp_path, monkeypatch):
+    """保存含 model 的 stages 后，文件与读取接口均回传 model。"""
+    path = tmp_path / "refine_stage_settings.json"
+    monkeypatch.setattr(gui_api_obj, "_refine_stage_settings_path",
+                        lambda: str(path))
+    r = gui_api_obj.refine_save_stage_settings(
+        stages=[{"stage": 1, "provider": "zen", "endpoint": "https://x",
+                 "model": "glm-4"},
+                {"stage": 3, "provider": "custom", "endpoint": "https://y",
+                 "model": "m2"}],
+        settings={"v2_concurrency": 3, "v2_ctx": 16384})
+    assert r["success"] is True
+    assert r["endpoints_saved"] == 2
+
+    got = gui_api_obj.refine_get_stage_settings()
+    assert got["success"] is True
+    by_stage = {s.get("stage"): s for s in got["stages"]}
+    assert by_stage[1]["model"] == "glm-4"
+    assert by_stage[3]["model"] == "m2"
+    # settings 键集不变
+    assert got["settings"]["v2_concurrency"] == 3
+    assert got["settings"]["v2_ctx"] == 16384
+
+    import json
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert {s["stage"]: s.get("model") for s in data["stages"]} == \
+        {1: "glm-4", 3: "m2"}
+
+
+def test_refine_stage_settings_model_incremental_merge(gui_api_obj, tmp_path,
+                                                       monkeypatch):
+    """缺 model 的增量保存不抹掉已有 model；缺省 model 读取不报错。"""
+    path = tmp_path / "refine_stage_settings.json"
+    monkeypatch.setattr(gui_api_obj, "_refine_stage_settings_path",
+                        lambda: str(path))
+    r1 = gui_api_obj.refine_save_stage_settings(
+        stages=[{"stage": 1, "provider": "zen", "endpoint": "https://x",
+                 "model": "glm-4"}])
+    assert r1["success"] is True
+    r2 = gui_api_obj.refine_save_stage_settings(
+        stages=[{"stage": 1, "endpoint": "https://z"}])
+    assert r2["success"] is True
+
+    got = gui_api_obj.refine_get_stage_settings()
+    entry = next(s for s in got["stages"] if s.get("stage") == 1)
+    assert entry["model"] == "glm-4"
+    assert entry["endpoint"] == "https://z"
