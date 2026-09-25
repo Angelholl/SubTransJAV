@@ -1124,6 +1124,14 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **真裁决重做（修复后四连比）**：①拆分等价 pre-refactor-run1 vs post-refactor **PASS**（四次空转结论补实锤：六模块拆分+facade 接线行为等价成立）；②M1 等价 post-refactor vs post-m1-check **PASS**（注解零行为）；③解读层 post-m1-check vs post-guidebar **FAIL=预期有意变更**——差异逐处核对为纯导读/注解增行+行平移、无内容改写、final 逐字节全等（有意变更留痕归档，承 :764 豁免条款）；④SQL 修复等价 post-m1-check vs post-sqlfix **PASS**。
 - **基线更新**：全量测试 **1019 passed + 1 skipped**（1016+1+3 门回归钉）；mypy 18 错/3 文件不变。解读层后等价比对参照更新：pre-refactor/post-refactor/post-m1-check 为拆分与 M1 的历史裁决存档，此后变更的等价比对新侧=post-guidebar/post-sqlfix（含导读形态）。
 
+### GUI 批 W1 落地（2026-09-25 深夜：导读 json 双渲染+查看器+槽位对齐）
+
+- **W1a 导读 json 双渲染+契约**：build_quality_report 尾部加可选 `guide_sink`（组装完成后同一次调用采集：version/source/generated_at（头部同串）/basis="基于本次运行"/conclusions（与 _render_plain_guide 同源 3-5 条）/sections（按 txt 实际章节标题回填）/extras）——**不传 sink 行为逐字节不变**（4 测试文件 41 处直调零影响，sink 案裁定依据）；新函数 write_guide_json 落盘 `{stem}_质量报告导读.json`（companions 六件存在性在落盘时补齐）；pipeline_v2 接线：报告与导读同生共死（报告 except 则不写 json）。**契约（A5 职责边界裁定适用）**：导读 json 属最终成品 → 进 `_backup_existing_outputs`（6→7 件）+`_remove_stale_risk_reports` 写前清陈旧（清理表 2→3 件），**不进 delete_resume_artifacts**（成功路径调用点在写之后，收编即误删；本裁定覆盖拍板一①"导读 json 进 delete_resume_artifacts"的字面，依据=A5 用户验收轮确立的"成品不进恢复现场清理清单"语义先例）。契约测试同步：备份 7 件/防回退 deliverables 七件/清理三件。
+- **W1b 查看器**：api.py 新增 `read_output_artifact(path)`（_validate_user_directory+basename 白名单后缀 `_质量报告导读.json`+json.loads 校验，**不返回 txt 不返回任意 json**——拍板一①"否决 GUI 直读 txt"兑现）；前端 #refineGuideViewer 面板（conclusions/sections/companions/meta 渲染+完成分支静默探测）；test_gui_api +4 例。
+- **W1c 槽位对齐**（D2026-0922-02 裁决三）：config.py 默认工厂槽1/3 enabled True→**False**（validate 不再对停用槽误报缺模型/key）；生产路径 cli.py 显式传参指纹不变（实测 config_from_args hash=6f4e622d… 改动前后一致，默认工厂 hash 变化为预期）；测试面核查=无既有用例断言默认工厂 enabled（test_cli:26-27 为显式路径），新增正向钉（test_config_layering）；GUI 展示语义核对（附带要求①）：event_stream._STAGE_LABELS 仅含阶段A/B、by_stage 重建按提交 stage 号合并——**无误导，不改码**；STAGE_NAMES/name 语义厘清（附带要求②）：现文案"（v2 未用）"已正确，保持。
+- **C1 评估结论（本批内联评估，实施落 1.3.1）**：持久化载体两案——user_settings.json（需扩 TUNABLE_FIELD_TYPES+新增写入通道，受分层优先级语义约束）vs config/refine_stage_settings.json 的 settings（**已有读写、零新文件、GUI 直存直读不进分层**，v2_ctx/v2_concurrency 已在此持久化）→ **推荐后者**：模型名与档位延续同键扩展；三键均已在 manifest 指纹（v2_concurrency/v2_ctx_local 在 _CONFIG_FIELDS、模型名经 _STAGE_FIELDS），入持久化不改变指纹成员集、仅改值来源，改档即废 resume 的既有语义不变。
+- **基线更新**：全量测试 **1027 passed + 1 skipped**（1019+1+W1a 7+W1b 4+W1c 1）；并行实施期间一过性失败（三路 pytest 竞态读中间态）经主模型最终态复跑排除。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。
