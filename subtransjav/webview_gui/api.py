@@ -1178,6 +1178,37 @@ class TranslateAPI:
             _log_exc("refine_get_template")
             return {"success": False, "error": str(e)}
 
+    def read_output_artifact(self, path: str) -> dict[str, Any]:
+        """读取输出目录中的质量报告导读 JSON（仅 *_质量报告导读.json 白名单后缀）。"""
+        try:
+            p = str(path or "").strip()
+            if not p:
+                return {"success": False, "error": "路径为空，请先指定导读文件"}
+            try:
+                _validate_user_directory(p)
+            except ValueError as ve:
+                return {"success": False, "error": f"路径不允许访问：{ve}"}
+            if not os.path.isfile(p):
+                return {"success": False, "error": f"文件不存在：{p}"}
+            suffix = "_质量报告导读.json"
+            if not os.path.basename(p).endswith(suffix):
+                return {"success": False,
+                        "error": f"仅支持质量报告导读文件（*{suffix}），"
+                                 f"拒绝读取其他文件：{os.path.basename(p)}"}
+            with open(p, encoding="utf-8") as _f:
+                data = json.load(_f)
+            if not isinstance(data, dict):
+                return {"success": False,
+                        "error": "导读文件格式异常：顶层应为 JSON 对象"}
+            return {"success": True, "path": p, "data": data}
+        except json.JSONDecodeError:
+            _log_exc("read_output_artifact")
+            return {"success": False,
+                    "error": "导读文件损坏：不是有效的 JSON，请重新生成质量报告"}
+        except Exception as e:
+            _log_exc("read_output_artifact")
+            return {"success": False, "error": str(e)}
+
     def refine_save_template(self, stage_index, text: str,
                              templates_dir: str = None) -> dict[str, Any]:
         """保存角色卡文本（stage_index: 'A'|'B'）"""

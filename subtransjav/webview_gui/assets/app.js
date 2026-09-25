@@ -768,6 +768,7 @@ const TranslatorManager = {
                         ConsoleManager.log(MSG.completedLog, 'success');
                         ErrorHandler.showSuccess('翻译完成', '全部文件处理完毕，产物见输出目录。');
                     }
+                    if (typeof this.guideAutoDetect === 'function') this.guideAutoDetect();
                     this._finish(MSG.completed);
                 } else if (status.status === 'error') {
                     ConsoleManager.log(MSG.translationErrorLog(status.error), 'error');
@@ -1098,6 +1099,7 @@ function closeAbout() {
   }
 
   TranslatorManager.collectOptions = buildRefineOptions;
+  TranslatorManager.guideAutoDetect = guideAutoDetect;
 
   // ---- 本地模型默认值（槽位1=阶段A，槽位3=阶段B；与 index.html 中 selected 项一致）----
   const LOCAL_MODEL_DEFAULTS = {
@@ -1505,6 +1507,82 @@ function closeAbout() {
 
   // ---- 兜底档位（v2：local=strict / cloud=lenient，无 UI 联动需求）----
 
+  // ---- 质量报告导读查看器（W1b：仅读 *_质量报告导读.json，不读 txt/全量 json）----
+  const GUIDE_SUFFIX = '_质量报告导读.json';
+
+  function guideStatus(text) {
+    const st = $('guideStatus');
+    if (st) st.textContent = text || '';
+  }
+
+  function guidePath() {
+    const opts = buildRefineOptions();
+    const outDir = (opts.output_dir || '').trim();
+    const first = (opts.inputs || [])[0] || '';
+    if (!outDir || !first) return '';
+    const stem = String(first).replace(/\.[^./\\]+$/, '');
+    return outDir.replace(/[\\/]+$/, '') + '/' + stem + GUIDE_SUFFIX;
+  }
+
+  function guideRender(data) {
+    const ulC = $('guideConclusions');
+    const dlS = $('guideSections');
+    const ulP = $('guideCompanions');
+    if (ulC) {
+      ulC.innerHTML = (data.conclusions || [])
+        .map(c => '<li>' + esc(c) + '</li>').join('')
+        || '<li>（无结论）</li>';
+    }
+    if (dlS) {
+      dlS.innerHTML = (data.sections || [])
+        .map(s => '<dt>' + esc(s.title) + '</dt><dd>' + esc(s.note) + '</dd>')
+        .join('') || '<dt>（无章节导读）</dt>';
+    }
+    if (ulP) {
+      const comp = data.companions || {};
+      const keys = Object.keys(comp);
+      ulP.innerHTML = keys.length
+        ? keys.map(k => '<li>' + esc(k) + ' ' + (comp[k] ? '✓' : '✗') + '</li>').join('')
+        : '<li>（无伴生文件信息）</li>';
+    }
+    const meta = $('guideMeta');
+    if (meta) {
+      meta.textContent = '生成时间：' + (data.generated_at || '未知')
+        + ' · ' + (data.basis || '');
+    }
+  }
+
+  async function guideLoad(silent) {
+    if (!window.pywebview || !window.pywebview.api) {
+      if (!silent) guideStatus('接口未就绪，请稍后再试');
+      return;
+    }
+    const p = guidePath();
+    if (!p) {
+      if (!silent) guideStatus('请先选择输入文件并指定输出目录');
+      return;
+    }
+    if (!silent) guideStatus('加载中…');
+    try {
+      const r = await window.pywebview.api.read_output_artifact(p);
+      if (r && r.success) {
+        const dv = $('refineGuideViewer');
+        if (dv) dv.open = true;
+        guideRender(r.data || {});
+        guideStatus('已加载：' + (r.path || p));
+      } else {
+        guideStatus('加载失败：' + ((r && r.error) || '未知错误'));
+      }
+    } catch (e) {
+      guideStatus('加载失败：' + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  // 完成翻译后的静默自动探测：成功才展开面板，失败不打扰用户
+  function guideAutoDetect() {
+    guideLoad(true);
+  }
+
   // ---- 性暗示词替换（legacy 功能，已随 legacy 管线删除）----
 
   // ---- DOM 绑定（不依赖 pywebview 就绪）----
@@ -1592,6 +1670,10 @@ function closeAbout() {
         if (glTab) glTab.style.display = tab === 'glossary' ? '' : 'none';
       });
     });
+
+    // 质量报告导读查看器（W1b）
+    const guideBtn = $('refineGuideLoadBtn');
+    if (guideBtn) guideBtn.addEventListener('click', () => guideLoad(false));
   }
 
   // ---- 远程数据加载（pywebview 就绪后调用一次）----

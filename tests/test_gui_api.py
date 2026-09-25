@@ -263,3 +263,55 @@ def test_refine_save_glossary_no_alias_writes_two_columns(gui_api_obj):
         assert got["rows"] == [["こんにちは", "你好", ""]]
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# read_output_artifact：质量报告导读查看器（W1b）
+# ---------------------------------------------------------------------------
+
+def test_read_output_artifact_valid_guide(gui_api_obj, tmp_path):
+    """合法导读 JSON：success=True 且 data 透传（含 basis 字段）。"""
+    p = tmp_path / "EP01_质量报告导读.json"
+    p.write_text(
+        '{"version":"1.0","source":"a.srt","stem":"EP01",'
+        '"generated_at":"2026-09-25T00:00:00","basis":"基于本次运行",'
+        '"conclusions":["c1"],"sections":[{"title":"t","note":"n"}],'
+        '"companions":{"a.srt":true}}',
+        encoding="utf-8",
+    )
+    got = gui_api_obj.read_output_artifact(str(p))
+    assert got["success"] is True
+    assert got["data"]["basis"] == "基于本次运行"
+    assert got["path"] == str(p)
+
+
+def test_read_output_artifact_rejects_arbitrary_json(gui_api_obj, tmp_path):
+    """非导读后缀的任意 json 一律拒绝（防任意 json 读取）。"""
+    p = tmp_path / "other.json"
+    p.write_text('{"a":1}', encoding="utf-8")
+    got = gui_api_obj.read_output_artifact(str(p))
+    assert got["success"] is False
+    assert "导读" in got["error"]
+
+
+def test_read_output_artifact_missing_or_system_path(gui_api_obj, tmp_path):
+    """不存在的导读路径与系统目录路径均拒绝。"""
+    got = gui_api_obj.read_output_artifact(str(tmp_path / "none_质量报告导读.json"))
+    assert got["success"] is False
+    assert "不存在" in got["error"]
+    import os
+    win_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+    bad = gui_api_obj.read_output_artifact(
+        os.path.join(win_root, "x_质量报告导读.json"))
+    assert bad["success"] is False
+    got_empty = gui_api_obj.read_output_artifact("")
+    assert got_empty["success"] is False
+
+
+def test_read_output_artifact_corrupt_json(gui_api_obj, tmp_path):
+    """损坏 JSON：报"文件损坏"类错误而非抛异常。"""
+    p = tmp_path / "bad_质量报告导读.json"
+    p.write_text("{not json", encoding="utf-8")
+    got = gui_api_obj.read_output_artifact(str(p))
+    assert got["success"] is False
+    assert "损坏" in got["error"]
