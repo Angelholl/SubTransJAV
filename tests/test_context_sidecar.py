@@ -288,7 +288,7 @@ def test_mishear_review_section_empty_and_none():
     report0 = build_quality_report(orig, final, "demo", sidecar_review=[])
     lines0 = report0.splitlines()
     i0 = lines0.index("【误听疑似改写】")
-    assert lines0[i0 + 1] == "无样本"
+    assert "无样本" in lines0[i0 + 1:i0 + 3]   # 标题下一行可能是章节注解
     # 未提供（sidecar 未启用/无误听表）：整节省略
     assert "【误听疑似改写】" not in build_quality_report(orig, final, "demo")
 

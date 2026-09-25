@@ -420,6 +420,88 @@ def write_divergence_review_csv(out_path: str, rows: list, file_label: str,
             ])
 
 
+# 章节标题 → 白话注解（组装层后处理用）。注意：只在 build_quality_report
+# 的组装层追加注解行，render_* 纯函数本身不感知——离线报告
+# （tools/recompute_divergence.py）与 render 直调不受影响（离线报告
+# 无这些标题自然无注解）。
+_SECTION_NOTES: tuple[tuple[str, str], ...] = (
+    ("【需复核清单】",
+     "　（本节逐条列出待人工确认的条目，处理时对照下方统计区总数"
+     "即可核对有无遗漏）"),
+    ("【未翻译】",
+     "　（这些行以占位前缀保留原文未删除，可人工补译或接受现状）"),
+    ("【处置】",
+     "　（送翻前质量闸门拦下的条目：原因与去向摘要，机器全量台账"
+     "另见日志文件）"),
+    ("【乱码强译复核】",
+     "　（译文出现乱码腔或与原文语义脱节的行，请对照原文逐条确认）"),
+    ("【误听疑似改写】",
+     "　（上游语音识别可能误听导致的改写行，请对照音频确认）"),
+    ("【术语冲突观察】",
+     "　（译文与词表规定译法不一致的观察记录，供术语口径统一时裁定）"),
+    ("【术语一致性】",
+     "　（各源词在译文中的覆盖情况统计）"),
+    ("【双引擎分歧】",
+     "　（两遍引擎译法不同的行，可选抽查；引擎降级时此处仅显示模式）"),
+    ("【统计】",
+     "　（本次运行全部可核对指标；条数恒等式在本区，白话导读数字"
+     "与本区同源）"),
+)
+
+
+def _apply_section_notes(lines: list[str]) -> list[str]:
+    """组装层后处理：章节标题行之后插入一行全角空格开头的白话注解。
+
+    纯函数，不改入参；标题匹配用 startswith（【未翻译】标题行带条数
+    后缀，非单行精确标题）。
+    """
+    out: list[str] = []
+    for ln in lines:
+        out.append(ln)
+        for prefix, note in _SECTION_NOTES:
+            if ln.startswith(prefix):
+                out.append(note)
+                break
+    return out
+
+
+def _render_plain_guide(items_count: int,
+                        ts: str,
+                        n_src: int,
+                        rhs_total: int,
+                        f_final: int,
+                        missed_total: int,
+                        untranslated_count: int) -> list[str]:
+    """渲染报告头部的白话导读区（恒有，两分支），纯函数、内部不抛。
+
+    全部数字与报告其他区域同源：items_count 即【结论】行的 len(items)；
+    n_src/rhs_total 与条数核对恒等式同源；missed_total/untranslated_count
+    与【统计】区同源。文案守黑名单（无"疑似"、无【】章节字面引用）。
+    """
+    lines = [f"【白话导读】基于本次运行（时间: {ts}）："]
+    if items_count:
+        lines.append(f"　① 总体：需人工复核 {items_count} 处，"
+                     "逐条见下方复核清单")
+    else:
+        lines.append("　① 总体：未发现需人工复核的条目，终稿可直接使用")
+    if n_src == rhs_total:
+        lines.append(f"　② 条目链路：原文 {n_src} 条 → 终稿 {f_final} 条，"
+                     "条数核对已平衡")
+    else:
+        lines.append(f"　② 条目链路：原文 {n_src} 条 → 终稿 {f_final} 条，"
+                     "条数核对不平（详见统计区）")
+    if missed_total:
+        lines.append(f"　③ 漏覆盖：实义内容漏覆盖 {missed_total} 条")
+    else:
+        lines.append("　③ 漏覆盖：未发现实义内容漏覆盖")
+    if untranslated_count:
+        lines.append(f"　④ 未翻译残留：{untranslated_count} 条以占位形式"
+                     "保留，可人工补译")
+    lines.append("　⑤ 看报告顺序建议：先看本区 → 再逐条看复核清单 → "
+                 "最后用统计区核对总数")
+    return lines
+
+
 def build_quality_report(orig_entries: list, final_entries: list,
                          source_name: str = "",
                          expected_entries: list | None = None,
@@ -794,16 +876,29 @@ def build_quality_report(orig_entries: list, final_entries: list,
     # ------------------------------------------------------------------
     # 组装报告
     # ------------------------------------------------------------------
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
         "=" * 60,
         "质量报告",
-        f"来源: {source_name} | 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | ",
+        f"来源: {source_name} | 时间: {now_str} | ",
         "=" * 60,
     ]
     if items:
         lines.append(f"【结论】⚠️ 需人工复核 {len(items)} 处：{' · '.join(concl)}")
     else:
         lines.append("【结论】✅ 通过，无待复核项")
+    # 白话导读区（恒有，两分支）：紧随【结论】行、分隔线之前；
+    # 数字全部与本次组装同源（len(items)/n_src/rhs_total/missed_total/
+    # untranslated），不另起口径。
+    lines.extend(_render_plain_guide(
+        items_count=len(items),
+        ts=now_str,
+        n_src=n_src,
+        rhs_total=rhs_total,
+        f_final=f_final,
+        missed_total=missed_total,
+        untranslated_count=len(untranslated),
+    ))
     lines.append("-" * 60)
     if items:
         lines.append("【需复核清单】")
@@ -884,6 +979,10 @@ def build_quality_report(orig_entries: list, final_entries: list,
     lines.append(f"[未翻译] 残留: {len(untranslated)} 条 | "
                  f"对话标记泄漏: {dash_leak} 条")
     lines.append("=" * 60)
+    # 组装层统一后处理：章节标题后插入白话注解行（render_* 纯函数
+    # 不感知；离线报告 tools/recompute_divergence.py 与 render 直调
+    # 不受影响——离线报告无这些标题自然无注解）。
+    lines = _apply_section_notes(lines)
     return "\n".join(lines)
 
 

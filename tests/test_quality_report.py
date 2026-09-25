@@ -6,6 +6,8 @@ render_disagreement_section / render_mishear_review_section /
 write_divergence_review_csv / build_quality_report 的 TM 行与噪声闸门行。
 """
 
+import re
+
 from subtransjav.refine.quality_report import (
     _final_text_for_span,
     _is_untranslated,
@@ -214,3 +216,77 @@ def test_build_quality_report_noise_gate_line_branches():
                   "00:00:03,000 --> 00:00:04,000"]}
     shown = build_quality_report(exp, final, "demo", merge_stats=stats)
     assert "纯假名实义保留: 2（其中 [未翻译] 标记 1）" in shown
+
+
+# ----------------------------------------------------------------------
+# build_quality_report 白话导读区（两分支）与章节注解行
+# ----------------------------------------------------------------------
+
+def test_plain_guide_branch_a_with_items():
+    """有复核项：导读在场、N 与【结论】行同源、时间戳格式规整。"""
+    exp = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+            "text": "汉字原文テスト"}]
+    report = build_quality_report(exp, [], "demo")
+    lines = report.splitlines()
+    assert "【白话导读】基于本次运行" in report
+    assert any(ln.startswith("　① 总体：需人工复核 1 处") for ln in lines)
+    # 与【结论】行 N 同源
+    concl = next(ln for ln in lines if ln.startswith("【结论】"))
+    assert "需人工复核 1 处" in concl
+    # 时间戳与报告头第 3 行同一 datetime 串（格式 YYYY-MM-DD HH:MM:SS）
+    ts_lines = [ln for ln in lines if re.search(r"时间: \d{4}-\d{2}-\d{2} "
+                                                r"\d{2}:\d{2}:\d{2}", ln)]
+    assert len(ts_lines) >= 2                        # 头部行 3 + 导读行
+    assert ts_lines[0].split("时间: ")[1].split(" |")[0] \
+        == ts_lines[1].split("时间: ")[1].split("）：")[0]
+    # 有条目场景：导读 ④ 不出现（无 [未翻译] 残留）
+    assert "　④ 未翻译残留" not in report
+
+
+def test_plain_guide_branch_b_clean_report():
+    """无复核项：导读显示可直接使用；整份报告无"疑似"。"""
+    report = build_quality_report([], [], "demo")
+    assert "　① 总体：未发现需人工复核的条目，终稿可直接使用" in report
+    assert "【白话导读】" in report
+    assert "疑似" not in report
+    assert "　④ 未翻译残留" not in report            # 条件行缺席
+
+
+def test_section_notes_inserted_and_absent():
+    """章节标题下一行插入全角空格注解；条件缺席章节无注解。"""
+    garble = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+               "src_preview": "んああああああ", "zh_preview": "你好呀",
+               "signal": "无意义音节连缀"}]
+    report = build_quality_report([{"index": 1,
+                                    "timing": "00:00:01,000 --> 00:00:02,000",
+                                    "text": "テスト"}],
+                                  [{"index": 1,
+                                    "timing": "00:00:01,000 --> 00:00:02,000",
+                                    "text": "你好呀"}],
+                                  "demo", garble_review=garble)
+    lines = report.splitlines()
+    i = next(k for k, ln in enumerate(lines)
+             if ln.startswith("【乱码强译复核】"))
+    note = lines[i + 1]
+    assert note.startswith("　（")
+    assert "疑似" not in note
+    # 无术语冲突输入：对应注解不出现
+    assert "术语口径统一时裁定" not in report
+    # 统计区注解恒在
+    j = lines.index("【统计】")
+    assert lines[j + 1].startswith("　（本次运行全部可核对指标")
+
+
+def test_plain_guide_numbers_same_source_as_stats():
+    """同源守护：导读漏覆盖数与【统计】行"实义内容漏覆盖: N/" 一致。"""
+    exp = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+            "text": "汉字原文一"},
+           {"index": 2, "timing": "00:00:03,000 --> 00:00:04,000",
+            "text": "汉字原文二"}]
+    final = [{"index": 1, "timing": "00:00:03,000 --> 00:00:04,000",
+              "text": "已译"}]
+    report = build_quality_report(exp, final, "demo")
+    guide_n = int(re.search(r"漏覆盖：实义内容漏覆盖 (\d+) 条", report).group(1))
+    stats_n = int(re.search(r"实义内容漏覆盖: (\d+)/", report).group(1))
+    assert guide_n == stats_n == 1                   # 仅第 1 条整条缺失
+    assert "条数核对不平" in report                  # 1 条终稿对 2 条原文

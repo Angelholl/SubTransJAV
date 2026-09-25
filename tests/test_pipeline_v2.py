@@ -965,7 +965,7 @@ def test_quality_report_garble_review_section():
     report0 = build_quality_report(orig, final, "demo", garble_review=[])
     lines0 = report0.splitlines()
     i0 = lines0.index("【乱码强译复核】")
-    assert lines0[i0 + 1] == "无样本"
+    assert "无样本" in lines0[i0 + 1:i0 + 3]   # 标题下一行可能是章节注解
 
     # 未提供（旧调用方）：整节省略
     assert "【乱码强译复核】" not in build_quality_report(orig, final, "demo")
