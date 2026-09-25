@@ -319,6 +319,24 @@
       </label>
     </div>
 
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <label style="display:flex; align-items:center; gap:4px;"
+             data-i18n-title="tm_enable_title" title="取消勾选时向管线传递 --no-tm（不读取也不写入翻译记忆库）">
+        <input type="checkbox" id="refineTmEnable" checked> <span data-i18n="tm_enable_label">翻译记忆库</span>
+      </label>
+      <label style="display:flex; align-items:center; gap:4px; flex:1;">
+        <span data-i18n="tm_db_label">TM 库路径</span>
+        <input id="refineTmDb" class="form-input compact" style="flex:1; min-width:200px;"
+               data-i18n-placeholder="tm_db_placeholder" placeholder="留空=使用默认 TM 库">
+      </label>
+      <label style="display:flex; align-items:center; gap:4px;"
+             data-i18n-title="tm_threshold_title" title="模糊匹配阈值 0-1（步进 0.05），越低越宽松；留空=使用管线默认">
+        <span data-i18n="tm_threshold_label">TM 阈值</span>
+        <input type="number" id="refineTmThreshold" class="form-input compact" style="width:80px;"
+               min="0" max="1" step="0.05" data-i18n-placeholder="tm_threshold_placeholder" placeholder="默认">
+      </label>
+    </div>
+
     <details>
       <summary style="cursor:pointer;" data-i18n="endpoints_summary">接口地址（对应阶段A/B，切换服务商自动填充）</summary>
       <div style="display:flex; flex-direction:column; gap:6px; padding-top:6px;">

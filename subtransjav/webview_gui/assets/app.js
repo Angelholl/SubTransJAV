@@ -122,6 +122,15 @@ const MSG = {
     templates_dir_label: '角色卡目录',
     templates_dir_placeholder: '（未设置，使用默认）',
 
+    // ---- 翻译记忆库高级 ----
+    tm_enable_label: '翻译记忆库',
+    tm_enable_title: '取消勾选时向管线传递 --no-tm（不读取也不写入翻译记忆库）',
+    tm_db_label: 'TM 库路径',
+    tm_db_placeholder: '留空=使用默认 TM 库',
+    tm_threshold_label: 'TM 阈值',
+    tm_threshold_title: '模糊匹配阈值 0-1（步进 0.05），越低越宽松；留空=使用管线默认',
+    tm_threshold_placeholder: '默认',
+
     // ---- 角色卡编辑 ----
     tpl_editor_summary: '角色卡模板编辑',
     tpl_stage_a: '阶段A · 角色-净语翻译.txt',
@@ -1320,7 +1329,11 @@ function closeAbout() {
       verbose: !!($('debugLogging') || {}).checked,
       source_filter: (($('refineSourceFilter') || {}).value || 'default'),
       auto_synopsis: !($('refineAutoSynopsis') && !$('refineAutoSynopsis').checked),
-      dry_run: !!($('refineDryRun') || {}).checked
+      dry_run: !!($('refineDryRun') || {}).checked,
+      // 翻译记忆库：勾选取消时才传 no_tm（--no-tm）；路径/阈值非空才传
+      no_tm: !!($('refineTmEnable') && !$('refineTmEnable').checked),
+      tm_db: (($('refineTmDb') || {}).value || '').trim(),
+      tm_threshold: (($('refineTmThreshold') || {}).value || '').trim()
     };
   }
 

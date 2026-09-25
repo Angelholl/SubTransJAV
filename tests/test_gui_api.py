@@ -108,6 +108,31 @@ def test_build_refine_args_dry_run_flag():
     assert "--dry-run" not in _build_refine_args({"inputs": ["a.srt"]})
 
 
+def test_build_refine_args_tm_params_passthrough():
+    args = _build_refine_args({
+        "inputs": ["a.srt"],
+        "no_tm": True,
+        "tm_db": "D:/tm/tm.db",
+        "tm_threshold": "0.75",
+    })
+    assert "--no-tm" in args
+    assert args[args.index("--tm-db") + 1] == "D:/tm/tm.db"
+    assert args[args.index("--tm-threshold") + 1] == "0.75"
+
+
+def test_build_refine_args_tm_params_absent_by_default():
+    args = _build_refine_args({"inputs": ["a.srt"]})
+    assert "--no-tm" not in args
+    assert "--tm-db" not in args
+    assert "--tm-threshold" not in args
+
+
+def test_build_refine_args_no_tm_absent_when_tm_enabled():
+    args = _build_refine_args({"inputs": ["a.srt"], "no_tm": False, "tm_db": "D:/tm/tm.db"})
+    assert "--no-tm" not in args
+    assert "--tm-db" in args
+
+
 # ---------------------------------------------------------------------------
 # scan_resume_states：断点恢复三态 + 信任边界（未登记路径跳过）
 # ---------------------------------------------------------------------------
