@@ -47,8 +47,11 @@ def open_existing_db(path: str, role: str) -> sqlite3.Connection:
 
 
 def read_source_entries(conn: sqlite3.Connection) -> list:
-    cols = ", ".join(_COLUMNS)
-    return conn.execute(f"SELECT {cols} FROM {TABLE} ORDER BY id").fetchall()
+    # 字面量 SQL（先例 7f1c0c1 v2_manifest_fp）：插值面清零，与 _COLUMNS/TABLE 常量展开逐字一致
+    return conn.execute(
+        "SELECT content_hash, source_text, target_text, stage, "
+        "char_count, hit_count, created_at FROM tm_entries ORDER BY id"
+    ).fetchall()
 
 
 def plan_promotion(target_conn: sqlite3.Connection, entries: list):
@@ -61,7 +64,7 @@ def plan_promotion(target_conn: sqlite3.Connection, entries: list):
     for row in entries:
         data = dict(zip(_COLUMNS, row, strict=False))
         exists = target_conn.execute(
-            f"SELECT 1 FROM {TABLE} WHERE content_hash=? AND stage=?",
+            "SELECT 1 FROM tm_entries WHERE content_hash=? AND stage=?",
             (data["content_hash"], data["stage"])).fetchone()
         if exists:
             skipped += 1
@@ -89,11 +92,11 @@ def backup_target(to_db: str) -> str:
 
 def insert_rows(target_conn: sqlite3.Connection, rows: list) -> None:
     """逐条参数化 INSERT（防注入），单事务提交。"""
-    cols = ", ".join(_COLUMNS)
-    placeholders = ", ".join("?" for _ in _COLUMNS)
     for data in rows:
         target_conn.execute(
-            f"INSERT INTO {TABLE} ({cols}) VALUES ({placeholders})",
+            "INSERT INTO tm_entries (content_hash, source_text, target_text, "
+            "stage, char_count, hit_count, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             tuple(data[c] for c in _COLUMNS))
     target_conn.commit()
 

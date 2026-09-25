@@ -331,7 +331,7 @@ def main(argv=None):
 
     cleanup_old_logs(LOGS_DIR)
     log_path = next_log_path(LOGS_DIR)
-    log_file = open(log_path, 'w', encoding='utf-8')  # noqa: SIM115  主流程长生命周期日志句柄，末尾统一 close
+    log_file = open(log_path, 'w', encoding='utf-8', buffering=1)  # noqa: SIM115  主流程长生命周期日志句柄，末尾统一 close；行缓冲保证硬杀时已写行落盘
     shared_counts = {'error': 0, 'warn': 0, 'failover': 0}
     tee_out = TeeWriter(_sys.stdout, log_file, shared_counts)
     tee_err = TeeWriter(_sys.stderr, log_file, shared_counts)
