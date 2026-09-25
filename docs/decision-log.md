@@ -1182,6 +1182,17 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - ②tools/mypy_baseline.py:43——`cmd=[sys.executable,"-m","mypy",TARGET,"--python-version",FORCED_PYTHON_VERSION]`+`subprocess.run(cmd, shell=False)`，全部模块级常量零外部输入；硬门禁脚本运行面=本机/CI，误报。
 - ③tests/test_runlog_buffering.py:29——pytest tmp_path 夹具+字面量文件名，D2026-0921-03 先例类（"pytest tmp_path 测试夹具模式"），误报；:29 为 7c buffering=1 修复载体行。
 
+## [2026-09-25] [D2026-0925-03] B2 门②/7b③ 探针/v1.3.0 tag/行动层授权 四项定案 [已拍板]
+
+**用户四项建议定案（主模型无异议，全部采纳）**：
+
+- **定案一（B2 门②）**：**不阻塞行动层，设硬截止 2026-10-16**。样本来源优先级=watch json 权威样本 > 脱敏用户日志 > 工单/用户亲报留痕，不足部分才用构造集补位；责任人=项目 owner 指定一名语料责任人，**暂未指定则默认主模型暂任**；逾期自动降级构造集基线并在 H4b/黄金集记录标注"构造集基线、非真实语料"；H4b 本体继续挂账，行动层不受阻。
+- **定案二（7b③ CI gui 腿）**：**执行一次、仅限探针、不进 required checks**。触发=独立 workflow_dispatch（.github/workflows/gui-probe.yml，windows+3.12 腿装 `.[dev,gui]`），不并入主 CI 门禁；kill-criterion 维持原判（RuntimeError 即弃/1 次失败即弃腿）；**collected 断言基线按当前 HEAD 实测（主口径 collected=1055）而非历史固定值 1046**（判据意图=收集面与主口径一致防 pythonnet 漂移，后接新增测试不得假触发）——主模型精度修正。结果无论成败归档，成功也不自动纳入 required，需二次评审。
+- **定案三（v1.3.0 tag/Release）**：**在 e9d1631 打 annotated tag v1.3.0**，行动层落地后发 v1.3.1；Release notes 标注"架构版收口，行为变更见 1.3.1"；**不建议**行动层落地后一并发 1.3.x（版本语义混浊、回滚与追责变差）。
+- **定案四（行动层实施授权）**：**批准启动，W1a 前置修复为开工门禁首件**（清陈旧上移至最早写点之前+端到端五件存活契约测试；未通过前不得合入执行器）；三地基按 D11 契约实施；执行器按封盘契约推进；每阶段定向扫描+blobs 复扫+提交前 grep 自证纪律继续；force_resume+学习闸 UI 按 1.3.1 行动层 UI 交付（关闭"GUI 无恢复通道"缺口）。**授权边界**：B2 门②未定不阻塞行动层但 H4b 不启动；7b③ 探针可并行；v1.3.0 tag 先打 e9d1631。
+
+**实施留痕**：v1.3.0 annotated tag（→e9d1631）push 与 GitHub Release（REST API，notes 仅本版内容+"架构版收口，行为变更见 1.3.1"一句）见本条目执行追记；gui-probe 触发与结果回填见 7b③ 段。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。

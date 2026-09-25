@@ -1,0 +1,22 @@
+# 7b③ 受限探针（D2026-0925-03 定案二）：仅 workflow_dispatch 手动触发，不进 required checks。
+# kill-criterion（预声明）：import webview 抛 RuntimeError 即弃；collected 与主口径不符即弃；1 次失败即弃腿。
+# 预期 collected = 主口径 1055（1046 passed + 1 skipped + gui 面 8 例收集差按 HEAD 实测为准）。
+name: gui-probe
+on:
+  workflow_dispatch:
+
+jobs:
+  gui-probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (dev + gui extra)
+        run: pip install -e ".[dev,gui]"
+      - name: Collect count (kill-criterion)
+        shell: bash
+        run: python -m pytest --collect-only -q 2>&1 | tail -3
+      - name: Run gui-facing tests
+        run: python -m pytest tests/test_gui_api.py -q
