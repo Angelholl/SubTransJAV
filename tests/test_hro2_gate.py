@@ -104,3 +104,39 @@ def test_run_manifest_roundtrip(tmp_path):
                  encoding="utf-8")
     loaded = json.loads(p.read_text(encoding="utf-8"))
     assert loaded == manifest
+
+
+# ---------------------------------------------------------------- 真实布局回归钉
+# （A3 缺陷修复：compare 原顶层 glob 对真实 capture 布局 run/{stem}/ 命中为空，
+#   循环 0 次 → 假 PASS；2026-09-25 拆分期间四次 compare 空转后修复并重做真裁决）
+
+def test_compare_nested_capture_layout_pass(tmp_path):
+    """真实 capture 嵌套布局（产物在 run/{stem}/ 下）必须真比对。"""
+    report = "质量报告\n时间: 2026-09-25 10:00:00\nTM: 无样本\n普通行"
+    final = "1\n00:00:01,000 --> 00:00:02,000\n你好\n"
+    da = _write_outputs(tmp_path / "a", final, report)
+    db = _write_outputs(tmp_path / "b", final, report)
+    res = hro2_gate.compare_outputs(da.parent, db.parent)   # 文件在 a/demo/、b/demo/
+    assert res["equal"], res
+
+
+def test_compare_nested_capture_layout_report_diff_fails(tmp_path):
+    """嵌套布局下报告白名单外差异必须 FAIL（旧实现此场景假 PASS）。"""
+    da = _write_outputs(tmp_path / "a", "你好\n",
+                        "结论行A\n时间: 2026-09-25 10:00:00\n")
+    db = _write_outputs(tmp_path / "b", "你好\n",
+                        "结论行B\n时间: 2026-09-25 10:00:00\n")
+    res = hro2_gate.compare_outputs(da.parent, db.parent)
+    assert not res["equal"]
+    assert any(d["kind"] == "report_line" for d in res["differences"])
+
+
+def test_compare_nested_missing_final_reports_missing(tmp_path):
+    """嵌套布局下一侧缺失终稿必须报 missing（不得静默相等）。"""
+    report = "质量报告\n时间: 2026-09-25 10:00:00\n"
+    da = _write_outputs(tmp_path / "a", "你好\n", report)
+    db = tmp_path / "b"
+    db.mkdir()
+    res = hro2_gate.compare_outputs(da.parent, db)
+    assert not res["equal"]
+    assert any(d["kind"] == "missing" for d in res["differences"])

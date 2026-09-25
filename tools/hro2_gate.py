@@ -86,8 +86,12 @@ def compare_outputs(dir_a, dir_b) -> dict:
     返回 {"equal": bool, "differences": [...]}，differences 最多记录
     _MAX_DIFF_SHOWN 处，每处含 file/line/两侧内容截断。"""
     dir_a, dir_b = Path(dir_a), Path(dir_b)
-    finals_a = {p.name: p for p in dir_a.glob(f"*{FINAL_SUFFIX}")}
-    finals_b = {p.name: p for p in dir_b.glob(f"*{FINAL_SUFFIX}")}
+    # capture 产物在 run/{stem}/ 子目录（文件名含 stem 天生唯一）；rglob 递归
+    # 发现以同时兼容平铺（测试 fixture）与嵌套（真实 capture）布局。
+    # 缺陷修复：原顶层 glob 对真实布局命中为空 → 循环 0 次 → 假 PASS
+    # （2026-09-25 拆分期间四次 compare 空转，修复后已重做真裁决）。
+    finals_a = {p.name: p for p in sorted(dir_a.rglob(f"*{FINAL_SUFFIX}"))}
+    finals_b = {p.name: p for p in sorted(dir_b.rglob(f"*{FINAL_SUFFIX}"))}
     diffs: list[dict] = []
 
     for name in sorted(set(finals_a) | set(finals_b)):
@@ -105,7 +109,10 @@ def compare_outputs(dir_a, dir_b) -> dict:
             diffs.append(_first_byte_diff(name, ba, bb))
 
         report_name = name[: -len(FINAL_SUFFIX)] + REPORT_SUFFIX
-        ra, rb = dir_a / report_name, dir_b / report_name
+        # 报告与 final 同目录（run/{stem}/ 嵌套布局下由已发现的 final 推导，
+        # 不得按顶层拼接——发现缺陷的第二 half）
+        ra = finals_a[name].with_name(report_name)
+        rb = finals_b[name].with_name(report_name)
         if not ra.is_file() or not rb.is_file():
             diffs.append({"kind": "missing", "file": report_name,
                           "side": "a" if not ra.is_file() else "b",
