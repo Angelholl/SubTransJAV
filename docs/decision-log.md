@@ -1152,6 +1152,20 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **1.3.0 收口声明（清单七项对照）**：①pipeline_v2 拆分 ✓（golden 真裁决 PASS）；②词表覆盖层+加载优先级改造 ✓（三级链+显式指纹；B3 判定零新增强制词条）；③GUI i18n ✓（全量键表化）；④完整参数面板 ✓（TM 三件+A 类核对+force 通道；B 类余项按 D6 转 1.3.1）；⑤LRU ✓（OrderedDict 逐条淘汰）；⑥文档修正 ✓（手册 §12 三步走/§2.2 补 2 行/查看器与导读 json 用法待补入 §12 的部分=查看器已上线而手册查看器小节列入下轮文档批）；⑦lockfile ✓（artifact_lock）。**基线：全量 1046 passed + 1 skipped；mypy 双轨口径（CI 无 gui 0 错/本地含 gui 剩 main.py:323 9 键，D5 顺延）。**
 - **遗留移交 1.3.1**：行动层（dry-run 先行）/H4b 双且门/legacy providers 清理/guard 脚本/Mimosa 21 项甄别/force-resume+学习闸 UI/mypy 硬门禁+基线文件机制/main.py 9 键小 PR（cast 形态）/recursive GUI 传参边界/行号注释债（tools/model_matrix_run 等对旧行号引用）。**批次 6（1.3.0 后）**：Mimosa 26 处静态告警+pytest 双口径分账+异常退出日志持久性观测。
 
+## [2026-09-25] [D2026-0925-02] 批次 6 处置与 1.3.1 开工五决策（D7-D10）三轮记录 [已拍板·实施中]
+
+**用户指令**：每决策选项与子智能体三轮讨论再终选，最终报告逐项写终选。评议方=decision-critic（agent_73f16180），R1 评议→R2 主模型逐项回应→R3 终评，全程三轮闭环，无 [PRESSURE-OVERRIDE]。
+
+- **D7a Mimosa 26 处甄别（批次 6）**：R1 支持"修子集+三态甄别表"，修正目标定性=**持久收敛**而非"真险"（26 条已由 D2026-0921-03 :684② 全裁 verdictEffect=none）；UNTRACKED 单列"树外签注"态；口径修正以 findings.json 为准（**:786 分类相加 25≠26，实为 20 路径穿越+2 SSRF+1 SQL+1 命令注入+2 弱随机=26**），追记形式回写；基线副作用预警=修复后深扫 26→25/24 须实扫确认再定表述。R2 全采纳；R3 补注记"UNTRACKED 统一表述=2 文件 3 条（create_shortcut.py 1+Temp/build_blind_pack.py 2）"。**终选：tm_promote.py:52 SQL 字面量化（行为等价实证：dry-run 双库计数不变）+create_shortcut.py:11 换 subprocess（树外签注不入库）+甄别表 docs/mimosa-findings-甄别表.md（seal 53010c48…+anchor 优先声明）+其余 22 条留痕维持。**
+- **D7b pytest 双口径分账（批次 6）**：R1 ①②必做+③受限实验（两 kill-criterion 预声明：import 抛 RuntimeError 即弃/collected≠1046 即弃；1 次失败即弃腿）；口径表触发机制须与 CI 实际命令一致（不带 -m 时副口径 skip=2）；marker 不得替代 importorskip。R2 全采纳+预算声明。**终选：①口径表落决策日志（主口径 1046+1 含 gui / 副口径 1013+2 无 gui，差额=33 例 test_gui_api+1 模块级 skip 精确归因，collected 1047/1015 两列）②pyproject markers=["gui:…"]+test_gui_api pytestmark（importorskip 保留）③CI gui 腿受限实验另批执行。**
+- **D7c 日志持久性观测转结案（批次 6）**：R1 支持 A（一行级修复）+修法修正=**buffering=1 优于 _write_line flush**（覆盖 write_summary 直写路径）+结案口径分层。R2 采纳。**终选：cli.py 日志 open 加 buffering=1（8KiB 缓冲丢失→已消除）；硬杀缺运行摘要=设计内（TerminateProcess 不跑 finally）分层留痕；回归 3 例（第二句柄只读断言，critic 预授权备选口径）。**观测实证存档：Logs 97 文件中 19 个缺运行摘要（9-23-1501 等），尾部截断型与 8KiB 缓冲+硬杀双因吻合。
+- **D8 H4b 门①分支判定+行动层范围**：R1 支持 A（分支 b 五要素落盘）+**反对方案 B**（GPU 重跑与"再跑无增量"先例冲突，替代=零成本源码取证）+五要素打磨（红标限定触发域防红旗疲劳/暴露点=下游消费侧/自适应键进 _CONFIG_FIELDS/复用 asr_meta R6/三可数指标）+行动层三地基 5 纪律（等价域纪律=地基改动前快照重拍+hro2_gate 比+diff 逐处归类；schema 契约测试；entry_range 来源设计轮定案；执行器设计同轮定案）。R2 完成**源码级取证**：上游 whisperjav 包 pipelines/ 七文件中仅 balanced_pipeline.py 含 telemetry（23 处），F06 非 Balanced 不产出为源码级事实；R3 补注记=qwen_pipeline 结论以 .abtest/prod 四部 F06 签名件零 telemetry 实证为准。**终选：方案 A——分支 b 降级口径落盘（H4b 有效口径=Balanced opt-in 子集，1.3.1 只作 schema 预留消费者）；门②真实语料≥30 条+责任人按 B2 挂账，逾期降级构造集基线标注；行动层三地基+执行器设计下轮实施（设计契约本轮已定）。**
+- **D9 mypy 基线机制转硬门禁+main.py 归零**：R1 有条件支持方案 A+四条件（①pyproject python_version 3.10→3.12 对齐②main.py cast PR 同批（**正确性理由**：CI"0 错"系 webview 缺失 Any 兜底环境假象，硬门禁不得建于假绿③空基线前真相测量落口径表④假象警告入档+gui 腿承载 mypy 依赖序）+⑤mypy CI 版本钉；若坚持"硬门禁先行、main.py 下批"则升 [HIGH_RISK_OBJECTION]）。R2 采纳 A+四条件+版本钉+拒绝 Plan B 变体。R3 封盘。**终选：方案 A——pyproject 3.12 对齐+main.py cast PR 同批+tools/mypy_baseline.py（--check/--update）+空基线+ci.yml 去 || true 即刻硬门禁+mypy==2.3.1 钉版；双轨口径声明（本地含 gui 0 错实测/CI 无 gui 0 错推演待首跑确认+"CI 0 错=环境假象"警告）。**
+- **D10 guard 脚本**：R1 支持 A+三纪律（只看 tracked/indexed 绝不扫 ignored、路径名单制+名单⊆契约测试、退出码 1+pre-commit 不强制）；增量论证采纳=**终端直提路径（gate 不生效）唯一确定性闸**（git-gate 全树噪声 vs guard 精度面互补）。R2 采纳。**终选：轻量版 tools/guard_banned_paths.py（--staged/全 tracked 两模式，8 条名单含出处）+5 例测试+名单契约防漂移。**
+- **实施序（R3 定案）**：D9 口径测量→main.py cast PR→7b③ 受限实验→7a/7c/D10 并行；D8 三地基动工前确认 post-guidebar/post-sqlfix 快照完好。
+- **实施留痕**：D9+7b=c25（pyproject/main.py cast/mypy_baseline.py/mypy-baseline.txt 空基线/ci.yml 去 || true+钉版/markers+pytestmark）；批次 6+D10=c26（tm_promote 字面量化/create_shortcut 树外签注/甄别表/buffering=1+回归 3 例/guard+5 例）；**主模型终验：全量 1054 passed+1 skipped、mypy 本地含 gui 0 错（51 文件）、mypy_baseline --check 退出码 0（硬门禁生效）、guard 144 tracked 零命中、缓冲回归 3 passed、ruff 零告警**。create_shortcut.py 为 UNTRACKED 树外文件不入库（签注态）。
+- **1.3.1 状态**：批次 6 结清（三件全部落账）；D9 硬门禁生效；1.3.1 主体（行动层三地基+执行器、legacy providers 清理、C1 持久化档位实施、force-resume UI、7b③ gui 腿实验）按本条目终选排期推进。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。
