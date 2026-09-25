@@ -57,7 +57,7 @@ def _auto_setup():
     try:
         # 创建虚拟环境（如果不存在）
         if not venv_python.exists():
-            print("[SETUP] 首次运行，正在创建虚拟环境...")
+            print(msg("setup_creating_venv"))
             subprocess.run(
                 [sys.executable, "-m", "venv", str(project_root / ".venv")],
                 check=True
@@ -72,13 +72,13 @@ def _auto_setup():
                     check=True, capture_output=True, timeout=10
                 )
                 # 依赖已完整，直接重启
-                print("[SETUP] 环境就绪，正在启动程序...")
+                print(msg("setup_env_ready"))
                 os.execv(str(venv_python), [str(venv_python), "-m", "subtransjav.webview_gui.main"])
             except Exception:
                 pass  # 依赖不完整，继续安装
 
         # 安装依赖（使用 venv 中的 pip）
-        print("[SETUP] 正在安装依赖，请稍候...")
+        print(msg("setup_installing"))
         subprocess.run(
             [str(venv_python), "-m", "pip", "install", "-e", ".[gui]"],
             cwd=str(project_root),
@@ -86,7 +86,7 @@ def _auto_setup():
         )
 
         # 安装完成后重启到 venv 环境
-        print("[SETUP] 安装完成，正在重启程序...")
+        print(msg("setup_install_done"))
         try:
             os.execv(str(venv_python), [str(venv_python), "-m", "subtransjav.webview_gui.main"])
         except Exception:
@@ -98,14 +98,14 @@ def _auto_setup():
             sys.exit(0)
     # Issue#2: 异常处理 — 友好中文错误 + 暂停
     except subprocess.CalledProcessError as e:
-        print(f"\n[SETUP] 环境初始化失败: {e}")
-        print("请尝试手动运行: pip install subtransjav[gui]")
-        input("按回车键退出...")
+        print(f"\n{msg('setup_init_failed', e=e)}")
+        print(msg("setup_manual_hint"))
+        input(msg("setup_press_enter"))
         sys.exit(1)
     except Exception as e:
-        print(f"\n[SETUP] 发生未知错误: {e}")
-        print("请尝试手动运行: pip install subtransjav[gui]")
-        input("按回车键退出...")
+        print(f"\n{msg('setup_unknown_error', e=e)}")
+        print(msg("setup_manual_hint"))
+        input(msg("setup_press_enter"))
         sys.exit(1)
 
 
@@ -153,14 +153,13 @@ def _parse_args(argv=None):
     import argparse
     parser = argparse.ArgumentParser(
         prog="subtransjav-gui",
-        description="净语翻译 · SubTransJAV 桌面 GUI"
-                    "（两阶段字幕流水线：阶段A 净语+翻译 → 阶段B 审校+抛光）")
+        description=msg("cli_description"))
     parser.add_argument(
         "--debug", action="store_true",
-        help="以调试模式启动 WebView（可打开开发者工具）")
+        help=msg("cli_help_debug"))
     parser.add_argument(
         "--version", action="store_true",
-        help="打印程序版本号后退出")
+        help=msg("cli_help_version"))
     return parser.parse_args(argv)
 
 
@@ -173,7 +172,7 @@ def _print_version() -> str:
         return "unknown"
 
 
-APP_TITLE = "净语翻译 · SubTransJAV Translate"
+APP_TITLE = msg("app_title")
 
 
 def on_drop_event(e):

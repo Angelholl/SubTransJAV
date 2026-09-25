@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import webview
 from webview import FileDialog
@@ -76,7 +76,7 @@ def _ensure_template_dir(templates_dir) -> str:
     allowed = {os.path.normcase(p) for p in SESSION_SELECTED_PATHS}
     if os.path.normcase(resolved) not in allowed:
         raise ValueError(
-            f"模板目录仅允许服务端默认目录或本会话选择的目录: {resolved}")
+            msg("template_dir_not_allowed", path=resolved))
     return resolved
 
 
@@ -134,14 +134,14 @@ def _refine_error_tip(e: Exception) -> str:
     """refine 测试失败的中文诊断提示"""
     s = str(e)
     if "RegionError" in s or "not available in your country" in s:
-        return "该模型对中国大陆区域封锁(403)，请换其他模型"
+        return msg("tip_region_blocked")
     if "429" in s or "RateLimit" in s or "FreeUsageLimit" in s:
-        return "免费额度限速(429)，稍等几分钟再试或换模型"
+        return msg("tip_rate_limited")
     if "unavailable" in s or "Upstream" in s:
-        return "上游服务临时宕机，稍后重试或换模型"
+        return msg("tip_upstream_down")
     if "api_key" in s.lower() or "401" in s:
-        return "密钥无效或未配置"
-    return "请检查密钥/网络"
+        return msg("tip_invalid_key")
+    return msg("tip_check_key_network")
 
 
 def _build_refine_args(options: dict[str, Any]) -> list[str]:
@@ -347,22 +347,23 @@ class TranslateAPI:
 
     def get_system_status(self) -> dict[str, Any]:
         """Get system status including optional features like grammar hints."""
+        features: dict[str, dict[str, Any]] = {}
         status = {
             "success": True,
-            "features": {}
+            "features": features
         }
 
         # Check SudachiPy availability for grammar hints
         try:
             from subtransjav.refine.grammar_hint import is_grammar_hint_available
-            status["features"]["grammar_hints"] = {
+            features["grammar_hints"] = {
                 "available": is_grammar_hint_available(),
-                "description": "日语形态素分析提示（阶段A 自动启用）"
+                "description": msg("grammar_hints_available")
             }
         except ImportError:
-            status["features"]["grammar_hints"] = {
+            features["grammar_hints"] = {
                 "available": False,
-                "description": "日语形态素分析提示（未安装 sudachipy）"
+                "description": msg("grammar_hints_unavailable")
             }
 
         return status
@@ -371,7 +372,7 @@ class TranslateAPI:
         """Open a URL in the system browser."""
         try:
             if not is_safe_url_scheme(url):
-                return {"success": False, "error": "仅支持 http/https 链接"}
+                return {"success": False, "error": msg("url_scheme_unsupported")}
             import webbrowser
             webbrowser.open(url)
             return {"success": True}
@@ -494,7 +495,7 @@ class TranslateAPI:
                 folder.mkdir(parents=True, exist_ok=True)
             elif not folder.is_dir():
                 return {"success": False,
-                        "message": f"目录不存在: {folder}"}
+                        "message": msg("dir_not_exist", path=folder)}
 
             if sys.platform.startswith("win"):
                 os.startfile(str(folder))
@@ -546,7 +547,8 @@ class TranslateAPI:
             if self._translate_process is not None:
                 return {"success": False, "error": msg("translation_in_progress")}
             # Sentinel: mark "starting" to block double-start while Popen runs
-            self._translate_process = True
+            #（True 哨兵仅作占位，消费侧均先判 `is True`；cast 仅为类型清零）
+            self._translate_process = cast(subprocess.Popen, True)
 
         self._translate_files_total = 0
         self._translate_files_completed = 0
@@ -749,20 +751,17 @@ class TranslateAPI:
                         self._translate_status = "completed"
                         warning_level = "critical"
                         self._translate_log_queue.put(
-                            "\n[WARN] 翻译完成，但存在严重质量风险（exit 3），"
-                            "请检查风险清单。\n")
+                            f"\n[WARN] {msg('warn_exit3')}\n")
                     elif exit_code == 0:
                         self._translate_status = "completed"
                         if majority:
                             warning_level = "critical"
                             self._translate_log_queue.put(
-                                "\n[WARN] 翻译完成，但检测到整段未翻译风险，"
-                                "请检查风险清单。\n")
+                                f"\n[WARN] {msg('warn_majority')}\n")
                         elif risk_count > 0:
                             warning_level = "warning"
                             self._translate_log_queue.put(
-                                f"\n[WARN] 翻译完成，但检测到 {risk_count} 条风险，"
-                                "请检查风险清单。\n")
+                                f"\n[WARN] {msg('warn_risks', n=risk_count)}\n")
                         else:
                             self._translate_log_queue.put(
                                 f"\n[SUCCESS] {msg('log_success')}\n")
@@ -885,13 +884,13 @@ class TranslateAPI:
                 else:
                     key = api_key or read_secret("custom")
             if not base:
-                return {"success": False, "error": "缺少接口地址(endpoint)"}
+                return {"success": False, "error": msg("endpoint_missing")}
             # endpoint 与外部 URL 同源信任级别：仅放行 http/https
             # （本地 LM Studio/Ollama 走 http://localhost 属核心功能，不放行私有地址拦截）
             if not is_safe_url_scheme(base):
-                return {"success": False, "error": "接口地址仅支持 http/https"}
+                return {"success": False, "error": msg("endpoint_scheme_unsupported")}
             if provider not in ("lmstudio", "ollama") and not key:
-                return {"success": False, "error": "缺少 API Key（请先在密钥区保存）"}
+                return {"success": False, "error": msg("api_key_missing")}
 
             client = OpenAI(base_url=base, api_key=key or "none",
                             timeout=DEFAULT_TIMEOUT_HTTP)
@@ -947,7 +946,7 @@ class TranslateAPI:
             provider = (provider or "").lower()
             model = (model or "").strip()
             if not model:
-                return {"success": False, "error": "未填写模型名"}
+                return {"success": False, "error": msg("model_name_missing")}
             if provider == "deepseek":
                 base = DEEPSEEK_BASE_DEFAULT
                 key = api_key or os.environ.get("DEEPSEEK_API_KEY", "") \
@@ -968,23 +967,24 @@ class TranslateAPI:
                 else:
                     key = api_key or read_secret("custom")
             if not base:
-                return {"success": False, "error": "缺少接口地址(endpoint)"}
+                return {"success": False, "error": msg("endpoint_missing")}
             # endpoint 与外部 URL 同源信任级别：仅放行 http/https
             # （本地 LM Studio/Ollama 走 http://localhost 属核心功能，不放行私有地址拦截）
             if not is_safe_url_scheme(base):
-                return {"success": False, "error": "接口地址仅支持 http/https"}
+                return {"success": False, "error": msg("endpoint_scheme_unsupported")}
 
             client = OpenAI(base_url=base, api_key=key or "none",
                             timeout=DEFAULT_TIMEOUT_HTTP)
             r = client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": "回复：OK"}],
+                messages=[{"role": "user", "content": msg("stage_test_ping")}],
                 max_tokens=512, temperature=0, stream=False)
-            msg = r.choices[0].message
-            txt = (msg.content or "").strip()[:40]
+            resp = r.choices[0].message
+            txt = (resp.content or "").strip()[:40]
             if not txt:
-                rc = (getattr(msg, "reasoning_content", None) or "").strip()
-                txt = ("(推理模型)..." + rc[-28:]) if rc else "(空响应)"
+                rc = (getattr(resp, "reasoning_content", None) or "").strip()
+                txt = (msg("stage_test_reasoning", tail=rc[-28:])
+                       if rc else msg("stage_test_empty"))
             return {"success": True, "message": txt}
         except Exception as e:
             _log_exc("refine_test_stage")
@@ -1017,7 +1017,7 @@ class TranslateAPI:
         try:
             if stages or settings:
                 path = self._refine_stage_settings_path()
-                data = {"stages": [], "settings": {}}
+                data: dict[str, Any] = {"stages": [], "settings": {}}
                 try:
                     with open(path, encoding="utf-8") as f:
                         old = json.load(f)
@@ -1076,8 +1076,8 @@ class TranslateAPI:
         """读取已保存的每阶段设置；密钥不回传明文，只返回 has_key 标记"""
         try:
             path = self._refine_stage_settings_path()
-            stages = []
-            settings = {}
+            stages: list[Any] = []
+            settings: dict[str, Any] = {}
             if os.path.isfile(path):
                 try:
                     with open(path, encoding="utf-8") as f:
@@ -1163,17 +1163,16 @@ class TranslateAPI:
             tag = str(stage_index).upper()
             if tag not in V2_TEMPLATE_FILES:
                 return {"success": False,
-                        "error": f"无效阶段标识：{stage_index}（应为 A 或 B）"}
+                        "error": msg("invalid_stage_tag", tag=stage_index)}
             d = _ensure_template_dir(templates_dir)
             p = os.path.join(d, V2_TEMPLATE_FILES[tag])
             if not os.path.isfile(p):
                 return {"success": False,
-                        "error": f"模板文件不存在：{p}", "path": p}
+                        "error": msg("template_file_missing", path=p), "path": p}
             with open(p, encoding="utf-8") as _f:
                 text = _f.read()
             return {"success": True, "path": p, "text": text,
-                    "note": "阶段B(审校抛光)的硬性豁免段由引擎运行时自动追加，无需写在本卡内"
-                            if tag == "B" else ""}
+                    "note": msg("template_b_note") if tag == "B" else ""}
         except Exception as e:
             _log_exc("refine_get_template")
             return {"success": False, "error": str(e)}
@@ -1183,28 +1182,28 @@ class TranslateAPI:
         try:
             p = str(path or "").strip()
             if not p:
-                return {"success": False, "error": "路径为空，请先指定导读文件"}
+                return {"success": False, "error": msg("guide_path_empty")}
             try:
                 _validate_user_directory(p)
             except ValueError as ve:
-                return {"success": False, "error": f"路径不允许访问：{ve}"}
+                return {"success": False, "error": msg("guide_path_denied", e=ve)}
             if not os.path.isfile(p):
-                return {"success": False, "error": f"文件不存在：{p}"}
+                return {"success": False, "error": msg("guide_file_missing", path=p)}
             suffix = "_质量报告导读.json"
             if not os.path.basename(p).endswith(suffix):
                 return {"success": False,
-                        "error": f"仅支持质量报告导读文件（*{suffix}），"
-                                 f"拒绝读取其他文件：{os.path.basename(p)}"}
+                        "error": msg("guide_suffix_only", suffix=suffix,
+                                     name=os.path.basename(p))}
             with open(p, encoding="utf-8") as _f:
                 data = json.load(_f)
             if not isinstance(data, dict):
                 return {"success": False,
-                        "error": "导读文件格式异常：顶层应为 JSON 对象"}
+                        "error": msg("guide_bad_format")}
             return {"success": True, "path": p, "data": data}
         except json.JSONDecodeError:
             _log_exc("read_output_artifact")
             return {"success": False,
-                    "error": "导读文件损坏：不是有效的 JSON，请重新生成质量报告"}
+                    "error": msg("guide_corrupted")}
         except Exception as e:
             _log_exc("read_output_artifact")
             return {"success": False, "error": str(e)}
@@ -1217,7 +1216,7 @@ class TranslateAPI:
             tag = str(stage_index).upper()
             if tag not in V2_TEMPLATE_FILES:
                 return {"success": False,
-                        "error": f"无效阶段标识：{stage_index}（应为 A 或 B）"}
+                        "error": msg("invalid_stage_tag", tag=stage_index)}
             d = _ensure_template_dir(templates_dir)
             os.makedirs(d, exist_ok=True)
             p = os.path.join(d, V2_TEMPLATE_FILES[tag])
@@ -1236,13 +1235,13 @@ class TranslateAPI:
         try:
             windows = webview.windows
             if not windows:
-                return {"success": False, "error": "无活动窗口"}
+                return {"success": False, "error": msg("no_active_window")}
             result = windows[0].create_file_dialog(
                 webview.OPEN_DIALOG, allow_multiple=False,
-                file_types=("词库文件 (*.csv;*.txt)", "所有文件 (*.*)"))
+                file_types=(msg("file_type_glossary"), msg("file_type_all")))
             if result:
                 return {"success": True, "path": result[0]}
-            return {"success": False, "error": "已取消"}
+            return {"success": False, "error": msg("dialog_cancelled")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1251,14 +1250,14 @@ class TranslateAPI:
         try:
             windows = webview.windows
             if not windows:
-                return {"success": False, "error": "已取消"}
+                return {"success": False, "error": msg("dialog_cancelled")}
             result = windows[0].create_file_dialog(
                 webview.SAVE_DIALOG,
-                file_types=("CSV 文件 (*.csv)",),
+                file_types=(msg("file_type_csv"),),
                 save_filename="glossary_export.csv")
             if result:
                 return {"success": True, "path": result[0]}
-            return {"success": False, "error": "已取消"}
+            return {"success": False, "error": msg("dialog_cancelled")}
         except Exception as e:
             _log_exc("tm_pick_db")
             return {"success": False, "error": str(e)}
@@ -1293,7 +1292,7 @@ class TranslateAPI:
             tm = TranslationMemory(db_path) if db_path else TranslationMemory()
             try:
                 tm.clear(stage)
-                return {"success": True, "message": "翻译记忆库已清空"}
+                return {"success": True, "message": msg("tm_cleared")}
             finally:
                 tm.close()
         except Exception as e:
@@ -1306,7 +1305,7 @@ class TranslateAPI:
         try:
             from subtransjav.refine.tm import TranslationMemory
             if not path:
-                return {"success": False, "error": "未指定导出路径"}
+                return {"success": False, "error": msg("tm_export_path_missing")}
             path = str(_resolve_safe_path(path))
             tm = TranslationMemory(db_path) if db_path else TranslationMemory()
             try:
@@ -1324,13 +1323,13 @@ class TranslateAPI:
         try:
             from subtransjav.refine.tm import TranslationMemory
             if not path:
-                return {"success": False, "error": "未指定导入文件"}
+                return {"success": False, "error": msg("tm_import_path_missing")}
             path = str(_resolve_safe_path(path))
             tm = TranslationMemory(db_path) if db_path else TranslationMemory()
             try:
                 added = tm.import_csv(path)
                 return {"success": True, "added": added,
-                        "message": f"已导入 {added} 条新记录"}
+                        "message": msg("tm_imported", n=added)}
             finally:
                 tm.close()
         except Exception as e:
@@ -1342,13 +1341,13 @@ class TranslateAPI:
         try:
             windows = webview.windows
             if not windows:
-                return {"success": False, "error": "无活动窗口"}
+                return {"success": False, "error": msg("no_active_window")}
             result = windows[0].create_file_dialog(
                 webview.OPEN_DIALOG, allow_multiple=False,
-                file_types=("SQLite 数据库 (*.db)", "所有文件 (*.*)"))
+                file_types=(msg("file_type_sqlite"), msg("file_type_all")))
             if result:
                 return {"success": True, "path": result[0]}
-            return {"success": False, "error": "已取消"}
+            return {"success": False, "error": msg("dialog_cancelled")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

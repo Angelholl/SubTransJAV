@@ -58,7 +58,233 @@ const MSG = {
     // 杂项
     themeSwitched: k => `主题：${k}`,
     bridgeConnected: 'PyWebView 桥接已连接',
+
+    // ============================================================
+    // i18n 键表（W2 收编）：index.html data-i18n/data-i18n-title/
+    // data-i18n-placeholder 引用的键必须全部出现在本表（tests 钉住）；
+    // JS 动态文案也统一收编于此，键名 snake_case 或 camelCase 语义化。
+    // ============================================================
+
+    // ---- 顶栏 / 主题 ----
+    doc_title: '净语翻译 · SubTransJAV Translate',
+    app_header_title: '净语翻译 · SRT',
+    feature_status_title: '功能状态',
+    grammar_hint_text: '语法提示',
+    theme_label: 'Theme',
+    theme_default: 'Default Theme',
+    theme_google: 'Google Theme',
+    theme_carbon: 'IBM Carbon Theme',
+    theme_primer: 'GitHub Primer Theme',
+
+    // ---- Source 区 / 文件按钮 ----
+    source_header: 'Source（.srt 字幕）',
+    no_files_selected: 'No files selected',
+    empty_hint: '点击「添加文件 / 添加文件夹」或直接拖入 .srt 文件',
+    add_files: '添加文件',
+    add_folder: '添加文件夹',
+    remove_selected: '移除选中',
+    clear_btn: '清空',
+
+    // ---- 输出目录 ----
+    output_header: '输出目录',
+    save_to_source_dir: '保存到字幕同目录',
+    output_label: '输出:',
+    output_placeholder: '输出目录...',
+    browse_btn: '浏览',
+    open_btn: '打开',
+
+    // ---- 净语翻译面板 ----
+    refine_panel_title: '净语翻译 · 两阶段流水线（净语+翻译 → 审校+抛光）',
+    stage_a_label: '阶段A 净语+翻译（日译中）',
+    stage_b_label: '阶段B 审校+抛光（中文）',
+    provider_zen: 'Zen 免费',
+    provider_lmstudio: '本地 LM Studio',
+    provider_ollama: '本地 Ollama',
+    provider_siliconflow: '硅基流动',
+    provider_custom: '自定义兼容接口',
+    model_default_1: 'custom-model-1（默认）',
+    model_default_2: 'custom-model-2（默认）',
+    model_refresh_hint: '（点 ⟳ 刷新模型列表）',
+    refresh_model_title: '在线拉取模型列表',
+    test_stage_title: '测试该阶段连通性',
+    test_stage_btn: '测试',
+    key_placeholder: '留空用已保存密钥（LM Studio 免填）',
+    save_key_title: '保存该阶段服务商的 API Key（DPAPI 加密存储）',
+    profile_label: '兜底档位',
+    profile_title: 'local=兜底规则全开(cleaner_rules+误译拦截，适合本地模型)；cloud=lenient(仅零维护通用校验，适合强模型)',
+    profile_local: '本地·严格',
+    profile_cloud: '云端·宽松',
+    ctx_label: '上下文窗口',
+    ctx_title: '本地模型上下文窗口：启动后管线自动按此值对齐引擎（覆盖 LM Studio 手工设置），并据此收紧批大小。16GB 显存建议 16384~22272（缺省 22272 为作者 16GB 单卡实测档案值，请按自身显存调整）',
+    cleaner_dir_label: '净语配置目录',
+    cleaner_dir_placeholder: '留空=使用内置默认',
+    browse_dots: '浏览...',
+    templates_dir_label: '角色卡目录',
+    templates_dir_placeholder: '（未设置，使用默认）',
+
+    // ---- 角色卡编辑 ----
+    tpl_editor_summary: '角色卡模板编辑',
+    tpl_stage_a: '阶段A · 角色-净语翻译.txt',
+    tpl_stage_b: '阶段B · 角色-审校抛光.txt',
+    tpl_reload: '重新加载',
+    tpl_save: '💾 保存角色卡',
+    tpl_placeholder: '选择阶段后自动加载角色卡内容，可直接编辑后保存',
+
+    // ---- 全局词库 ----
+    gl_summary: '全局词库编辑',
+    gl_tab_label: '翻译术语',
+    th_source: '原文词条',
+    th_target: '期望译文',
+    gl_add: '＋添加',
+    gl_del: '删除选中',
+    gl_import: '导入CSV/TXT',
+    gl_export: '导出CSV',
+    gl_save: '💾 保存词库',
+    gl_scope_note: '生效范围用下方"词库→阶段A/阶段B"勾选控制；绑定文件：',
+    gl_path_empty: '（未加载）',
+
+    // ---- 批量 / 开关 ----
+    batch_local_label: '批量·本地',
+    batch_cloud_label: '批量·云端',
+    concurrency_label: '并行',
+    concurrency_title: '批间并发数（1-5），默认 2',
+    gl1_label: '词库→阶段A',
+    gl2_label: '词库→阶段B',
+    resume_label: '断点恢复（复用已完成阶段）',
+    resume_title: '中断后重跑时，检测到 *_manifest.json 即复用已完成阶段，仅续跑剩余阶段',
+    verbose_label: '详细日志',
+    verbose_title: '向子进程传递 --verbose 输出调试日志',
+    source_filter_label: '源侧检测',
+    sf_strict: '严格',
+    sf_default: '标准',
+    sf_off: '关闭',
+    sf_title: '闸门0 送翻前源侧幻觉检测档位：严格=叠加启发式删除 | 标准=仅明确幻觉删除 | 关闭=关闭检测',
+    synopsis_label: '剧情自摘要',
+    synopsis_title: '剧情自摘要（Beta）：默认开启，摘要仅注入翻译提示词，不产生任何输出内容',
+    dry_run_label: '试运行',
+    dry_run_title: '试运行：仅生成执行计划，不调用模型、不产出字幕',
+    fallback_local_label: '云端故障时本地接管',
+    fallback_local_title: '云端阶段遭遇限流/宕机/持续解析失败时，自动切换本地模型完成剩余批次',
+    fallback_model_label: '接管模型',
+    refresh_local_title: '刷新本地模型列表',
+
+    // ---- 接口地址 / 启动 ----
+    endpoints_summary: '接口地址（对应阶段A/B，切换服务商自动填充）',
+    s1_endpoint_label: '阶段A 地址',
+    s1_endpoint_placeholder: '阶段A 服务商的接口地址',
+    s3_endpoint_label: '阶段B 地址',
+    s3_endpoint_placeholder: '阶段B 服务商的接口地址',
+    save_endpoints_btn: '💾 保存接口配置',
+    start_btn: '▶ 开始净语翻译',
+    stop_btn: '⏹ 停止',
+    artifact_note: '产物命名含 .subtransjav 中间件与 *_final_cn.srt 终稿；已存在产物默认跳过',
+    status_idle: 'Idle',
+
+    // ---- 质量报告导读 ----
+    guide_summary: '质量报告导读',
+    guide_load_btn: '加载导读',
+    guide_conclusions: '结论',
+    guide_sections: '章节导读',
+    guide_companions: '伴生文件',
+
+    // ---- 控制台 / 页脚 ----
+    console_header: 'Console',
+    clear_console: 'Clear',
+    footer_brand: '净语翻译 · SubTransJAV Translate |',
+    about_link: '关于',
+
+    // ---- About 模态 ----
+    about_title: '关于',
+    about_intro: '简介',
+    about_intro_text: 'SubTransJAV 是一款 .srt 字幕日译中桌面工具，支持本地与云端双引擎推理。' +
+        '采用 v2 两阶段流水线：阶段A 净语+翻译（一次调用完成文本清洗与日译中）→ ' +
+        '阶段B 审校+抛光（对照日文原文审核、补译、润色）。',
+    feat_tm: 'TM 翻译记忆库（三层准入门槛，防止低质翻译入库）',
+    feat_report: '双引擎分歧质量报告与伪影/幻觉过滤（删除台账见报告【处置】章节）',
+    feat_glossary_learn: '词库自动学习（带准入门槛，防止污染词库）',
+    feat_fallback: '云端故障本地接管（云端限流/宕机时自动切换本地模型）',
+    feat_context_review: '双语字幕上下文预审（context_review 分歧复核工具）',
+    shortcuts_title: '快捷键',
+    sc_ctrl_o: 'Ctrl+O - 添加文件',
+    sc_ctrl_r: 'Ctrl+R - 开始翻译',
+    sc_escape: 'Escape - 取消/关闭对话框',
+    sc_f1: 'F1 - 显示本对话框',
+    project_home_link: 'SubTransJAV 项目主页',
+    close_btn: '关闭',
+
+    // ---- 动态文案收编（原表外内联中文）----
+    no_files_hint: '请先在上方 Source 区添加 .srt 字幕文件。',
+    resumable_found: n => `🔄 检测到可恢复 ${n} 个（将复用已完成阶段）`,
+    still_running: secs => `（仍在运行，最近活动 ${secs}s 前）`,
+    risk_suffix: n => `｜风险 ${n}`,
+    risk_word: '风险',
+    untranslated_title: '⚠️ 整段未翻译',
+    untranslated_hint: '大量条目保留了日文原文，请检查风险清单',
+    level_critical: '严重风险',
+    level_warning: '风险',
+    completed_with_risks: (level, n) => `翻译完成，但检测到${level}（${n} 条），请检查风险清单`,
+    completed_title: '翻译完成',
+    completed_detail: '全部文件处理完毕，产物见输出目录。',
+    confirm_reload: '翻译正在进行中。仍要刷新吗？这将终止子进程。',
+    ep_deepseek_placeholder: 'DeepSeek 原生通道（无需地址）',
+    ep_placeholder: '接口地址（以 /v1 结尾）',
+    select_provider_first: '⚠️ 请先选择该阶段的服务商',
+    loading_models: '加载中...',
+    fetching_models: '拉取模型列表中...',
+    default_model_missing: (id, cur) => `⚠️ 默认模型 ${id} 不在您的模型列表中，已选择 ${cur}，请按需更换`,
+    models_loaded: n => `✅ 模型 ${n} 个`,
+    fetch_failed: '获取失败',
+    testing: '测试中...',
+    failed: '失败',
+    alias_label: '别名: ',
+    gl_saved: n => `💾 已保存 ${n} 条`,
+    tpl_saved: p => `💾 已保存 ${p}`,
+    gl_prompt_src: '原文词条（字幕中出现的词）：',
+    gl_prompt_dst: s => `「${s}」的期望译文：`,
+    gl_imported: n => `📥 导入完成：新增 ${n} 条（已自动保存）`,
+    gl_exported: (n, p) => `📤 已导出 ${n} 条 -> ${p}`,
+    dir_not_set: '⚠ 目录未设置，请先通过「浏览」选择目录',
+    dir_opened: p => `📂 已打开目录: ${p}`,
+    dir_open_failed: m => `✗ 打开目录失败: ${m}`,
+    dir_open_error: e => `✗ 打开目录异常: ${e}`,
+    provider_required: '⚠️ 请先选择服务商',
+    lmstudio_no_key: 'LM Studio 无需密钥',
+    ollama_no_key: 'Ollama 无需密钥',
+    key_saved: p => `💾 密钥已加密保存（${p}）`,
+    key_cleared: '🗑 已清除该服务商密钥',
+    key_saved_placeholder: '已保存密钥 ✓（留空即用）',
+    grammar_hint_on_title: '语法提示已启用 - 阶段A自动分析日语语法结构',
+    grammar_hint_off_title: '语法提示未启用 - 安装 sudachipy 可启用',
+    endpoints_saved: '💾 接口配置已保存，下次启动自动加载',
+    no_conclusions: '（无结论）',
+    no_sections: '（无章节导读）',
+    no_companions: '（无伴生文件信息）',
+    generated_at_label: '生成时间：',
+    unknown: '未知',
+    api_not_ready: '接口未就绪，请稍后再试',
+    guide_need_inputs: '请先选择输入文件并指定输出目录',
+    guide_loading: '加载中…',
+    guide_loaded: p => `已加载：${p}`,
+    guide_load_failed: m => `加载失败：${m}`,
+    gui_initialized: '净语翻译 GUI 已初始化',
+    gui_usage_hint: '在上方 Source 区添加 .srt 字幕后点击「▶ 开始净语翻译」',
 };
+
+// i18n 注入：DOMContentLoaded 时把 MSG 写回带 data-i18n* 标记的元素
+function applyI18n() {
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const v = MSG[el.dataset.i18n];
+        if (typeof v === 'string') el.textContent = v;
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const v = MSG[el.dataset.i18nTitle];
+        if (typeof v === 'string') el.setAttribute('title', v);
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+        const v = MSG[el.dataset.i18nPlaceholder];
+        if (typeof v === 'string') el.setAttribute('placeholder', v);
+    });
+}
 
 // ============================================================
 // State Management
@@ -633,7 +859,7 @@ const TranslatorManager = {
         if (AppState.isRunning) return;
 
         if (AppState.selectedFiles.length === 0) {
-            ErrorHandler.show(MSG.noFilesTitle, '请先在上方 Source 区添加 .srt 字幕文件。');
+            ErrorHandler.show(MSG.noFilesTitle, MSG.noFilesHint);
             return;
         }
 
@@ -657,8 +883,7 @@ const TranslatorManager = {
                         .filter(s => s && s.state === 'resumable');
                     if (resumable.length > 0) {
                         ConsoleManager.log(
-                            `🔄 检测到可恢复 ${resumable.length} 个（将复用已完成阶段）`,
-                            'info');
+                            MSG.resumableFound(resumable.length), 'info');
                         resumable.forEach(s =>
                             ConsoleManager.log(`   ↺ ${s.stem}`, 'info'));
                     }
@@ -725,11 +950,11 @@ const TranslatorManager = {
                 if (status.status === 'running' &&
                     status.heartbeat_age != null && status.heartbeat_age > staleS) {
                     const secs = Math.round(status.heartbeat_age);
-                    text = `${text || MSG.running}（仍在运行，最近活动 ${secs}s 前）`;
+                    text = `${text || MSG.running}${MSG.stillRunning(secs)}`;
                 }
                 // 风险计数
                 if (status.risk_count > 0) {
-                    text = `${text || MSG.running}｜风险 ${status.risk_count}`;
+                    text = `${text || MSG.running}${MSG.riskSuffix(status.risk_count)}`;
                 }
                 if (text) this.setStatus(text);
 
@@ -742,7 +967,7 @@ const TranslatorManager = {
                     fresh.forEach(r => {
                         const where = r.phase ? `（${r.phase}）` : '';
                         ConsoleManager.log(
-                            `⚠️ ${where}${r.message || r.type || '风险'}`, 'warning');
+                            `⚠️ ${where}${r.message || r.type || MSG.riskWord}`, 'warning');
                     });
                     this._reportedRiskCount = status.risk_count;
                 }
@@ -757,16 +982,17 @@ const TranslatorManager = {
                 if (status.status === 'completed') {
                     this.setProgress(100);
                     if (status.untranslated_majority) {
-                        ErrorHandler.show('⚠️ 整段未翻译',
-                            '大量条目保留了日文原文，请检查风险清单');
+                        ErrorHandler.show(MSG.untranslatedTitle,
+                            MSG.untranslatedHint);
                     } else if (status.warning_level) {
-                        const level = status.warning_level === 'critical' ? '严重风险' : '风险';
+                        const level = status.warning_level === 'critical'
+                            ? MSG.levelCritical : MSG.levelWarning;
                         ConsoleManager.log(
-                            `翻译完成，但检测到${level}（${status.risk_count || 0} 条），请检查风险清单`,
+                            MSG.completedWithRisks(level, status.risk_count || 0),
                             'warning');
                     } else {
                         ConsoleManager.log(MSG.completedLog, 'success');
-                        ErrorHandler.showSuccess('翻译完成', '全部文件处理完毕，产物见输出目录。');
+                        ErrorHandler.showSuccess(MSG.completedTitle, MSG.completedDetail);
                     }
                     if (typeof this.guideAutoDetect === 'function') this.guideAutoDetect();
                     this._finish(MSG.completed);
@@ -937,7 +1163,7 @@ const KeyboardShortcuts = {
             if (e.key === 'F5') {
                 if (AppState.isRunning) {
                     e.preventDefault();
-                    if (confirm('翻译正在进行中。仍要刷新吗？这将终止子进程。')) {
+                    if (confirm(MSG.confirmReload)) {
                         location.reload();
                     }
                 }
@@ -1017,7 +1243,7 @@ function closeAbout() {
     ep.disabled = (prov === 'deepseek');
     if (prov === 'deepseek') ep.value = '';
     ep.placeholder = prov === 'deepseek'
-      ? 'DeepSeek 原生通道（无需地址）' : '接口地址（以 /v1 结尾）';
+      ? MSG.ep_deepseek_placeholder : MSG.ep_placeholder;
     // ollama 地址同样可编辑（与 lmstudio 一致，placeholder 提示默认端口）
   }
 
@@ -1141,13 +1367,13 @@ function closeAbout() {
     const btn = $('refineRefreshS' + n);
     const sel = $('refineS' + n + 'Model');
     if (!btn || !sel) return;
-    if (!prov) { stageStatus(n, '⚠️ 请先选择该阶段的服务商', 'err'); return; }
+    if (!prov) { stageStatus(n, MSG.select_provider_first, 'err'); return; }
     btn.disabled = true;
     const old = btn.textContent; btn.textContent = '…';
     // 保留 HTML 初始默认选中项，失败/异常时恢复，避免下拉被清空
     const originalHTML = sel.innerHTML;
-    sel.innerHTML = '<option value="">加载中...</option>';
-    stageStatus(n, '拉取模型列表中...', '');
+    sel.innerHTML = '<option value="">' + MSG.loading_models + '</option>';
+    stageStatus(n, MSG.fetching_models, '');
     try {
       const r = await pywebview.api.refine_list_models(
         prov, stageEndpoint(n), stageKeyOrNull(n));
@@ -1165,17 +1391,16 @@ function closeAbout() {
           sel.value = nonEmbed ? nonEmbed.value : sel.options[0].value;
           const def = LOCAL_MODEL_DEFAULTS[n];
           if (def && def.id) {
-            stageStatus(n, '⚠️ 默认模型 ' + def.id +
-              ' 不在您的模型列表中，已选择 ' + sel.value + '，请按需更换', '');
+            stageStatus(n, MSG.default_model_missing(def.id, sel.value), '');
           } else {
-            stageStatus(n, '✅ 模型 ' + r.models.length + ' 个', 'ok');
+            stageStatus(n, MSG.models_loaded(r.models.length), 'ok');
           }
         } else {
-          stageStatus(n, '✅ 模型 ' + r.models.length + ' 个', 'ok');
+          stageStatus(n, MSG.models_loaded(r.models.length), 'ok');
         }
       } else {
         sel.innerHTML = originalHTML;
-        stageStatus(n, '❌ ' + (r.error || '获取失败') + (r.tip ? ' · ' + r.tip : ''), 'err');
+        stageStatus(n, '❌ ' + (r.error || MSG.fetch_failed) + (r.tip ? ' · ' + r.tip : ''), 'err');
       }
     } catch (e) {
       sel.innerHTML = originalHTML;
@@ -1227,14 +1452,14 @@ function closeAbout() {
     const btn = $('refineTestS' + n);
     if (!btn) return;
     btn.disabled = true;
-    if (st) { st.style.color = '#888'; st.textContent = '测试中...'; }
+    if (st) { st.style.color = '#888'; st.textContent = MSG.testing; }
     try {
       const r = await pywebview.api.refine_test_stage(
         prov, model, stageEndpoint(n), stageKeyOrNull(n));
       if (st) {
         st.style.color = r.success ? 'green' : 'crimson';
         st.textContent = (r.success ? '✅ ' : '❌ ') +
-          (r.success ? r.message : (r.tip || r.error || '失败'));
+          (r.success ? r.message : (r.tip || r.error || MSG.failed));
       }
       if (!r.success && r.tip) console.warn('[refine]', r.tip);
     } catch (e) {
@@ -1270,7 +1495,7 @@ function closeAbout() {
       '<td style="padding:2px 4px;"><input class="form-input compact gl-dst" ' +
       'style="width:100%;" value="' + esc(r[1]) + '">' +
       // 别名第三列只读展示（不由前端编辑；无别名不渲染，保存时后端保留）
-      (r[2] ? '<div style="font-size:11px; color:#888; margin-top:1px;">别名: ' +
+      (r[2] ? '<div style="font-size:11px; color:#888; margin-top:1px;">' + MSG.alias_label +
         esc(r[2]) + '</div>' : '') + '</td>' +
       '<td style="text-align:center;"><input type="checkbox" class="gl-sel"></td>' +
       '</tr>').join('');
@@ -1303,13 +1528,13 @@ function closeAbout() {
   async function glSave() {
     const r = await pywebview.api.refine_save_glossary(
       glRows(), $('refineGlossary') ? $('refineGlossary').value : null);
-    glStatus(r.success ? '💾 已保存 ' + r.count + ' 条' : '❌ ' + r.error);
+    glStatus(r.success ? MSG.gl_saved(r.count) : '❌ ' + r.error);
   }
 
   function glAdd() {
-    const src = prompt('原文词条（字幕中出现的词）：');
+    const src = prompt(MSG.gl_prompt_src);
     if (!src || !src.trim()) return;
-    const dst = prompt('「' + src.trim() + '」的期望译文：');
+    const dst = prompt(MSG.gl_prompt_dst(src.trim()));
     if (!dst || !dst.trim()) return;
     const rows = glRows().filter(r => r[0] !== src.trim());
     rows.push([src.trim(), dst.trim()]);
@@ -1344,7 +1569,7 @@ function closeAbout() {
       if (!have.has(row[0])) { merged.push(row); have.add(row[0]); added++; }
     });
     glRender(merged);
-    glStatus('📥 导入完成：新增 ' + added + ' 条（已自动保存）');
+    glStatus(MSG.gl_imported(added));
     await pywebview.api.refine_save_glossary(merged, target || null);
   }
 
@@ -1352,7 +1577,7 @@ function closeAbout() {
     const pick = await pywebview.api.refine_pick_csv_save();
     if (!pick.success) return;
     const r = await pywebview.api.refine_save_glossary(glRows(), pick.path);
-    glStatus(r.success ? '📤 已导出 ' + r.count + ' 条 -> ' + r.path : '❌ ' + r.error);
+    glStatus(r.success ? MSG.gl_exported(r.count, r.path) : '❌ ' + r.error);
   }
 
   // ---- 角色卡编辑器 ----
@@ -1383,7 +1608,7 @@ function closeAbout() {
         $('refineTemplatesDir') ? $('refineTemplatesDir').value : null);
       if (st) {
         st.style.color = r.success ? 'green' : 'crimson';
-        st.textContent = r.success ? '💾 已保存 ' + r.path : '❌ ' + r.error;
+        st.textContent = r.success ? MSG.tpl_saved(r.path) : '❌ ' + r.error;
       }
     } catch (e) { if (st) st.textContent = '❌ ' + e; }
   }
@@ -1409,18 +1634,18 @@ function closeAbout() {
 
   async function openDir(path) {
     if (!path) {
-      ConsoleManager.log('⚠ 目录未设置，请先通过「浏览」选择目录', 'warning');
+      ConsoleManager.log(MSG.dir_not_set, 'warning');
       return;
     }
     try {
       const r = await pywebview.api.open_output_folder(path, false);
       if (r.success) {
-        ConsoleManager.log('📂 已打开目录: ' + path, 'info');
+        ConsoleManager.log(MSG.dir_opened(path), 'info');
       } else {
-        ConsoleManager.log('✗ 打开目录失败: ' + r.message, 'error');
+        ConsoleManager.log(MSG.dir_open_failed(r.message), 'error');
       }
     } catch (e) {
-      ConsoleManager.log('✗ 打开目录异常: ' + e, 'error');
+      ConsoleManager.log(MSG.dir_open_error(e), 'error');
     }
   }
 
@@ -1428,16 +1653,16 @@ function closeAbout() {
   async function saveStageKey(n) {
     const prov = ($('refineS' + n + 'Provider') || {}).value;
     const key = stageKeyOrNull(n) || '';
-    if (!prov) { stageStatus(n, '⚠️ 请先选择服务商', 'err'); return; }
-    if (prov === 'lmstudio') { stageStatus(n, 'LM Studio 无需密钥', ''); return; }
-    if (prov === 'ollama') { stageStatus(n, 'Ollama 无需密钥', ''); return; }
+    if (!prov) { stageStatus(n, MSG.provider_required, 'err'); return; }
+    if (prov === 'lmstudio') { stageStatus(n, MSG.lmstudio_no_key, ''); return; }
+    if (prov === 'ollama') { stageStatus(n, MSG.ollama_no_key, ''); return; }
     try {
       const r = await pywebview.api.refine_save_stage_settings(null,
         [{ stage: n, provider: prov, key: key }]);
       if (r.success) {
-        stageStatus(n, key ? '💾 密钥已加密保存（' + prov + '）' : '🗑 已清除该服务商密钥', 'ok');
+        stageStatus(n, key ? MSG.key_saved(prov) : MSG.key_cleared, 'ok');
         const inp = $('refineS' + n + 'Key');
-        if (inp) { inp.value = ''; inp.placeholder = key ? '已保存密钥 ✓（留空即用）' : inp.placeholder; }
+        if (inp) { inp.value = ''; inp.placeholder = key ? MSG.key_saved_placeholder : inp.placeholder; }
       } else {
         stageStatus(n, '❌ ' + r.error, 'err');
       }
@@ -1460,7 +1685,7 @@ function closeAbout() {
           v2_ctx: readRefineCtx() });
       if (st) {
         st.style.color = r.success ? 'green' : 'crimson';
-        st.textContent = r.success ? '💾 接口配置已保存，下次启动自动加载' : '❌ ' + r.error;
+        st.textContent = r.success ? MSG.endpoints_saved : '❌ ' + r.error;
       }
     } catch (e) {
       if (st) { st.style.color = 'crimson'; st.textContent = '❌ ' + e; }
@@ -1499,7 +1724,7 @@ function closeAbout() {
         if (prov && r.key_status && r.key_status[prov]) {
           const inp = $('refineS' + n + 'Key');
           if (inp && prov !== 'lmstudio' && prov !== 'ollama')
-            inp.placeholder = '已保存密钥 ✓（留空即用）';
+            inp.placeholder = MSG.key_saved_placeholder;
         }
       }
     } catch (e) { console.warn('[refine] 读取已保存接口配置失败', e); }
@@ -1531,50 +1756,50 @@ function closeAbout() {
     if (ulC) {
       ulC.innerHTML = (data.conclusions || [])
         .map(c => '<li>' + esc(c) + '</li>').join('')
-        || '<li>（无结论）</li>';
+        || '<li>' + MSG.no_conclusions + '</li>';
     }
     if (dlS) {
       dlS.innerHTML = (data.sections || [])
         .map(s => '<dt>' + esc(s.title) + '</dt><dd>' + esc(s.note) + '</dd>')
-        .join('') || '<dt>（无章节导读）</dt>';
+        .join('') || '<dt>' + MSG.no_sections + '</dt>';
     }
     if (ulP) {
       const comp = data.companions || {};
       const keys = Object.keys(comp);
       ulP.innerHTML = keys.length
         ? keys.map(k => '<li>' + esc(k) + ' ' + (comp[k] ? '✓' : '✗') + '</li>').join('')
-        : '<li>（无伴生文件信息）</li>';
+        : '<li>' + MSG.no_companions + '</li>';
     }
     const meta = $('guideMeta');
     if (meta) {
-      meta.textContent = '生成时间：' + (data.generated_at || '未知')
+      meta.textContent = MSG.generated_at_label + (data.generated_at || MSG.unknown)
         + ' · ' + (data.basis || '');
     }
   }
 
   async function guideLoad(silent) {
     if (!window.pywebview || !window.pywebview.api) {
-      if (!silent) guideStatus('接口未就绪，请稍后再试');
+      if (!silent) guideStatus(MSG.api_not_ready);
       return;
     }
     const p = guidePath();
     if (!p) {
-      if (!silent) guideStatus('请先选择输入文件并指定输出目录');
+      if (!silent) guideStatus(MSG.guide_need_inputs);
       return;
     }
-    if (!silent) guideStatus('加载中…');
+    if (!silent) guideStatus(MSG.guide_loading);
     try {
       const r = await window.pywebview.api.read_output_artifact(p);
       if (r && r.success) {
         const dv = $('refineGuideViewer');
         if (dv) dv.open = true;
         guideRender(r.data || {});
-        guideStatus('已加载：' + (r.path || p));
+        guideStatus(MSG.guide_loaded(r.path || p));
       } else {
-        guideStatus('加载失败：' + ((r && r.error) || '未知错误'));
+        guideStatus(MSG.guide_load_failed((r && r.error) || MSG.unknownError));
       }
     } catch (e) {
-      guideStatus('加载失败：' + (e && e.message ? e.message : String(e)));
+      guideStatus(MSG.guide_load_failed(e && e.message ? e.message : String(e)));
     }
   }
 
@@ -1604,7 +1829,7 @@ function closeAbout() {
       const pv = $('refineS' + n + 'Provider');
       if (pv) pv.addEventListener('change', () => {
         const sel = $('refineS' + n + 'Model');
-        if (sel) sel.innerHTML = '<option value="">（点 ⟳ 刷新模型列表）</option>';
+        if (sel) sel.innerHTML = '<option value="">' + MSG.model_refresh_hint + '</option>';
         applyProviderEndpoint(n);
         if (window.__pywebviewReady) refreshModels(n);
       });
@@ -1709,6 +1934,9 @@ function closeAbout() {
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('SubTransJAV GUI initialized');
 
+    // i18n：先把 MSG 文案注入 data-i18n* 标记的元素
+    applyI18n();
+
     // Initialize components (pure DOM parts)
     ConsoleManager.init();
     ProgressManager.init();
@@ -1723,8 +1951,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Update Start button state once at startup
     TranslatorManager.updateButtons();
 
-    ConsoleManager.log('净语翻译 GUI 已初始化', 'success');
-    ConsoleManager.log('在上方 Source 区添加 .srt 字幕后点击「▶ 开始净语翻译」', 'info');
+    ConsoleManager.log(MSG.gui_initialized, 'success');
+    ConsoleManager.log(MSG.gui_usage_hint, 'info');
 });
 
 function RunControlsInit() {
@@ -1767,10 +1995,10 @@ const FeatureStatus = {
 
         if (info.available) {
             badge.className = 'feature-badge active';
-                badge.title = '语法提示已启用 - 阶段A自动分析日语语法结构';
+                badge.title = MSG.grammar_hint_on_title;
         } else {
             badge.className = 'feature-badge inactive';
-            badge.title = '语法提示未启用 - 安装 sudachipy 可启用';
+            badge.title = MSG.grammar_hint_off_title;
         }
     }
 };

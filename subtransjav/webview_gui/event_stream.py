@@ -21,6 +21,8 @@ from typing import Any
 
 from subtransjav.refine.events import parse_event_line
 
+from .strings import msg
+
 # 风险清单去重上限（超出后新的唯一风险仍计数，但明细列表只保留最近 100 条）
 RISKS_CAP = 100
 # snapshot 返回的风险明细条数（GUI 轮询展示用）
@@ -28,19 +30,19 @@ RISKS_SNAPSHOT = 50
 # 心跳超时默认阈值（秒；≈2.25×心跳间隔 20s，可由 RefineConfig.heartbeat_stale_s 覆盖后构造传入）
 HEARTBEAT_STALE_S_DEFAULT = 45.0
 
-# 阶段标签归一：事件 phase 短标签 → 状态栏展示文案（未知值原样透传）
-_STAGE_LABELS = {
-    "a": "阶段A 净语+翻译",
-    "1": "阶段A 净语+翻译",
-    "phase_a": "阶段A 净语+翻译",
-    "s1": "阶段A 净语+翻译",
-    "stage_a": "阶段A 净语+翻译",
-    "b": "阶段B 审校+抛光",
-    "2": "阶段B 审校+抛光",
-    "3": "阶段B 审校+抛光",
-    "phase_b": "阶段B 审校+抛光",
-    "s3": "阶段B 审校+抛光",
-    "stage_b": "阶段B 审校+抛光",
+# 阶段标签归一：事件 phase 短标签 → strings.MSG 键（未知值原样透传）
+_STAGE_LABEL_KEYS = {
+    "a": "stage_a",
+    "1": "stage_a",
+    "phase_a": "stage_a",
+    "s1": "stage_a",
+    "stage_a": "stage_a",
+    "b": "stage_b",
+    "2": "stage_b",
+    "3": "stage_b",
+    "phase_b": "stage_b",
+    "s3": "stage_b",
+    "stage_b": "stage_b",
 }
 
 
@@ -51,7 +53,8 @@ def stage_label(phase) -> str:
     key = str(phase).strip().lower()
     if not key:
         return ""
-    return _STAGE_LABELS.get(key, str(phase).strip())
+    label_key = _STAGE_LABEL_KEYS.get(key)
+    return msg(label_key) if label_key else str(phase).strip()
 
 
 def _join(*parts: str) -> str:
@@ -82,33 +85,35 @@ def format_event_line(event: dict[str, Any]) -> str | None:
     payload = event.get("payload") or {}
 
     if etype == "task_started":
-        return "[事件] 任务开始"
+        return _join(msg("ev_tag"), msg("ev_task_started"))
     if etype == "phase_started":
-        return _join("[事件]", phase, "开始") if phase else "[事件] 阶段开始"
+        return (_join(msg("ev_tag"), phase, msg("ev_phase_started"))
+                if phase else _join(msg("ev_tag"), msg("ev_phase_started_generic")))
     if etype == "phase_progress":
         done = payload.get("done", payload.get("lines_done"))
         total = payload.get("total", payload.get("lines_total"))
         batch = payload.get("batch", payload.get("batch_no"))
         batch_total = payload.get("batch_total")
         if batch is not None and batch_total:
-            core = f"批次 {batch}/{batch_total}"
+            core = msg("ev_batch", done=batch, total=batch_total)
         elif done is not None and total:
-            core = f"{done}/{total} 行"
+            core = msg("ev_lines", done=done, total=total)
         else:
             core = ""
         if core:
-            return _join("[事件]", phase, core, "进行中")
-        return _join("[事件]", phase, "进行中")
+            return _join(msg("ev_tag"), phase, core, msg("ev_in_progress"))
+        return _join(msg("ev_tag"), phase, msg("ev_in_progress"))
     if etype == "phase_finished":
-        return _join("[事件]", phase, "完成") if phase else "[事件] 阶段完成"
+        return (_join(msg("ev_tag"), phase, msg("ev_phase_finished"))
+                if phase else _join(msg("ev_tag"), msg("ev_phase_finished_generic")))
     if etype == "warning":
-        return f"[事件] ⚠ 警告：{_extract_message(payload)}"
+        return f"{msg('ev_tag')} {msg('ev_warning', e=_extract_message(payload))}"
     if etype == "degraded":
-        return f"[事件] ⚠ 降级：{_extract_message(payload)}"
+        return f"{msg('ev_tag')} {msg('ev_degraded', e=_extract_message(payload))}"
     if etype == "error":
-        return f"[事件] ✗ 错误：{_extract_message(payload)}"
+        return f"{msg('ev_tag')} {msg('ev_error', e=_extract_message(payload))}"
     if etype == "task_finished":
-        return "[事件] 任务结束"
+        return _join(msg("ev_tag"), msg("ev_task_finished"))
     return None    # heartbeat 及未知类型不输出
 
 
@@ -186,7 +191,7 @@ class EventStreamParser:
     def __init__(self, heartbeat_stale_s: float = HEARTBEAT_STALE_S_DEFAULT):
         self.heartbeat_stale_s = float(heartbeat_stale_s)
         self.current_stage = ""
-        self.current_file = None
+        self.current_file: str | None = None
         self.lines_total = 0
         self.lines_done = 0
         self.batch_done = 0
@@ -199,7 +204,7 @@ class EventStreamParser:
         self.heartbeat_last_ts: float | None = None
         self.ndjson_mode = False
         self.untranslated_majority = False
-        self._risk_keys = set()
+        self._risk_keys: set[str] = set()
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
@@ -287,11 +292,15 @@ class EventStreamParser:
     def _refresh_progress_text(self) -> None:
         """与遗留层一致的 current_file 文案。"""
         if self.lines_total:
-            label = self.current_stage or "处理中"
+            label = self.current_stage or msg("processing")
             if self.batch_total:
-                label = _join(label, f"批次 {self.batch_done}/{self.batch_total}")
-            self.current_file = (
-                f"已翻译约 {self.lines_done}/{self.lines_total} 行（{label}）")
+                label = _join(label, msg("ev_batch",
+                                         done=self.batch_done,
+                                         total=self.batch_total))
+            self.current_file = msg("progress_text",
+                                    done=self.lines_done,
+                                    total=self.lines_total,
+                                    label=label)
 
     # ------------------------------------------------------------------
     def _feed_legacy(self, line: str) -> None:

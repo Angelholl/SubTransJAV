@@ -11,6 +11,7 @@
   WorkingDirectory 指向仓库根。
 """
 
+import re
 import time
 from pathlib import Path
 
@@ -108,6 +109,74 @@ def test_sentinel_prefixes_kept_english_in_api():
     assert "[SUCCESS]" in text and "msg('log_success')" in text
     assert "[CANCELLED]" in text and "msg('log_cancelled')" in text
     assert "[ERROR]" in text
+
+
+# ---------------------------------------------------------------------------
+# W2 i18n 双表同步钉：index.html data-i18n* 引用的键必须都在 app.js MSG 中
+# ---------------------------------------------------------------------------
+
+_APP_JS_PATH = WEBVIEW_GUI_DIR / "assets" / "app.js"
+_INDEX_HTML_PATH = WEBVIEW_GUI_DIR / "assets" / "index.html"
+
+
+def _js_msg_keys() -> set[str]:
+    """正则解析 app.js 顶部 ``const MSG = {...}`` 的键名集合。
+
+    兼容两种值形态（字符串值 / 函数值）：
+      key: 'text',           key: `text`,
+      key: n => `...`,       key: (a, b) => `...`,
+    """
+    src = _APP_JS_PATH.read_text(encoding="utf-8")
+    m = re.search(r"const MSG = \{(.*?)\n\};", src, re.S)
+    assert m, "app.js 未找到 const MSG = {...} 键表"
+    body = m.group(1)
+    keys = set(re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", body, re.M))
+    assert keys, "app.js MSG 键表解析为空"
+    return keys
+
+
+@pytest.mark.parametrize("attr", ["data-i18n", "data-i18n-title",
+                                  "data-i18n-placeholder"])
+def test_html_i18n_keys_exist_in_js_msg(attr):
+    """index.html 引用的 i18n 键不悬空：全部 ∈ app.js MSG 键集。"""
+    html = _INDEX_HTML_PATH.read_text(encoding="utf-8")
+    referenced = set(re.findall(attr + r'="([A-Za-z_][A-Za-z0-9_]*)"', html))
+    assert referenced, f"index.html 未引用任何 {attr}"
+    js_keys = _js_msg_keys()
+    dangling = sorted(referenced - js_keys)
+    assert not dangling, \
+        f"index.html 的 {attr} 引用了 app.js MSG 中不存在的键: {dangling}"
+
+
+def test_html_has_no_unmarked_user_visible_chinese():
+    """防回归：index.html 用户可见内容不再出现未收编的中文文案。
+
+    规则（剥掉 HTML 注释后）：
+    - 文本节点含中文 → 其最近一次开标签必须带 data-i18n；
+    - 标签属性 title=/placeholder= 含中文 → 同标签必须带 data-i18n-title /
+      data-i18n-placeholder。
+    """
+    html = re.sub(r"<!--.*?-->", "", _INDEX_HTML_PATH.read_text(encoding="utf-8"),
+                  flags=re.S)
+    leftovers = []
+    # 属性检查
+    for m in re.finditer(r"<([a-zA-Z][^>\s]*)([^>]*)>", html):
+        attrs = m.group(2)
+        for prop in ("placeholder", "title"):
+            pm = re.search(prop + r'="([^"]*)"', attrs)
+            if pm and re.search(r"[\u4e00-\u9fff]", pm.group(1)) \
+                    and f"data-i18n-{prop}" not in attrs:
+                leftovers.append(f"<{m.group(1)} {prop}={pm.group(1)[:30]}>")
+    # 文本节点检查
+    cur_attrs = ""
+    for part in re.split(r"(<[^>]+>)", html):
+        if re.match(r"<[a-zA-Z]", part):
+            cur_attrs = part
+        elif part.startswith("</"):
+            cur_attrs = ""
+        elif re.search(r"[\u4e00-\u9fff]", part) and "data-i18n" not in cur_attrs:
+            leftovers.append(part.strip()[:40])
+    assert not leftovers, f"index.html 存在未收编的用户可见中文: {leftovers}"
 
 
 # ---------------------------------------------------------------------------
