@@ -26,10 +26,12 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifact_lock import acquire_artifact_lock, release_artifact_lock
 from .asr_meta import SUSPECT_STATUSES, load_asr_meta
 from .config import (
     DEEPSEEK_BASE_DEFAULT,
@@ -194,9 +196,11 @@ _KANJI_SRC_RE = re.compile(r"[\u4e00-\u9fff]")
 # ---------------------------------------------------------------------------
 # P1-6 语法提示跨阶段缓存：键 (sha1(条目文本), 阶段tag, profile)。
 # A/B 两阶段与多文件批次共享；同一文本（ASR 重复行极常见）只分析一次。
-# 容量满 50000 直接清空（防无限膨胀；负缓存 None 同样入缓存）。
+# 容量满 50000 时按 LRU 逐条淘汰最旧键（v1.3.0 D3 终选：
+# D2026-0925-01 补充裁决——OrderedDict+move_to_end+popitem(last=False)，
+# 不再整表 clear()，热键跨淘汰轮保留；负缓存 None 同样入缓存）。
 # ---------------------------------------------------------------------------
-_GRAMMAR_CACHE: dict = {}
+_GRAMMAR_CACHE: "OrderedDict" = OrderedDict()
 _GRAMMAR_CACHE_MAX = 50000
 _GRAMMAR_CACHE_LOCK = threading.Lock()
 
@@ -508,11 +512,14 @@ def _collect_grammar_hints(context_entries: list, targets: list,
     hints = {}
     misses = []
     with _GRAMMAR_CACHE_LOCK:
-        if len(_GRAMMAR_CACHE) >= _GRAMMAR_CACHE_MAX:
-            _GRAMMAR_CACHE.clear()
+        # LRU 淘汰（D3 终选）：触顶不再整表清空，逐条弹出最旧键，
+        # 直到低于容量——循环以应对一次批量可能跨多条淘汰
+        while len(_GRAMMAR_CACHE) >= _GRAMMAR_CACHE_MAX:
+            _GRAMMAR_CACHE.popitem(last=False)
         for e in targets:
             key = _grammar_cache_key(e.get("text"), tag, profile)
             if key in _GRAMMAR_CACHE:
+                _GRAMMAR_CACHE.move_to_end(key)
                 hint = _GRAMMAR_CACHE[key]
                 if hint:
                     hints[e["index"]] = hint
@@ -531,8 +538,9 @@ def _collect_grammar_hints(context_entries: list, targets: list,
             hint = generate_grammar_hints(
                 srt_content, e["index"], entries=context_entries)
             with _GRAMMAR_CACHE_LOCK:
-                if len(_GRAMMAR_CACHE) >= _GRAMMAR_CACHE_MAX:
-                    _GRAMMAR_CACHE.clear()
+                # 同款 LRU 淘汰（D3 终选）：写回前先逐条弹出最旧键
+                while len(_GRAMMAR_CACHE) >= _GRAMMAR_CACHE_MAX:
+                    _GRAMMAR_CACHE.popitem(last=False)
                 _GRAMMAR_CACHE[key] = hint or None
             if hint:
                 hints[e["index"]] = hint
@@ -989,6 +997,30 @@ def run_v2(cfg: RefineConfig, *, summary_sink: dict | None = None,
 
 def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                    emitter=None, learn_threads: list | None = None) -> str:
+    """产物锁挂点（v1.3.0 D4，D2026-0925-01 终选）：锁键=输入 sha1+output_dir。
+
+    锁在 _resolve_stage_paths 之后、写任何产物之前获取；获锁失败
+    （同输入同输出目录已被其他进程处理）→ 打印中文错误并抛
+    RefineError，由上层既有单文件失败路径兜底（不返回空串：run_v2
+    对空返回按成功计数，语义不符）。finally 释放，进程死 OS 自动释放。
+    """
+    resolved_in, resolved_out, _stem = _resolve_stage_paths(cfg, in_path)
+    lock = acquire_artifact_lock(resolved_in, resolved_out)
+    if lock is None:
+        print(f"❌ [v2] 产物锁被其他进程占用，拒绝处理该文件："
+              f"{Path(resolved_in).name}（输出目录 {resolved_out}）")
+        raise RefineError(
+            f"产物锁被其他进程占用：{Path(resolved_in).name}")
+    try:
+        return _run_single_v2_impl(cfg, in_path, collector=collector,
+                                   emitter=emitter,
+                                   learn_threads=learn_threads)
+    finally:
+        release_artifact_lock(lock)
+
+
+def _run_single_v2_impl(cfg: RefineConfig, in_path: str, collector=None,
+                        emitter=None, learn_threads: list | None = None) -> str:
     if collector is None:
         collector = RiskCollector()
     if emitter is None:

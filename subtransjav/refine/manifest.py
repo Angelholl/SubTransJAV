@@ -366,6 +366,9 @@ _CONFIG_FIELDS = (
     # 两者都改变后续产物内容，必须参与指纹
     "glossary_conflict_block",
     "glossary_learn_enabled",
+    # v1.3.0 D2 终选（D2026-0925-01 补充裁决）：最高优先覆盖词表路径
+    # 改变送入提示词的词条集合，必须参与指纹（空串=不启用，合法）
+    "glossary_override_path",
     # v1.2.2 C1：per-片语境 sidecar 注入开关直接影响 A/B 提示词内容，
     # 必须参与指纹（sidecar 文件内容本身暂不参与指纹：同片修改 sidecar
     # 后复用旧阶段产物属已知边界，用法上以 --force 重跑兜底）

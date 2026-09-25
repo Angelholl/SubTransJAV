@@ -238,6 +238,7 @@ class RefineConfig:
     batch_local: int = DEFAULT_BATCH_LOCAL
     batch_cloud: int = DEFAULT_BATCH_CLOUD
     glossary_path: str = ""         # 空 = 不使用词库
+    glossary_override_path: str = ""  # 最高优先覆盖词表（空 = 不启用，D2026-0925-01 D2）
     apply_glossary_stage1: bool = True
     apply_glossary_stage2: bool = True
     # API Keys（空则依次查 环境变量 → DPAPI 密钥库）

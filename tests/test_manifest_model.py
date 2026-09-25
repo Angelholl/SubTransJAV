@@ -52,6 +52,9 @@ def _make_cfg(**overrides) -> types.SimpleNamespace:
     cfg.tm_learn_gate = True
     cfg.apply_glossary_stage1 = True
     cfg.apply_glossary_stage2 = True
+    cfg.glossary_conflict_block = True
+    cfg.glossary_learn_enabled = True
+    cfg.glossary_override_path = ""
     cfg.fallback_local = False
     cfg.fallback_model = ""
     cfg.templates_dir = ""
@@ -212,6 +215,7 @@ def test_config_hash_sensitive_to_meaningful_fields():
         _make_cfg(tm_threshold=0.9),
         _make_cfg(v2_keep_untranslated="empty"),
         _make_cfg(fallback_local=True),
+        _make_cfg(glossary_override_path="ovr.csv"),         # D2 覆盖词表
         _make_cfg(endpoints={"zen": "http://changed/v1"}),   # 端点
     ]
     for i, cfg in enumerate(cases):

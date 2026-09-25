@@ -5,7 +5,7 @@
 - TM 批量 exact_map 与逐条 lookup_exact 语义一致（含 stage 过滤、
   原始输入串为键、hit_count 自增）；
 - 阶段A 优先批量查询、无 exact_map 的对象回退逐条；
-- 语法提示跨阶段缓存（命中短路、tag/profile 键隔离、容量清空）；
+- 语法提示跨阶段缓存（命中短路、tag/profile 键隔离、LRU 逐条淘汰）；
 - 云端多文件并行（opt-in）：两产物都在、summary 计数正确、
   本地服务商一律串行、单文件异常隔离；
 - 词库学习异步化：慢学习不阻塞主流程，超时风险被记录；快速学习无警告。
@@ -216,14 +216,41 @@ def test_grammar_cache_key_isolated_by_tag_and_profile(monkeypatch):
     assert counter["n"] == 3
 
 
-def test_grammar_cache_cleared_when_full(monkeypatch):
+def test_grammar_cache_evicts_oldest_when_full(monkeypatch):
+    """v1.3.0 D3 终选：容量触顶按 LRU 逐条淘汰最旧键，不整表清空。"""
     counter = {"n": 0}
     _patch_fake_generator(monkeypatch, counter)
     monkeypatch.setattr(pv, "_GRAMMAR_CACHE_MAX", 4)
-    for i in range(10):
+    for i in range(5):                         # 灌入 5 键触发一次淘汰
         pv._collect_grammar_hints(_entries(f"文本{i}"), _entries(f"文本{i}"),
                                   verbose=False, tag="A", profile="p")
-    assert len(pv._GRAMMAR_CACHE) <= 4         # 容量触顶即清空，不超上限
+    assert len(pv._GRAMMAR_CACHE) <= 4         # 淘汰后不超上限
+    # 最旧的 文本0 已被淘汰：再次访问须重新生成
+    before = counter["n"]
+    pv._collect_grammar_hints(_entries("文本0"), _entries("文本0"),
+                              verbose=False, tag="A", profile="p")
+    assert counter["n"] == before + 1          # 最旧键被淘汰，须重新生成
+    assert len(pv._GRAMMAR_CACHE) <= 4         # 新键可入，仍不超上限
+
+
+def test_grammar_cache_hot_keys_survive_eviction(monkeypatch):
+    """满时淘汰最旧、热键保留：频繁命中的键不因触顶被逐出。"""
+    counter = {"n": 0}
+    _patch_fake_generator(monkeypatch, counter)
+    monkeypatch.setattr(pv, "_GRAMMAR_CACHE_MAX", 3)
+    pv._collect_grammar_hints(_entries("热键"), _entries("热键"),
+                              verbose=False, tag="A", profile="p")
+    # 每轮都重新访问 热键，再灌入新键把容量顶满
+    for i in range(6):
+        pv._collect_grammar_hints(_entries("热键"), _entries("热键"),
+                                  verbose=False, tag="A", profile="p")
+        pv._collect_grammar_hints(_entries(f"填充{i}"), _entries(f"填充{i}"),
+                                  verbose=False, tag="A", profile="p")
+    assert len(pv._GRAMMAR_CACHE) <= 3
+    # 热键仍在缓存：再次访问不再触发生成
+    pv._collect_grammar_hints(_entries("热键"), _entries("热键"),
+                              verbose=False, tag="A", profile="p")
+    assert counter["n"] == 1 + 6               # 仅 热键 冷启动一次 + 6 个填充键
 
 
 # ---------------------------------------------------------------------------

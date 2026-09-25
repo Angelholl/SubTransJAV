@@ -79,21 +79,50 @@ def learned_glossary_path() -> str:
         "config", "glossary_learned.csv")
 
 
+def load_glossary_override(cfg: RefineConfig) -> list:
+    """加载最高优先覆盖词表（cfg.glossary_override_path）。
+
+    v1.3.0 D2 终选（D2026-0925-01 补充裁决）：三级优先级链
+    ``--glossary-override > 用户 glossary.csv > learned``；
+    内置 rules 独立分域，不并入本链。路径为空/文件缺省时返回 []。
+    """
+    return load_glossary_ex(cfg.glossary_override_path) \
+        if getattr(cfg, "glossary_override_path", "") else []
+
+
 def load_glossary_merged(cfg: RefineConfig) -> list:
-    """加载人工词库 + 自动学习词库（learned 追加，不覆盖人工条目）。
+    """三级显式合并：override 全量在前 > 用户词库 > learned 追加。
+
+    v1.3.0 D2 终选（D2026-0925-01 补充裁决）三级优先级链：
+    ``--glossary-override > 用户 glossary.csv > learned``；
+    内置 rules 独立分域，不并入本链。
 
     v1.2.2 D：返回三元组 ``[(src, dst, aliases), ...]``——第三列为
-    人工词库可选列 target_aliases（`|` 分隔，缺列/空 = 无别名）；
-    learned 自学习词库不生成别名（恒为空元组）。两列消费者
-    （match_glossary / format_glossary_block）已兼容三列词条。
+    词表可选列 target_aliases（`|` 分隔，缺列/空 = 无别名；override
+    词条同样支持别名列）；learned 自学习词库不生成别名（恒为空元组）。
+    两列消费者（match_glossary / format_glossary_block）已兼容三列词条。
+
+    低层（用户词库/learned）与更高层同 src 时被压制不重复追加
+    （原 learned "同 src 不覆盖" 语义保持并扩展到 override 层）。
     """
-    glossary = load_glossary_ex(cfg.glossary_path) if cfg.glossary_path else []
+    glossary = load_glossary_override(cfg)
+    _override_srcs = {s for s, _d, _a in glossary}
+    _user = load_glossary_ex(cfg.glossary_path) if cfg.glossary_path else []
+    # 仅当 override 启用时才压制用户同 src 词（override 为空时用户层
+    # 保持旧链逐字节语义，含用户文件内部重复词条原样保留）
+    if _override_srcs:
+        for s, d, a in _user:
+            if s not in _override_srcs:     # 同 src 被 override 压制（D2 终选）
+                glossary.append((s, d, a))
+    else:
+        glossary.extend(_user)
+    _existing_srcs = {s for s, _d, _a in glossary}
     _learned = load_glossary_ex(learned_glossary_path())
     if _learned:
-        _existing_srcs = {s for s, _d, _a in glossary}
         for s, d, a in _learned:
             if s not in _existing_srcs:
                 glossary.append((s, d, a))
+                _existing_srcs.add(s)
     if glossary:
         print(f"📚 [refine] 词库已加载：{len(glossary)} 条")
     return glossary

@@ -64,6 +64,8 @@ def build_parser():
     p.add_argument("--batch-cloud", type=int, default=30, help="云端服务商每批条数")
 
     p.add_argument("--glossary", default="", help="词库 CSV 文件（原文,译文）")
+    p.add_argument("--glossary-override", type=str, default="",
+                   help="最高优先覆盖词表（同源词压过用户词表与学习词表）")
     p.add_argument("--no-gl1", action="store_true", help="词库不作用于阶段A（净语+翻译）")
     p.add_argument("--no-gl2", action="store_true", help="词库不作用于阶段B（审校+抛光）")
 
@@ -197,6 +199,7 @@ def config_from_args(args):
         batch_local=args.batch_local,
         batch_cloud=args.batch_cloud,
         glossary_path=args.glossary,
+        glossary_override_path=args.glossary_override,
         apply_glossary_stage1=not args.no_gl1,
         apply_glossary_stage2=not args.no_gl2,
         api_key_deepseek=args.deepseek_key,

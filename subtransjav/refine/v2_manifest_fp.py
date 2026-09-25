@@ -38,14 +38,20 @@ from .pipeline_support import learned_glossary_path
 
 
 def _glossary_fingerprint(cfg) -> str | None:
-    """词库指纹：人工词库与自动学习词库（glossary_learned.csv）联合 sha1。
+    """词库指纹：覆盖词表/人工词库/自动学习词库三者联合 sha1。
 
-    两者都缺失 -> None（校验时跳过）；任一存在则参与联合指纹，
+    v1.3.0 D2 终选（D2026-0925-01 补充裁决）：override 覆盖词表
+    **显式**参与指纹（第三项），启用与否/内容变化都会让旧产物失效；
+    空串/None 时跳过该项（与既有 None/missing→None 语义对齐）。
+    三层全缺 -> None（校验时跳过）；任一存在则参与联合指纹，
     保证自动学习追加的词库变化也会让旧产物失效。
     """
     parts = [
         compute_glossary_sha1(getattr(cfg, "glossary_path", "") or None),
         compute_glossary_sha1(learned_glossary_path()),
+        # 显式进指纹：override 是用户显式传入的最高优先词表，非自动
+        compute_glossary_sha1(
+            getattr(cfg, "glossary_override_path", "") or None),
     ]
     parts = [p for p in parts if p]
     if not parts:

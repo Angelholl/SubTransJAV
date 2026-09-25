@@ -107,6 +107,49 @@ class TestManifestFp:
         gl.unlink()
         assert v2_manifest_fp._glossary_fingerprint(_Cfg()) is None
 
+    def test_glossary_fingerprint_override_explicit(self, tmp_path,
+                                                    monkeypatch):
+        """v1.3.0 D2 终选：override 覆盖词表显式参与指纹。
+
+        - override 内容变化 → 指纹变化；
+        - override 未启用（空串）→ 指纹与旧两级链（人工+learned）一致。
+        """
+        gl = tmp_path / "glossary.csv"
+        gl.write_text("先生,老师\n", encoding="utf-8")
+        monkeypatch.setattr(v2_manifest_fp, "learned_glossary_path",
+                            lambda: str(gl))
+
+        class _Cfg:
+            glossary_path = ""
+            glossary_override_path = ""
+
+        # 无 override：与旧版两级链指纹一致
+        base_fp = v2_manifest_fp._glossary_fingerprint(_Cfg())
+        expect = hashlib.sha1(
+            v2_manifest_fp.compute_glossary_sha1(str(gl)).encode("utf-8")
+        ).hexdigest()
+        assert base_fp == expect
+
+        # override 启用：指纹必变，且显式进入联合 sha1
+        ovr = tmp_path / "override.csv"
+        ovr.write_text("先生,覆盖老师\n", encoding="utf-8")
+
+        class _CfgOvr:
+            glossary_path = ""
+            glossary_override_path = str(ovr)
+
+        fp_ovr = v2_manifest_fp._glossary_fingerprint(_CfgOvr())
+        assert fp_ovr != base_fp
+        expect_ovr = hashlib.sha1("|".join([
+            v2_manifest_fp.compute_glossary_sha1(str(gl)),
+            v2_manifest_fp.compute_glossary_sha1(str(ovr)),
+        ]).encode("utf-8")).hexdigest()
+        assert fp_ovr == expect_ovr
+
+        # override 内容变化 → 指纹变化
+        ovr.write_text("先生,另一译\n", encoding="utf-8")
+        assert v2_manifest_fp._glossary_fingerprint(_CfgOvr()) != fp_ovr
+
 
 # ---------------------------------------------------------------------------
 # v2_outputs：陈旧风险清单清理与原子写

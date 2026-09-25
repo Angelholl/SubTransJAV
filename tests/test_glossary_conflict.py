@@ -120,6 +120,69 @@ class TestGlossaryAliases:
 
 
 # ---------------------------------------------------------------------------
+# v1.3.0 D2 三级优先级链：--glossary-override > 用户词库 > learned
+# （D2026-0925-01 补充裁决终选）
+# ---------------------------------------------------------------------------
+
+class TestGlossaryOverrideChain:
+
+    def _merged(self, tmp_path, monkeypatch, override_rows, user_rows,
+                learned_rows):
+        import subtransjav.refine.pipeline_support as ps
+        ov = up = None
+        if override_rows is not None:
+            ov = _write_glossary_csv(tmp_path / "ovr.csv", override_rows)
+        if user_rows is not None:
+            up = _write_glossary_csv(tmp_path / "user.csv", user_rows)
+        learned = tmp_path / "learned.csv"
+        learned.write_text(
+            "\n".join(f"{s},{d}" for s, d, *_ in learned_rows) + "\n",
+            encoding="utf-8-sig")
+        monkeypatch.setattr(ps, "learned_glossary_path",
+                            lambda: str(learned))
+        return ps.load_glossary_merged(RefineConfig(
+            glossary_path=str(up) if up else "",
+            glossary_override_path=str(ov) if ov else ""))
+
+    def test_override_beats_user_same_src(self, tmp_path, monkeypatch):
+        """override 同 src 词压过用户词表，且支持别名列。"""
+        merged = self._merged(
+            tmp_path, monkeypatch,
+            [("先生", " overrides 老师", "ovr-alias")],
+            [("先生", "用户老师", None)],
+            [])
+        assert merged == [("先生", "overrides 老师", ("ovr-alias",))]
+
+    def test_override_beats_learned_same_src(self, tmp_path, monkeypatch):
+        """override 同 src 词压过 learned 学习词表。"""
+        merged = self._merged(
+            tmp_path, monkeypatch,
+            [("ザーメン", "覆盖译", None)], [], [("ザーメン", "精液")])
+        assert ("ザーメン", "覆盖译", ()) in merged
+        assert ("ザーメン", "精液", ()) not in merged
+
+    def test_no_override_behaviour_identical_to_old_chain(
+            self, tmp_path, monkeypatch):
+        """无 override（空串）时与旧两级链结果逐字节一致。"""
+        user_rows = [("先生", "用户老师", None),
+                     ("ムラムラ", "心痒", "燥热")]
+        learned_rows = [("ザーメン", "精液"), ("先生", "learned老师")]
+        import subtransjav.refine.pipeline_support as ps
+        up = _write_glossary_csv(tmp_path / "user.csv", user_rows)
+        learned = tmp_path / "learned.csv"
+        learned.write_text(
+            "\n".join(f"{s},{d}" for s, d in learned_rows) + "\n",
+            encoding="utf-8-sig")
+        monkeypatch.setattr(ps, "learned_glossary_path",
+                            lambda: str(learned))
+        cfg = RefineConfig(glossary_path=str(up))
+        assert ps.load_glossary_merged(cfg) == [
+            ("先生", "用户老师", ()),
+            ("ムラムラ", "心痒", ("燥热",)),
+            ("ザーメン", "精液", ())]
+
+
+# ---------------------------------------------------------------------------
 # D1：冲突扫描
 # ---------------------------------------------------------------------------
 
