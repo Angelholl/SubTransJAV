@@ -224,12 +224,15 @@ class StageConfig:
 class RefineConfig:
     inputs: list = field(default_factory=list)   # 输入 SRT 路径列表
     output_dir: str = ""            # 空 = 与各输入同目录
+    # 槽位结构永久保留 4 槽（D2026-0922-02 裁决三）；enabled 仅影响
+    # manifest/GUI 展示，对 v2 按 tag→槽位取数无行为影响。槽1/3 为
+    # v2 未用槽，默认停用，避免 validate() 对空模型/key 误报。
     stages: list = field(default_factory=lambda: [
         # 生产默认搭配（D2026-0921-01 用户拍板）：A=joyfox27b > B=heretic35b
-        StageConfig(0, True, "lmstudio", "qwen3.8-27b-uncensored-joyfox-aggressive"),
-        StageConfig(1, True, "deepseek", ""),
-        StageConfig(2, True, "lmstudio", "qwen3.6-35b-a3b-uncensored-heretic-apex"),
-        StageConfig(3, True, "lmstudio", ""),
+        StageConfig(0, True, "lmstudio", "qwen3.8-27b-uncensored-joyfox-aggressive"),   # v2 生产槽（A）
+        StageConfig(1, False, "deepseek", ""),   # v2 未用槽，默认停用（D2026-0922-02 裁决三对齐）
+        StageConfig(2, True, "lmstudio", "qwen3.6-35b-a3b-uncensored-heretic-apex"),    # v2 生产槽（B）
+        StageConfig(3, False, "lmstudio", ""),   # v2 未用槽，默认停用（D2026-0922-02 裁决三对齐）
     ])
     templates_dir: str = ""         # 角色卡所在目录（默认 = 输入文件目录）
     batch_local: int = DEFAULT_BATCH_LOCAL

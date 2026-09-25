@@ -289,3 +289,13 @@ def test_d20260921_defaults_glossary_learn_off_and_prod_pair():
         "lmstudio", "qwen3.8-27b-uncensored-joyfox-aggressive")
     assert (b.provider, b.model) == (
         "lmstudio", "qwen3.6-35b-a3b-uncensored-heretic-apex")
+
+
+def test_d20260922_02_default_factory_slot_enabled_alignment():
+    """D2026-0922-02 裁决三：4 槽结构永久保留，默认工厂仅槽0/2（阶段A/B）
+    启用，槽1/3 为 v2 未用槽默认停用（enabled 仅影响 manifest/GUI 展示）。"""
+    cfg = RefineConfig()
+    assert cfg.stages[0].enabled is True
+    assert cfg.stages[1].enabled is False
+    assert cfg.stages[2].enabled is True
+    assert cfg.stages[3].enabled is False
