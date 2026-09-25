@@ -153,6 +153,10 @@ def filter_stage_output_srt(srt_content: str, stage_index: int,
 def _remove_stale_risk_reports(out_dir: str, stem: str) -> list:
     """写入新风险清单前移除上一轮遗留的 {stem}_风险清单.md/.json。
 
+    W1a：清理表扩第三件 {stem}_质量报告导读.json——风险清单与导读
+    json 等成品伴生件写前清陈旧（导读 json 随质量报告同生共死，失败
+    路径不落盘，遗留件属上一轮陈旧残留）。
+
     主理由（职责边界，D2026-0925-01 A5 用户验收裁定）：风险清单与
     final_cn.srt/质量报告.txt 同属最终交付物，而 delete_resume_artifacts
     的契约是清理可重建的恢复现场——成品不进恢复现场清理清单，故不收编。
@@ -165,7 +169,7 @@ def _remove_stale_risk_reports(out_dir: str, stem: str) -> list:
     在 1.3.0 拆分中属行为等价验收范围，不进"有意变更"豁免清单。
     """
     removed = []
-    for suffix in ("_风险清单.md", "_风险清单.json"):
+    for suffix in ("_风险清单.md", "_风险清单.json", "_质量报告导读.json"):
         p = Path(out_dir) / f"{stem}{suffix}"
         if p.is_file():
             try:
@@ -182,7 +186,8 @@ def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
 
     对输出目录中确切名为 ``{stem}_final_cn.srt``、``{stem}_质量报告.txt``、
     ``{stem}_分歧复核.csv``、``{stem}_术语冲突观察.csv``、
-    ``{stem}_风险清单.md``、``{stem}_风险清单.json`` 的文件，复制为同目录
+    ``{stem}_风险清单.md``、``{stem}_风险清单.json``、
+    ``{stem}_质量报告导读.json`` 的文件，复制为同目录
     ``{原名去扩展}_bak_YYYYMMDD_HHMMSS.{原扩展}``；同一次运行共用同一时间戳。
     精确匹配保证旧的 ``*_bak_*`` 文件不会被再次备份。
     """
@@ -191,7 +196,8 @@ def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     for suffix in ("_final_cn.srt", "_质量报告.txt", "_分歧复核.csv",
-                   "_术语冲突观察.csv", "_风险清单.md", "_风险清单.json"):
+                   "_术语冲突观察.csv", "_风险清单.md", "_风险清单.json",
+                   "_质量报告导读.json"):
         p = Path(out_dir) / f"{stem}{suffix}"
         if not p.is_file():
             continue

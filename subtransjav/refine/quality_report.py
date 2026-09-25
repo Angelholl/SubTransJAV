@@ -20,6 +20,7 @@
 """
 
 import csv
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -518,7 +519,8 @@ def build_quality_report(orig_entries: list, final_entries: list,
                          term_consistency: list | None = None,
                          conflict_watch_advice: str | None = None,
                          tm_exact_hits: int | None = None,
-                         tm_learned_count: int | None = None) -> str:
+                         tm_learned_count: int | None = None,
+                         guide_sink: dict | None = None) -> str:
     """对比 期望条目（预合并后） 与 终稿条目，返回复核工单式报告文本。
 
     Parameters
@@ -983,6 +985,45 @@ def build_quality_report(orig_entries: list, final_entries: list,
     # 不感知；离线报告 tools/recompute_divergence.py 与 render 直调
     # 不受影响——离线报告无这些标题自然无注解）。
     lines = _apply_section_notes(lines)
+    # 导读 json 采集（W1a）：guide_sink 由调用方传入时，把白话导读的
+    # 同源数据快照写入 sink（返回类型与返回值不变——不传 sink 时此处
+    # 逐字节等价于原实现，直调方零影响）。
+    if guide_sink is not None:
+        conclusions = [
+            (f"总体：需人工复核 {len(items)} 处，逐条见复核清单"
+             if items else "总体：未发现需人工复核的条目，终稿可直接使用"),
+            (f"条目链路：原文 {n_src} 条 → 终稿 {f_final} 条，"
+             + ("条数核对已平衡" if n_src == rhs_total else "条数核对不平"))
+        ]
+        if missed_total:
+            conclusions.append(f"漏覆盖：实义内容漏覆盖 {missed_total} 条")
+        if len(untranslated):
+            conclusions.append(f"未翻译残留：{len(untranslated)} 条以占位"
+                               "形式保留，可人工补译")
+        conclusions.append("阅读顺序：先看白话导读 → 再逐条看复核清单 → "
+                           "最后用统计区核对总数")
+        known_titles = {prefix for prefix, _ in _SECTION_NOTES}
+        sections: list = []
+        for ln in lines:
+            if not ln.startswith("【"):
+                continue
+            hit_prefix = next((p for p in known_titles
+                               if ln.startswith(p)), None)
+            if hit_prefix and all(s["title"] != hit_prefix for s in sections):
+                sections.append({"title": hit_prefix,
+                                 "note": dict(_SECTION_NOTES)[hit_prefix]})
+        guide_sink.update({
+            "version": 1,
+            "source": source_name,
+            "generated_at": now_str,
+            "basis": "基于本次运行",
+            "conclusions": conclusions,
+            "sections": sections,
+            "extras": {
+                "对齐率": f"{align_rate:.1f}%",
+                "漏覆盖率": f"{miss_rate:.1f}%",
+            },
+        })
     return "\n".join(lines)
 
 
@@ -990,4 +1031,26 @@ def write_quality_report(out_dir: str, stem: str, report: str) -> str:
     """报告落盘到输出目录，返回路径。"""
     p = Path(out_dir) / f"{stem}_质量报告.txt"
     p.write_text(report + "\n", encoding="utf-8")
+    return str(p)
+
+
+def write_guide_json(out_dir: str, stem: str, guide: dict) -> str:
+    """白话导读 json（{stem}_质量报告导读.json）落盘，返回路径。
+
+    guide 为空 dict（报告构建时未采集到快照/旧调用方）时不落盘，
+    返回空串。写前补全 stem 与伴生成品存在性表（companions）；
+    文件名与 pipeline_v2 的陈旧清理/备份表双钉（契约测试防漂移）。
+    """
+    if not guide:
+        return ""
+    guide["stem"] = stem
+    guide["companions"] = {
+        f"{stem}{suffix}": (Path(out_dir) / f"{stem}{suffix}").is_file()
+        for suffix in ("_final_cn.srt", "_质量报告.txt", "_分歧复核.csv",
+                       "_风险清单.md", "_风险清单.json",
+                       "_术语冲突观察.csv")
+    }
+    p = Path(out_dir) / f"{stem}_质量报告导读.json"
+    p.write_text(json.dumps(guide, ensure_ascii=False, indent=2),
+                 encoding="utf-8")
     return str(p)

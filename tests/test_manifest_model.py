@@ -538,7 +538,8 @@ def test_delete_resume_artifacts_never_touches_final_deliverables(tmp_path):
     不得收编进恢复现场清理清单。"""
     deliverables = ("ep01_final_cn.srt", "ep01_质量报告.txt",
                     "ep01_分歧复核.csv", "ep01_术语冲突观察.csv",
-                    "ep01_风险清单.md", "ep01_风险清单.json")
+                    "ep01_风险清单.md", "ep01_风险清单.json",
+                    "ep01_质量报告导读.json")
     recovery = ["ep01_manifest.json", "ep01_refine_A.srt",
                 "ep01_幻觉处置报告.json", "ep01_隔离区.srt"]
     for name in deliverables + tuple(recovery):
@@ -563,8 +564,8 @@ def test_config_hash_tracks_v2_stage_prompts(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_backup_existing_outputs_covers_risk_reports(tmp_path):
-    """--force 备份表必须覆盖全部 6 个产物（含风险清单 md/json），且同一次
-    调用共用同一时间戳（防漂移契约）。"""
+    """--force 备份表必须覆盖全部 7 个产物（含风险清单 md/json 与导读
+    json），且同一次调用共用同一时间戳（防漂移契约）。"""
     from subtransjav.refine import pipeline_v2 as pv
 
     names = [
@@ -574,12 +575,13 @@ def test_backup_existing_outputs_covers_risk_reports(tmp_path):
         "ep01_术语冲突观察.csv",
         "ep01_风险清单.md",
         "ep01_风险清单.json",
+        "ep01_质量报告导读.json",
     ]
     for n in names:
         (tmp_path / n).write_text("x", encoding="utf-8")
     pv._backup_existing_outputs(str(tmp_path), "ep01")
     baks = sorted(p.name for p in tmp_path.iterdir() if "_bak_" in p.name)
-    assert len(baks) == 6
+    assert len(baks) == 7
     for n in names:
         assert (tmp_path / n).is_file()          # 原文件仍在
         stem, ext = n.rsplit(".", 1)

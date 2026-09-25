@@ -1308,7 +1308,12 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
         # ---- 自动质量报告（cfg.quality_report，落盘到输出目录）----
         if cfg.quality_report:
             try:
-                from .quality_report import build_quality_report, write_divergence_review_csv, write_quality_report
+                from .quality_report import (
+                    build_quality_report,
+                    write_divergence_review_csv,
+                    write_guide_json,
+                    write_quality_report,
+                )
                 # pass_mode/disag 已在 TM 学习块前采集并共用
                 # （两者都关时此处保持 None，与原先 block 内采集等价）
                 if pass_mode is None and disag is None:
@@ -1445,6 +1450,7 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                 # → None）；L=本次学习入库数（未启用 TM → None）
                 tm_exact_hits = (len(a_result.exact_hits)
                                  if (tm is not None and not reused_a) else None)
+                guide: dict = {}
                 report = build_quality_report(
                     orig_entries, final_entries, Path(in_path).name,
                     expected_entries=orig_entries,
@@ -1461,8 +1467,10 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                     term_consistency=term_stats,
                     conflict_watch_advice=watch_advice,
                     tm_exact_hits=tm_exact_hits,
-                    tm_learned_count=learned_count)
+                    tm_learned_count=learned_count,
+                    guide_sink=guide)
                 rp = write_quality_report(out_dir, stem, report)
+                write_guide_json(out_dir, stem, guide)
                 print(f"\n📋 质量报告已生成: {Path(rp).name}")
                 print("\n".join(report.splitlines()[-3:]))
                 # ---- 分歧复核 CSV（与质量报告同目录）----

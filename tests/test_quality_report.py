@@ -16,6 +16,7 @@ from subtransjav.refine.quality_report import (
     render_disagreement_section,
     render_mishear_review_section,
     write_divergence_review_csv,
+    write_guide_json,
 )  # noqa: I001
 
 # ----------------------------------------------------------------------
@@ -290,3 +291,96 @@ def test_plain_guide_numbers_same_source_as_stats():
     stats_n = int(re.search(r"实义内容漏覆盖: (\d+)/", report).group(1))
     assert guide_n == stats_n == 1                   # 仅第 1 条整条缺失
     assert "条数核对不平" in report                  # 1 条终稿对 2 条原文
+
+
+# ----------------------------------------------------------------------
+# W1a：guide_sink 采集 / 无 sink 零行为 / write_guide_json 落盘
+# ----------------------------------------------------------------------
+
+def _w1a_report_inputs():
+    """构造一份带漏覆盖与未翻译残留的报告输入（供 sink 案共用）。"""
+    exp = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+            "text": "汉字原文一"},
+           {"index": 2, "timing": "00:00:03,000 --> 00:00:04,000",
+            "text": "汉字原文二"}]
+    final = [{"index": 1, "timing": "00:00:03,000 --> 00:00:04,000",
+              "text": "已译"},
+             {"index": 2, "timing": "00:00:05,000 --> 00:00:06,000",
+              "text": "[未翻译]テスト"}]
+    return exp, final
+
+
+def test_guide_sink_collects_snapshot_same_source_as_report():
+    """sink 采集：conclusions 的 N 与【结论】行同源；sections 标题集 ==
+    txt 实际【】标题集；basis 字段契约为"基于本次运行"。"""
+    exp, final = _w1a_report_inputs()
+    sink: dict = {}
+    report = build_quality_report(exp, final, "demo", guide_sink=sink)
+    assert sink["version"] == 1
+    assert sink["source"] == "demo"
+    assert sink["basis"] == "基于本次运行"
+    # generated_at 与报告头时间戳同串（同源变量 now_str）
+    header_ts = next(ln for ln in report.splitlines()
+                     if ln.startswith("来源: ")).split("时间: ")[1] \
+        .split(" |")[0]
+    assert sink["generated_at"] == header_ts
+    # conclusions 的复核数与【结论】行 N 同源
+    m_concl = re.search(r"需人工复核 (\d+) 处", report)
+    m_sink = next(c for c in sink["conclusions"]
+                  if "需人工复核" in c)
+    assert int(m_concl.group(1)) == int(re.search(r"复核 (\d+) 处",
+                                                  m_sink).group(1))
+    # sections 标题集 == 报告文本中实际出现的已知九章节【】标题集
+    # （【结论】/【白话导读】非注解章节，不在采集范围）
+    from subtransjav.refine.quality_report import _SECTION_NOTES
+    known = {prefix for prefix, _ in _SECTION_NOTES}
+    txt_titles = {ln.split("】")[0] + "】" for ln in report.splitlines()
+                  if ln.startswith("【")
+                  and any(ln.startswith(k) for k in known)}
+    sink_titles = {s["title"] for s in sink["sections"]}
+    assert sink_titles == txt_titles
+    assert all(s["note"].startswith("　（") for s in sink["sections"])
+
+
+def test_guide_sink_absent_keeps_output_byte_identical():
+    """无 sink 零行为：同输入两次 build（带/不带 sink），txt 逐字节相等。"""
+    exp, final = _w1a_report_inputs()
+    plain = build_quality_report(exp, final, "demo")
+    sink: dict = {}
+    with_sink = build_quality_report(exp, final, "demo", guide_sink=sink)
+    assert plain == with_sink
+    assert isinstance(plain, str)
+
+
+def test_write_guide_json_roundtrip_and_empty_noop(tmp_path):
+    """write_guide_json：落盘+回读结构齐全；空 guide 直接返回空串不落盘。"""
+    import json
+    guide = {"version": 1, "source": "demo", "generated_at": "2026-01-01 "
+             "00:00:00", "basis": "基于本次运行",
+             "conclusions": ["总体：未发现需人工复核的条目"],
+             "sections": [{"title": "【统计】", "note": "　（注）"}],
+             "extras": {"对齐率": "100.0%"}}
+    p = write_guide_json(str(tmp_path), "movie", guide)
+    assert p.endswith("movie_质量报告导读.json")
+    data = json.loads((tmp_path / "movie_质量报告导读.json")
+                      .read_text(encoding="utf-8"))
+    assert data["version"] == 1 and data["stem"] == "movie"
+    assert data["conclusions"] == ["总体：未发现需人工复核的条目"]
+    assert data["sections"] == [{"title": "【统计】", "note": "　（注）"}]
+    # companions：终稿在、其余缺 → 存在性布尔如实
+    (tmp_path / "movie_final_cn.srt").write_text("1", encoding="utf-8")
+    write_guide_json(str(tmp_path), "movie", data)
+    data2 = json.loads((tmp_path / "movie_质量报告导读.json")
+                       .read_text(encoding="utf-8"))
+    assert data2["companions"] == {
+        "movie_final_cn.srt": True,
+        "movie_质量报告.txt": False,
+        "movie_分歧复核.csv": False,
+        "movie_风险清单.md": False,
+        "movie_风险清单.json": False,
+        "movie_术语冲突观察.csv": False,
+    }
+    # 空 guide：不落盘，返回空串
+    empty_path = write_guide_json(str(tmp_path), "other", {})
+    assert empty_path == ""
+    assert not (tmp_path / "other_质量报告导读.json").exists()

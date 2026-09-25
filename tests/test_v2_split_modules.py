@@ -114,16 +114,22 @@ class TestManifestFp:
 
 class TestOutputs:
     def test_remove_stale_risk_reports(self, tmp_path):
-        """_remove_stale_risk_reports：清两件并返回文件名名单。"""
+        """_remove_stale_risk_reports：清三件（含 W1a 扩的导读 json 陈旧
+        残留件——此处在"写前清陈旧"语义下，目录里的是上一轮遗留件）并
+        返回文件名名单；新写成品不碰。"""
         md = tmp_path / "movie_风险清单.md"
         js = tmp_path / "movie_风险清单.json"
+        stale_guide = tmp_path / "movie_质量报告导读.json"   # 上一轮陈旧件
         keep = tmp_path / "movie_final_cn.srt"
-        for p in (md, js, keep):
+        for p in (md, js, stale_guide, keep):
             p.write_text("x", encoding="utf-8")
         removed = v2_outputs._remove_stale_risk_reports(str(tmp_path),
                                                         "movie")
-        assert sorted(removed) == ["movie_风险清单.json", "movie_风险清单.md"]
+        assert sorted(removed) == ["movie_质量报告导读.json",
+                                   "movie_风险清单.json",
+                                   "movie_风险清单.md"]
         assert not md.exists() and not js.exists()
+        assert not stale_guide.exists()   # 陈旧导读 json 已清（写前）
         assert keep.exists()        # 成品不碰
         # 幂等：再清一次返回空名单
         assert v2_outputs._remove_stale_risk_reports(str(tmp_path),
