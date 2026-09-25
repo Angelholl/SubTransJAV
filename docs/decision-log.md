@@ -1193,6 +1193,12 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 
 **实施留痕**：v1.3.0 annotated tag（→e9d1631）push 与 GitHub Release（REST API，notes 仅本版内容+"架构版收口，行为变更见 1.3.1"一句）见本条目执行追记；gui-probe 触发与结果回填见 7b③ 段。
 
+### 执行追记（2026-09-25 深夜，16c80c2）
+
+- **v1.3.0 发布完成**：annotated tag v1.3.0（→e9d1631，refs/tags/v1.3.0=e0fb31f9）push 复核在位；GitHub Release id 396740632（https://github.com/Angelholl/SubTransJAV/releases/tag/v1.3.0 ，name"v1.3.0 — 架构版收口"，REST API 经代理 10808）。
+- **7b③ 探针结果（run 36157469106，#1，completed/success）**：windows-latest+3.12 装 `.[dev,gui]` 成功（pywebview/pythonnet 无头安装无 RuntimeError）；**collected=1058 与主口径（1057+1）一致**——两 kill-criterion 均通过；tests/test_gui_api **35 passed**。**探针判定=成功，按定案二成功不自动纳入 required（gui-probe.yml 保持 workflow_dispatch 手动），纳入与否待二次评审。**"collected 断言基线按 HEAD 实测"精度修正的必要性获得验证（1058≠历史 1046，固定值假触发如期发生）。
+- **剩余移交**：行动层实施（前置修复+三地基+执行器，D11 契约）与 B2 门②语料收集（截止 2026-10-16，责任人暂定主模型）交新会话按 D2026-0925-03 定案推进。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。
