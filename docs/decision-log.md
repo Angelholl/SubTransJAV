@@ -1152,6 +1152,16 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **1.3.0 收口声明（清单七项对照）**：①pipeline_v2 拆分 ✓（golden 真裁决 PASS）；②词表覆盖层+加载优先级改造 ✓（三级链+显式指纹；B3 判定零新增强制词条）；③GUI i18n ✓（全量键表化）；④完整参数面板 ✓（TM 三件+A 类核对+force 通道；B 类余项按 D6 转 1.3.1）；⑤LRU ✓（OrderedDict 逐条淘汰）；⑥文档修正 ✓（手册 §12 三步走/§2.2 补 2 行/查看器与导读 json 用法待补入 §12 的部分=查看器已上线而手册查看器小节列入下轮文档批）；⑦lockfile ✓（artifact_lock）。**基线：全量 1046 passed + 1 skipped；mypy 双轨口径（CI 无 gui 0 错/本地含 gui 剩 main.py:323 9 键，D5 顺延）。**
 - **遗留移交 1.3.1**：行动层（dry-run 先行）/H4b 双且门/legacy providers 清理/guard 脚本/Mimosa 21 项甄别/force-resume+学习闸 UI/mypy 硬门禁+基线文件机制/main.py 9 键小 PR（cast 形态）/recursive GUI 传参边界/行号注释债（tools/model_matrix_run 等对旧行号引用）。**批次 6（1.3.0 后）**：Mimosa 26 处静态告警+pytest 双口径分账+异常退出日志持久性观测。
 
+## [2026-09-25] [D11] 行动层实施设计六点定案+W1a 生命周期修复前置 [已拍板]
+
+**decision-critic 三轮（R1 评议→R2 回应→R3 终评），无 [PRESSURE-OVERRIDE]。**
+
+- **[HIGH_RISK_OBJECTION] 一条（已采纳闭环）——W1a 导读 json 生命周期真 bug**：write_guide_json（pipeline_v2.py:1505）在前、_remove_stale_risk_reports（:1522）在后且清理表含 _质量报告导读.json（v2_outputs.py:172，W1a 扩表带入）→ **每次成功运行的导读 json 被自己的清陈旧步骤删除**（critic 临时目录实测击穿；单测钉函数行为不钉调用顺序故全绿）。风险清单未中招（其 write_reports 在清之后，A5 写前清插入位置本就正确）。**修复口径=清陈旧调用点上移至最早伴生成品写点之前（一次清三件陈旧→写 txt→guide→风险清单）+端到端契约测试（五件全存活：final_cn/txt/guide/分歧 CSV/术语 CSV+has_risks 分支风险件）**——行动层开工首件，未满足前实施不得越过。连带核验：术语冲突观察 CSV 每次覆写不受清点上移影响。
+- **设计六点定案**：①载体=导读 json 加 items[]（有界投影声明：译文全量、源文截断、无渲染章节；txt 唯一全文权威不构成"否决全量 json"推翻；version 1→2 同批改测试）；②字段集=current_text 全量（source_excerpt≤40 仅展示）/status 恒 "open" 不回写旧 json（apply 后重新生成新快照+独立台账 {stem}_重翻记录.json：index/timing/category/old_text/new_text/model_used/outcome/ts，进备份表不进 delete_resume_artifacts、写前清旧台账）/整条缺失标"不可自动重翻"/未翻译残留纳入行动对象（范围决定，源=untranslated 列表）/校验告警须结构化 timing 否则 unresolved 跳过（A7 教训）/severity 预留恒 null（H4b 预留）；③resolve_final_block 官方映射放 quality_report.py（:603 懒加载改指 v2_premerge._timing_span；精确 index 匹配为主不做 timing 猜测；合并块 index 非单射文档写明；**禁算术外推红线**+四位移 fixture 契约测试：预合并合并/cleaner 删除/隔离区移出/语言过滤伪条目）；④CLI=--action-retranslate 清单文件+--entries=原始 index（N-M 范围，risk.py "12-15" 惯例）+dry-run 默认+重翻参数排除 _CONFIG_FIELDS（force/resume 同款）+台账存在时 run_v2 入口告警不阻断（管线启动侧非 CLI 解析侧，覆盖 GUI 路径）；⑤执行器=build_srt 整文件重建（timing/index 逐字节不变+仅目标块文本变更 diff 断言）/重算范围四件（txt/导读/分歧 CSV/术语 CSV）+"可离线重建/标陈旧"清单为实施首件交付物/槽 B 默认+--action-model 可配+5 条小样对比/失败最小质量门（非空/非占位/过 zh 白名单，不过保留原文记 failed）/并发 1/不写 TM（tm_sha1 静默副作用第二理由）/恒等式断言对象=条数核对+timing/index 不变+仅目标块 diff（**复核清单条数允许且应当变化**）；⑥entry_range=post_validate 告警结构化（index/timing/severity/message，check_and_fix_translation_errors 签名变更联动 test_post_validate 契约）+RiskEvent additive 字段 timing_range/entry_timings+RiskCollector.add 集中式 helper（禁调用点手拼字符串）；闸门0 不建风险事件（双计，走 add_summary_line）。
+- **验收门**：端到端 fixture 断言五伴生件存活+映射四位移契约测试+apply 后恒等式断言；查看器 items 渲染入 GUI 批（web-gui-tester 黑盒注明"GUI 已验证/未验证"）。
+- **残余观察（非阻塞）**：①quality_report=False 时分歧/术语 CSV 陈旧残留——扩清陈旧表至五件或文档标注二选一留痕；②重翻台账契约语义入 docstring。
+- **实施交下轮按本契约执行**（前置修复+三地基+执行器）。本轮 decision-log 曾出现"Edit 后被外部进程还原"异常（提交链执行时磁盘内容已回退致空提交）——**教训：docs 追记后须在提交前 grep 自证内容在位，提交后 git show 复核**。
+
 ## [2026-09-25] [D2026-0925-02] 批次 6 处置与 1.3.1 开工五决策（D7-D10）三轮记录 [已拍板·实施中]
 
 **用户指令**：每决策选项与子智能体三轮讨论再终选，最终报告逐项写终选。评议方=decision-critic（agent_73f16180），R1 评议→R2 主模型逐项回应→R3 终评，全程三轮闭环，无 [PRESSURE-OVERRIDE]。
