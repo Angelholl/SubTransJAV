@@ -1132,6 +1132,26 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **C1 评估结论（本批内联评估，实施落 1.3.1）**：持久化载体两案——user_settings.json（需扩 TUNABLE_FIELD_TYPES+新增写入通道，受分层优先级语义约束）vs config/refine_stage_settings.json 的 settings（**已有读写、零新文件、GUI 直存直读不进分层**，v2_ctx/v2_concurrency 已在此持久化）→ **推荐后者**：模型名与档位延续同键扩展；三键均已在 manifest 指纹（v2_concurrency/v2_ctx_local 在 _CONFIG_FIELDS、模型名经 _STAGE_FIELDS），入持久化不改变指纹成员集、仅改值来源，改档即废 resume 的既有语义不变。
 - **基线更新**：全量测试 **1027 passed + 1 skipped**（1019+1+W1a 7+W1b 4+W1c 1）；并行实施期间一过性失败（三路 pytest 竞态读中间态）经主模型最终态复跑排除。
 
+### GUI 批 W2、收尾三件、B3 终选与 D1-D6 三轮决策记录、1.3.0 收口（2026-09-25 深夜）
+
+**用户指令**：自动继续至完全收口；**每个决策选项与子智能体讨论三轮再终选**；最终报告逐项写出终选选项。
+
+- **W2 i18n 文案集中化（f93e426）**：strings.py MSG 22→94 键（api 28 处/event_stream/main 全迁 msg()）；app.js MSG 213 键（散落 48 处收编）；index.html 全量 data-i18n（113+18+placeholder 8，引用键 124 悬空 0）+统一注入；**裁定=文案集中化不建英文表不加语言切换**；event_stream 前端解析依赖核对=无字节级匹配；M2 mypy 9 错清零（api 7+event_stream 2，纯注解）；手册 §2.2 补 2 行；双表同步钉新增（HTML 引用键 ∈ JS MSG 键集）。误提交 f8d3512（旧消息脚本误用）经 soft reset 以正确消息 f93e426 重提——教训：提交脚本与消息文件配对使用，禁复用旧脚本。
+- **收尾三件（b1655f0，终选实施）**：D2 词表三级链（--glossary-override 新参进 _CONFIG_FIELDS；load_glossary_merged 三级合并 override>用户>learned；_glossary_fingerprint parts **显式**追加第三项 override sha1——critic R3 修正"自动进指纹"前提不成立，实为按路径枚举通道，须显式实现+断言双保险；内置 rules 独立分域不并入注入链）；D3 语法缓存 OrderedDict LRU（move_to_end+popitem(last=False) 逐条淘汰，弃 clear 全清与 90% 双水位）；D4 产物级 lockfile（新模块 artifact_lock.py：锁键=输入 sha1[:16]+output_dir、msvcrt.locking+fcntl 回退、失败降级警告、冲突抛 RefineError 走单文件失败隔离——run_v2 空返回消费核实后弃空串方案）。
+- **参数面板 A 类补齐（4c17ba8）**：TM 高级三件（no_tm/tm_db/tm_threshold 控件+键表+3 例）；范围核对=五扫描参在 api 已显式存在且 GUI 文件夹流程以固定默认语义覆盖（recursive 全仓未传=已知边界）；refine_pick_db 桥接不存在、TM 路径纯文本框（从简）。
+- **force 通道（c23，D6 终选）**：api.start_translation 入口同源探测（resume_state_for_path completed）→ 结构化 needs_confirm 不启动；前端 confirm 四要点（覆盖清单/自动备份告知/失败继续覆盖并告警/试运行预览引导）→ 确认后带 force 重调；`_build_refine_args` 仅 options["force"] 真时追加 --force+"未确认路径不含 --force"可回归断言。
+- **B3 终选判定**：判定对象替换为现存 GUI 实测观察（watch json 权威 **7 词 93 条**：マンコ 44/お客様 37/チンチン 7/クリ 2/ざこ 1/イク 1/ちんぽ 1——主模型脚本实跑聚合裁决，explorer 的 96 口径作废）；三类判定=**7 词全部"可接受（继续观察）"，零"误译"、零"需术语表"**（マンコ/チンチン 绝大多数译文使用词表译法或自然别名；お客様 "客人"为词表别名语境自然；低样本 4 词按纪律仅准"可接受"）；观察闸维持观察模式不转阻断；**低样本词升级须留痕（日期+案例来源+样例行）**；E2-A 原 5 条结案（行级不可考、词级可恢 bak：マンコ×2/ちんぽ×1/イク×2 且被现存样本子集覆盖）。词表覆盖层无需为冲突词新增强制词条。
+- **三轮决策记录（D1-D6）**：
+  - **D1（B3 判定对象）**：R1 方案 A+两修正+[HIGH_RISK_OBJECTION]（三问：93/96 口径、结案措辞、低样本置信度）→ R2 实跑落定 93+措辞采纳+判定纪律（低样本<3 仅准"可接受"，判"需术语表"须样本≥3 或用户亲报留痕），HRO 采纳解除 → R3 无保留异议封盘。**终选：方案 A+两修正+判定纪律。**
+  - **D2（词表优先级链）**：R1 支持自纠正（注入三级+rules 独立分域）+补指纹缝隙 → R2 采纳"实施时核实+断言兜底" → R3 **升级为"显式进指纹必修"**（核实 _glossary_fingerprint 为路径枚举通道非合并内容哈希）。**终选：三级注入链+override 显式进指纹+断言双保险。**
+  - **D3（LRU）**：R1 支持 A 逐条淘汰（弃 90% 双水位）→ R2 采纳 → R3 封盘。**终选：OrderedDict+move_to_end+popitem(last=False)。**
+  - **D4（lockfile）**：R1 有保留支持 A（锁键组合+降级路径两保留）→ R2 采纳 → R3 封盘（回归三路径：拒绝/不误伤/降级）。**终选：产物级锁键=(输入 sha1+output_dir)+msvcrt+降级。**
+  - **D5（main.py mypy 9 键）**：R1 倾向 B（单独小 PR；CI 无 gui 口径本就 0 错非门禁前置）→ R2 采纳 → R3 封盘（修复形态建议 cast(dict[str,Any])，:323）。**终选：方案 B 本轮不动，双轨口径声明（CI 0 错/本地含 gui 剩 main.py 9 键）。**
+  - **D6（B 类敏感开关进 GUI）**：R1 支持方案 B（仅 force）+三保留（C1 确认框要点/C2 事前提示"发现即暂停"/C3 force_resume 归 1.3.1 书面化）→ R2 三保留全采纳+api 内部 needs_confirm 形态 → R3 核实两前提成立+封盘。**终选：方案 B——仅 --force 进 GUI（api 内部同源探测+结构化 needs_confirm+确认后重调+"仅确认路径可达"断言）；force_resume 与学习闸三开关转 1.3.1 行动层 UI。** 无 [PRESSURE-OVERRIDE]。
+- **B5 GUI 黑盒恢复（i18n 收口触发，按 :1062 协议）**：三层执行=①真实窗口启动存活（i18n 键表+查看器+force 全部变更后 GUI 进程稳定运行至受控终止）；②桥接层 test_gui_api 33 例（read_output_artifact/needs_confirm/args 拼装）；③node --check app.js。边界记录：原生窗口无自动化驱动，点击流黑盒不可自动化；stdout 不落文件，控制台文案断言不可得。
+- **1.3.0 收口声明（清单七项对照）**：①pipeline_v2 拆分 ✓（golden 真裁决 PASS）；②词表覆盖层+加载优先级改造 ✓（三级链+显式指纹；B3 判定零新增强制词条）；③GUI i18n ✓（全量键表化）；④完整参数面板 ✓（TM 三件+A 类核对+force 通道；B 类余项按 D6 转 1.3.1）；⑤LRU ✓（OrderedDict 逐条淘汰）；⑥文档修正 ✓（手册 §12 三步走/§2.2 补 2 行/查看器与导读 json 用法待补入 §12 的部分=查看器已上线而手册查看器小节列入下轮文档批）；⑦lockfile ✓（artifact_lock）。**基线：全量 1046 passed + 1 skipped；mypy 双轨口径（CI 无 gui 0 错/本地含 gui 剩 main.py:323 9 键，D5 顺延）。**
+- **遗留移交 1.3.1**：行动层（dry-run 先行）/H4b 双且门/legacy providers 清理/guard 脚本/Mimosa 21 项甄别/force-resume+学习闸 UI/mypy 硬门禁+基线文件机制/main.py 9 键小 PR（cast 形态）/recursive GUI 传参边界/行号注释债（tools/model_matrix_run 等对旧行号引用）。**批次 6（1.3.0 后）**：Mimosa 26 处静态告警+pytest 双口径分账+异常退出日志持久性观测。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。
