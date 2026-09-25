@@ -15,45 +15,6 @@ PROVIDER_CONFIGS = {
         'env_var': 'DEEPSEEK_API_KEY',
         'api_base': 'https://api.deepseek.com'
     },
-    'openrouter': {
-        'pysubtrans_name': 'OpenRouter',
-        # v1.8.14 (#325): OpenRouter routes to DeepSeek; OpenRouter typically lags
-        # the upstream model catalog. Keep deepseek-chat as the routed default until
-        # OpenRouter publishes deepseek-v4-flash; users can override via
-        # --model deepseek/deepseek-v4-flash once available.
-        'model': 'deepseek/deepseek-chat',
-        'env_var': 'OPENROUTER_API_KEY',
-        'api_base': 'https://openrouter.ai/api/v1'
-    },
-    'gemini': {
-        'pysubtrans_name': 'Gemini',
-        'model': 'gemini-2.0-flash',
-        'env_var': 'GEMINI_API_KEY'
-    },
-    'claude': {
-        'pysubtrans_name': 'Claude',
-        'model': 'claude-3-5-haiku-20241022',
-        'env_var': 'ANTHROPIC_API_KEY'
-    },
-    'gpt': {
-        'pysubtrans_name': 'OpenAI',
-        'model': 'gpt-4o-mini',
-        'env_var': 'OPENAI_API_KEY'
-    },
-    'glm': {
-        'pysubtrans_name': 'Custom Server',  # Custom Server avoids Responses API misrouting (#178)
-        'model': 'glm-4-flash',
-        'env_var': 'GLM_API_KEY',
-        'server_address': 'https://open.bigmodel.cn',
-        'endpoint': '/api/paas/v4/chat/completions',
-    },
-    'groq': {
-        'pysubtrans_name': 'Custom Server',  # Custom Server avoids Responses API misrouting (#178)
-        'model': 'llama-3.3-70b-versatile',
-        'env_var': 'GROQ_API_KEY',
-        'server_address': 'https://api.groq.com',
-        'endpoint': '/openai/v1/chat/completions',
-    },
     'ollama': {
         'pysubtrans_name': 'Custom Server',  # Uses OpenAI-compatible /v1/chat/completions
         'model': 'gemma3:12b',         # Default; OllamaManager.recommend_model() overrides at runtime

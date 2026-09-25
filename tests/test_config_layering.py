@@ -299,3 +299,11 @@ def test_d20260922_02_default_factory_slot_enabled_alignment():
     assert cfg.stages[1].enabled is False
     assert cfg.stages[2].enabled is True
     assert cfg.stages[3].enabled is False
+
+
+def test_d20260922_02_legacy_providers_removed_pin():
+    """D2026-0922-02 裁决二：PROVIDER_CONFIGS 六条孤立 legacy 条目
+    （glm/groq/openrouter/gemini/claude/gpt）已删除，仅保留现役集合，
+    正向钉防止回添。"""
+    from subtransjav.translate.providers import PROVIDER_CONFIGS
+    assert set(PROVIDER_CONFIGS) == {"deepseek", "ollama", "custom"}
