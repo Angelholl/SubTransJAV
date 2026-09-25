@@ -1117,6 +1117,13 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **基线再次更新**：全量测试 **1012 passed + 1 skipped**（999+1+13，只增不减）；全仓 mypy 参考 18 错/3 文件。
 - **拆分后队列**：解读层 CLI 侧（基准快照已拍，可开工）→ GUI i18n+参数面板+查看器+槽位对齐同批 → B3 E2-A 判定+词表覆盖层 → LRU/文档/lockfile 收尾；批次 6 债务（Mimosa 26 处+M2+pytest 双口径）排 1.3.0 后。
 
+### 解读层实施与验收门缺陷披露（2026-09-25 深夜）
+
+- **解读层 CLI 侧落地**：quality_report.py 新增【白话导读】区（【结论】行后恒有——基于本次运行声明+时间戳同源复用头部串（hro2_gate 白名单覆盖）+①总体（N=len(items) 同源硬条款兑现，:769②）/②条目链路（rhs_total==n_src 同源）/③漏覆盖/④未翻译（条件行）/⑤阅读顺序建议）+ 9 章节白话注解（组装层统一后处理插入标题行后，render_* 函数体零改动，离线报告与 render 直调不受影响）+ 手册新增 §12 质量报告怎么读（三步走）+§6/§7.2/FAQ-9 三处指引行；文案全量避开既有负向断言黑名单（"疑似"两分支不含、条件章节字面/隔离区移出/条目在但未译等条件化规避）。**分批口径补记**：导读 json 归 i18n 批次——依据拍板一"解读层（CLI 侧，只动 quality_report.py）"硬界定（json 落地必改 v2_outputs/manifest 契约，超出本里程碑）；:1069"解读层（导读 json 双渲染）"的字面缝以此口径为准。
+- **验收门缺陷披露（诚实记录）**：hro2_gate compare_outputs 文件发现用顶层 glob，而 capture 产物在 run/{stem}/ 子目录 → **拆分期间四次 compare 空转假 PASS**（循环 0 次）。发现路径=解读层变更范围自检（post-guidebar 明确含导读却对 post-refactor PASS，取报告文件头实证后定位）。修复=rglob 递归发现（兼容平铺/嵌套双布局）+报告路径由已发现 final 同目录推导+tests/test_hro2_gate.py 增 3 例真实布局回归钉（含嵌套布局报告差异"必须 FAIL"反例钉与缺失终稿必须报 missing 钉）。**教训入档：单测 fixture 布局与被测物真实布局脱节时，验收门形同虚设——门的用例必须按真实产物布局构造。**
+- **真裁决重做（修复后四连比）**：①拆分等价 pre-refactor-run1 vs post-refactor **PASS**（四次空转结论补实锤：六模块拆分+facade 接线行为等价成立）；②M1 等价 post-refactor vs post-m1-check **PASS**（注解零行为）；③解读层 post-m1-check vs post-guidebar **FAIL=预期有意变更**——差异逐处核对为纯导读/注解增行+行平移、无内容改写、final 逐字节全等（有意变更留痕归档，承 :764 豁免条款）；④SQL 修复等价 post-m1-check vs post-sqlfix **PASS**。
+- **基线更新**：全量测试 **1019 passed + 1 skipped**（1016+1+3 门回归钉）；mypy 18 错/3 文件不变。解读层后等价比对参照更新：pre-refactor/post-refactor/post-m1-check 为拆分与 M1 的历史裁决存档，此后变更的等价比对新侧=post-guidebar/post-sqlfix（含导读形态）。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。
