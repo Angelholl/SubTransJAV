@@ -1166,6 +1166,12 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **实施留痕**：D9+7b=c25（pyproject/main.py cast/mypy_baseline.py/mypy-baseline.txt 空基线/ci.yml 去 || true+钉版/markers+pytestmark）；批次 6+D10=c26（tm_promote 字面量化/create_shortcut 树外签注/甄别表/buffering=1+回归 3 例/guard+5 例）；**主模型终验：全量 1054 passed+1 skipped、mypy 本地含 gui 0 错（51 文件）、mypy_baseline --check 退出码 0（硬门禁生效）、guard 144 tracked 零命中、缓冲回归 3 passed、ruff 零告警**。create_shortcut.py 为 UNTRACKED 树外文件不入库（签注态）。
 - **1.3.1 状态**：批次 6 结清（三件全部落账）；D9 硬门禁生效；1.3.1 主体（行动层三地基+执行器、legacy providers 清理、C1 持久化档位实施、force-resume UI、7b③ gui 腿实验）按本条目终选排期推进。
 
+### L2 收尾复查裁定（2026-09-25 深夜，三处均误报）
+
+- ①create_shortcut.py:11——现形态已是 `subprocess.call([sys.executable, "-m", "pip", "install", "pywin32"])`（参数列表、无 shell、无拼接），系本条目 D7a 修复本体（原 os.system 拼接面已消除）；L2 对修复行重匹配命中安全形态，误报。
+- ②tools/mypy_baseline.py:43——`cmd=[sys.executable,"-m","mypy",TARGET,"--python-version",FORCED_PYTHON_VERSION]`+`subprocess.run(cmd, shell=False)`，全部模块级常量零外部输入；硬门禁脚本运行面=本机/CI，误报。
+- ③tests/test_runlog_buffering.py:29——pytest tmp_path 夹具+字面量文件名，D2026-0921-03 先例类（"pytest tmp_path 测试夹具模式"），误报；:29 为 7c buffering=1 修复载体行。
+
 ### 决策日志字段
 
 - **原决策**：项目收口与 1.3.0 开工方案（用户 9 项处置意见 + 主模型 S1-S8）分批拍板。
