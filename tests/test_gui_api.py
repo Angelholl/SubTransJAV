@@ -164,6 +164,44 @@ def test_start_translation_needs_confirm_when_final_exists(tmp_path, gui_api_obj
     assert getattr(gui_api_obj, "_translate_process", None) is None
 
 
+# ---------------------------------------------------------------------------
+# D6 遗留：force-resume 通道 + 学习闸开关（--glossary-learn /
+# --glossary-conflict-block；tm_learn_gate 默认 True，GUI 不设开关）
+# ---------------------------------------------------------------------------
+
+def test_build_refine_args_force_resume_flag():
+    """勾选 refineForceResume 才拼 --force-resume；隐含 resume 由
+    RefineConfig.__post_init__ 不变式保证，此处不重复拼 --resume。"""
+    args = _build_refine_args({"inputs": ["a.srt"], "force_resume": True})
+    assert "--force-resume" in args
+
+
+def test_build_refine_args_no_force_resume_by_default():
+    args = _build_refine_args({"inputs": ["a.srt"]})
+    assert "--force-resume" not in args
+
+
+def test_build_refine_args_glossary_learn_flag():
+    args = _build_refine_args({"inputs": ["a.srt"], "glossary_learn": True})
+    assert "--glossary-learn" in args
+
+
+def test_build_refine_args_glossary_learn_absent_by_default():
+    args = _build_refine_args({"inputs": ["a.srt"]})
+    assert "--glossary-learn" not in args
+
+
+def test_build_refine_args_glossary_conflict_block_flag():
+    args = _build_refine_args({"inputs": ["a.srt"],
+                               "glossary_conflict_block": True})
+    assert "--glossary-conflict-block" in args
+
+
+def test_build_refine_args_glossary_conflict_block_absent_by_default():
+    args = _build_refine_args({"inputs": ["a.srt"]})
+    assert "--glossary-conflict-block" not in args
+
+
 class _StopLaunch(Exception):
     """fake Popen 哨兵：捕获拼好的 args 后终止启动流程。"""
 

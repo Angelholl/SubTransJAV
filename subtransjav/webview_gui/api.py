@@ -296,6 +296,19 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
     if options.get("force"):
         args.append("--force")
 
+    # 强制断点恢复：指纹校验不匹配仍复用旧产物；force_resume 隐含 resume
+    # 由 RefineConfig.__post_init__ 不变式保证，无需在此重复拼 --resume
+    if options.get("force_resume"):
+        args.append("--force-resume")
+
+    # 学习闸开关（manifest 钉定的三个影响学习行为的开关之二，入产物指纹；
+    # tm_learn_gate 默认 True 与 TM 勾选语义重叠，GUI 不设开关，
+    # 保持 CLI --no-tm-learn-gate 通道）
+    if options.get("glossary_learn"):
+        args.append("--glossary-learn")
+    if options.get("glossary_conflict_block"):
+        args.append("--glossary-conflict-block")
+
     # NDJSON 结构化事件流（GUI 侧解析进度/风险/心跳；同仓 CLI 固定支持）
     args.extend(["--event-format", "ndjson"])
 

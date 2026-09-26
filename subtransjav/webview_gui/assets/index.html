@@ -289,6 +289,10 @@
              data-i18n-title="resume_title" title="中断后重跑时，检测到 *_manifest.json 即复用已完成阶段，仅续跑剩余阶段">
         <input type="checkbox" id="resumeToggle" data-testid="resume-toggle"> <span data-i18n="resume_label">断点恢复（复用已完成阶段）</span>
       </label>
+      <label style="display:flex; align-items:center; gap:4px;"
+             data-i18n-title="force_resume_title" title="覆盖清单指纹校验；会复用可能过期的阶段A产物">
+        <input type="checkbox" id="refineForceResume" data-testid="force-resume-toggle"> <span data-i18n="force_resume_label">强制断点恢复（指纹不匹配仍复用）</span>
+      </label>
       <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="verbose_title" title="向子进程传递 --verbose 输出调试日志">
         <input type="checkbox" id="debugLogging"> <span data-i18n="verbose_label">详细日志</span>
       </label>
@@ -334,6 +338,12 @@
         <span data-i18n="tm_threshold_label">TM 阈值</span>
         <input type="number" id="refineTmThreshold" class="form-input compact" style="width:80px;"
                min="0" max="1" step="0.05" data-i18n-placeholder="tm_threshold_placeholder" placeholder="默认">
+      </label>
+      <label style="display:flex; align-items:center; gap:4px;">
+        <input type="checkbox" id="refineGlossaryLearn"> <span data-i18n="glossary_learn_label">learned 词库自学习</span>
+      </label>
+      <label style="display:flex; align-items:center; gap:4px;">
+        <input type="checkbox" id="refineGlossaryConflictBlock"> <span data-i18n="glossary_conflict_block_label">冲突条目禁入 TM（默认仅观察）</span>
       </label>
     </div>
 

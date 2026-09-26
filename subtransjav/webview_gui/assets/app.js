@@ -136,6 +136,9 @@ const MSG = {
     tm_threshold_label: 'TM 阈值',
     tm_threshold_title: '模糊匹配阈值 0-1（步进 0.05），越低越宽松；留空=使用管线默认',
     tm_threshold_placeholder: '默认',
+    // 学习闸开关（manifest 钉定三开关之二；tm_learn_gate 默认开启，GUI 不设开关）
+    glossary_learn_label: 'learned 词库自学习',
+    glossary_conflict_block_label: '冲突条目禁入 TM（默认仅观察）',
 
     // ---- 角色卡编辑 ----
     tpl_editor_summary: '角色卡模板编辑',
@@ -167,6 +170,8 @@ const MSG = {
     gl2_label: '词库→阶段B',
     resume_label: '断点恢复（复用已完成阶段）',
     resume_title: '中断后重跑时，检测到 *_manifest.json 即复用已完成阶段，仅续跑剩余阶段',
+    force_resume_label: '强制断点恢复（指纹不匹配仍复用）',
+    force_resume_title: '覆盖清单指纹校验；会复用可能过期的阶段A产物',
     verbose_label: '详细日志',
     verbose_title: '向子进程传递 --verbose 输出调试日志',
     source_filter_label: '源侧检测',
@@ -1355,6 +1360,11 @@ function closeAbout() {
       fallback_model: (($('refineFallbackModel') || {}).value || '').trim(),
       cleaner_config_dir: (($('refineCleanerConfig') || {}).value || '').trim(),
       resume: !!($('resumeToggle') && $('resumeToggle').checked),
+      // 强制断点恢复：--force-resume 隐含 --resume 由 RefineConfig.__post_init__ 保证，前端只传一个键
+      force_resume: !!($('refineForceResume') || {}).checked,
+      // 学习闸开关：默认 false 不拼旗标（api.py 侧按需转 --glossary-learn / --glossary-conflict-block）
+      glossary_learn: !!($('refineGlossaryLearn') || {}).checked,
+      glossary_conflict_block: !!($('refineGlossaryConflictBlock') || {}).checked,
       verbose: !!($('debugLogging') || {}).checked,
       source_filter: (($('refineSourceFilter') || {}).value || 'default'),
       auto_synopsis: !($('refineAutoSynopsis') && !$('refineAutoSynopsis').checked),
