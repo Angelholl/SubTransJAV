@@ -151,11 +151,20 @@ def _load_guide(path: str) -> tuple[dict, Path, str]:
     return guide, p.parent, str(stem)
 
 
-def _load_source_map(source_path: str) -> dict[str, str]:
-    """--action-source 的 timing→源文映射（精确匹配首个，后到不覆盖）。"""
+def _load_source_map(source_path: str, selected: list) -> dict[str, str]:
+    """--action-source 的 timing→源文映射（精确匹配首个，后到不覆盖）；
+    未提供或文件不存在时打印退化提示（N=退化条数，映射不可得即全部选中
+    条目退化，故 N=len(selected)，0 条不打印）。"""
+    if not source_path:
+        if selected:
+            print(f"⚠️ [行动层] 未提供 --action-source（原始日文 SRT），"
+                  f"{len(selected)} 条退化为导读摘录（源文截断，重翻质量受限；"
+                  "传入原始 SRT 可按 timing 对齐恢复完整源文）")
+        return {}
     p = Path(source_path)
     if not p.is_file():
-        print(f"⚠️ [行动层] 指定的原始日文 SRT 不存在，全部退化为导读摘录: {p}")
+        print(f"⚠️ [行动层] 指定的原始日文 SRT 不存在: {p}，"
+              f"{len(selected)} 条退化为导读摘录")
         return {}
     mapping: dict[str, str] = {}
     for e in parse_srt(p.read_text(encoding="utf-8")):
@@ -277,7 +286,8 @@ def run_action_retranslate(cfg, args) -> int:
         print(f"❌ [行动层] 终稿无有效条目: {final_path.name}")
         return 1
 
-    source_map = _load_source_map(getattr(args, "action_source", "") or "")
+    source_map = _load_source_map(getattr(args, "action_source", "") or "",
+                                  selected)
 
     if not apply_mode:
         _print_plan(selected, source_map, Path(args.action_retranslate),

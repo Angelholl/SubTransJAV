@@ -344,6 +344,36 @@ def test_source_recovery_full_hit_and_partial_fallback(tmp_path,
     assert "せんぱい" in fake.calls[1][1]             # 摘录进提示词
 
 
+def test_no_action_source_hint_without_path(tmp_path, capsys):
+    """未提供 --action-source：提示含"未提供 --action-source"与退化条数，
+    不含"不存在"、不打任何路径。"""
+    _write_final(tmp_path, FINAL_ENTRIES)
+    _write_guide(tmp_path, [
+        _item(2, T2, "[未翻译] テスト"),
+        _item(3, T3, "前辈真厉害"),
+    ])
+    rc = run_action_retranslate(_cfg(), _args(tmp_path))   # 默认 action_source=""
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "未提供 --action-source" in out
+    assert "2 条退化为导读摘录" in out
+    assert "不存在" not in out
+    assert "仅导读摘录" in out                       # dry-run 计划行形态不变
+
+
+def test_nonexistent_action_source_prints_given_path(tmp_path, capsys):
+    """提供了 --action-source 但文件不存在：保留"不存在"提示并回显传入路径。"""
+    _write_final(tmp_path, FINAL_ENTRIES)
+    _write_guide(tmp_path, [_item(2, T2, "[未翻译] テスト")])
+    rc = run_action_retranslate(_cfg(), _args(
+        tmp_path, action_source=str(tmp_path / "missing.ja.srt")))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "指定的原始日文 SRT 不存在" in out
+    assert "missing.ja.srt" in out
+    assert "1 条退化为导读摘录" in out
+
+
 # ---------------------------------------------------------------------------
 # --action-sample：只取前 N 条
 # ---------------------------------------------------------------------------
