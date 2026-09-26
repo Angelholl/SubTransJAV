@@ -18,6 +18,7 @@
 """
 
 import argparse
+import contextlib
 import fnmatch
 import subprocess
 import sys
@@ -66,6 +67,16 @@ def match_any(path: str) -> list:
 
 
 def main(argv=None) -> int:
+    # Windows CI 控制台常为 cp1252 等窄码页，中文文案直接 encode 即崩
+    # （UnicodeEncodeError，回归自 test_clean_repo_exits_0 的 CI 失败）。
+    # 只放宽 errors 不改 encoding：本地 cp936 中文照常显示，窄码页降级为
+    # \uXXXX 转义而非崩溃；流不可 reconfigure（已关闭/被替换）时静默跳过，
+    # 不影响守卫判定。
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        with contextlib.suppress(OSError, ValueError):
+            stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(
         prog="guard_banned_paths",
         description="敏感路径入库守卫：tracked/indexed 文件命中排除名单即违规")

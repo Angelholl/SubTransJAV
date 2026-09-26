@@ -5,8 +5,11 @@
 2. 干净仓 → 退出码 0；
 3. --staged 模式只查 staged（未 staged 的违规文件不触发）；
 4. 名单契约：BANNED_PATTERNS 每一项均被 .gitignore 对应规则覆盖
-   或属 docs/decision-log.md :139 收尾清单（防名单与 .gitignore 漂移）。
+   或属 docs/decision-log.md :139 收尾清单（防名单与 .gitignore 漂移）；
+5. cp1252 窄码页（PYTHONIOENCODING=cp1252）下干净仓 → 退出码 0
+   （Windows CI 中文输出不崩溃回归）。
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,10 +36,11 @@ def _init_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _run_guard(repo: Path, *extra: str):
+def _run_guard(repo: Path, *extra: str, env=None):
+    # env=None 时 subprocess.run 继承当前环境，行为与旧签名完全一致。
     return subprocess.run(
         [sys.executable, str(GUARD), *extra],
-        cwd=repo, capture_output=True, text=True)
+        cwd=repo, capture_output=True, text=True, env=env)
 
 
 def test_tracked_violation_exits_1(tmp_path):
@@ -61,6 +65,19 @@ def test_clean_repo_exits_0(tmp_path):
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
          "commit", "-m", "clean")
     r = _run_guard(repo)
+    assert r.returncode == 0
+
+
+def test_clean_repo_exits_0_with_cp1252_stdio(tmp_path):
+    """Windows CI 控制台 cp1252 下中文 [OK] 输出不得崩溃
+    （2026-09-26 CI 实测回归）：与 test_clean_repo_exits_0 同造法，
+    仅强制 PYTHONIOENCODING=cp1252，干净仓仍须退出码 0。"""
+    repo = _init_repo(tmp_path)
+    (repo / "README.md").write_text("ok", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-m", "clean")
+    r = _run_guard(repo, env=dict(os.environ, PYTHONIOENCODING="cp1252"))
     assert r.returncode == 0
 
 
