@@ -78,6 +78,25 @@ def test_cli_default_args_keep_legacy_behavior(tmp_path):
     assert cfg.heartbeat_interval == 20.0
 
 
+def test_cli_glossary_learn_flags_wired_to_config(tmp_path):
+    """D6 遗留：学习闸两开关接线（--glossary-learn / --glossary-conflict-block）。"""
+    args = build_parser().parse_args([
+        "-i", str(tmp_path / "x.srt"),
+        "--glossary-learn", "--glossary-conflict-block",
+    ])
+    cfg = config_from_args(args)
+    assert cfg.glossary_learn_enabled is True
+    assert cfg.glossary_conflict_block is True
+
+
+def test_cli_glossary_learn_flags_default_false(tmp_path):
+    """缺省两开关保持关闭（D2026-0921-02 拍板：学习通道重开须显式传参）。"""
+    args = build_parser().parse_args(["-i", str(tmp_path / "x.srt")])
+    cfg = config_from_args(args)
+    assert cfg.glossary_learn_enabled is False
+    assert cfg.glossary_conflict_block is False
+
+
 def _write_input(tmp_path):
     inp = tmp_path / "x.srt"
     inp.write_text("1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n",
@@ -277,3 +296,25 @@ def test_cli_v2_ctx_explicit_override(tmp_path):
         "-i", str(tmp_path / "x.srt"), "--v2-ctx", "16384"])
     cfg = config_from_args(args)
     assert cfg.v2_ctx_local == 16384
+
+
+def test_main_module_entry_forwards_exit_code():
+    """python -m subtransjav.refine 冒烟：--help 退出码 0。
+
+    __main__.py 必须经 sys.exit(main()) 转发返回值，否则行动层执行器
+    （0=成功/1=全败/2=entries 非法/3=部分降级）的退出码在 python -m 下
+    静默丢失为 0。--help 走 argparse SystemExit(0) 覆盖不到该分支，
+    故同钉源码转发行，防止回退成裸 main()。"""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    src = (repo_root / "subtransjav" / "refine" / "__main__.py").read_text(
+        encoding="utf-8")
+    assert "sys.exit(main())" in src, \
+        "__main__.py 丢失 sys.exit(main())，python -m 下退出码将不传播"
+    r = subprocess.run(
+        [sys.executable, "-m", "subtransjav.refine", "--help"],
+        capture_output=True, cwd=str(repo_root))
+    assert r.returncode == 0

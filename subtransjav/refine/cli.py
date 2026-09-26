@@ -83,6 +83,12 @@ def build_parser():
                         help="关闭 TM 学习准入门槛（默认开启，用于 A/B 验证）")
     p.add_argument("--auto-glossary", action="store_true",
                    help="阶段A 完成后自动从翻译结果中提取术语到词库")
+    # 学习闸开关（与 --auto-glossary 双闸门 AND，见 config.py 注释；
+    # 影响学习行为 → 入 manifest 指纹）
+    p.add_argument("--glossary-learn", action="store_true",
+                   help="启用 learned 词库自学习路径（默认关闭，开启影响产物须过指纹）")
+    p.add_argument("--glossary-conflict-block", action="store_true",
+                   help="术语冲突条目禁止进入 TM 学习（默认仅观察）")
     p.add_argument("--cleaner-config", default=None,
                    help="自定义净语规则配置目录（默认使用内置模板）")
     grp_tm.add_argument("--tm-stats", action="store_true",
@@ -233,6 +239,8 @@ def config_from_args(args):
         tm_db_path=args.tm_db,
         tm_threshold=args.tm_threshold,
         auto_glossary=args.auto_glossary,
+        glossary_learn_enabled=args.glossary_learn,
+        glossary_conflict_block=args.glossary_conflict_block,
         cleaner_config_dir=args.cleaner_config or "",
         v2_profile=args.profile,
         v2_concurrency=args.v2_concurrency,
