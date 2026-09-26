@@ -1214,6 +1214,27 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **D11 残余观察①（二选一裁定=文档标注）**：不扩清陈旧表（扩表会在 quality_report=False 运行中无备份删除上轮成品伴生件，违背备份语义），改 `_remove_stale_risk_reports` docstring 裁定记录+行动层清单文档第 5 条显式记录（两 CSV 在 quality_report=False 运行中不重写不清理，重跑即自然重算）。
 - **验证**：全量 **1115 passed + 1 skipped**（1108+1→+7 只增不减）；ruff 0；mypy 门禁 0。工作区现存三批待提交（批二 9 文件三段脚本 commit_0926_batch2.sh、批三 7 文件三段脚本 commit_0926_batch3.sh，BASE 均=95216aa，互不重叠）。
 
+### 批二落库执行追记（2026-09-26，六段推送 d80d4c6）
+
+- **六段提交**（用户终端：主脚本五段+补尾脚本一段）：1911bb0（CLI 学习闸两参+__main__ 退出码）/bc76749（GUI 强制恢复+学习闸开关）/d137110（审计尾巴 L3+M2-②③）/d23be95（行动层提示语区分未提供/不存在）/28fbca1（docs 六节追记+B2 回填）/d80d4c6（v2_outputs 残余观察① docstring 补尾）。
+- **主脚本终检拦停事件**：分段 add 清单漏点名 v2_outputs.py（EXPECTED 18 文件 vs 分段和 17），终检"工作树未清空"断言拦停未带病推送——**教训入档：提交脚本除"工作树集合"断言外，必须保证"分段 add 清单并集=工作树集合"（或分段计数和=文件总数）**，补尾脚本 Temp/commit_0926_followup.sh 收口。
+- **三查+blobs 复扫**：①工作树干净；②恰六段、文件归属 3/4/5/2/3/1=18 与工作树集合一致；③十类凭据模式零命中（1 行 raw=落库追记引用的推送后 commit SHA，公开内容哈希非凭据）。
+- **push 复核**：ls-remote refs/heads/main=d80d4c66224b935065f229b2add81154da839191 与本地 HEAD 一致，status -sb 零领先零落后。
+- **用户实测留痕**：行动层四层链路全绿（entries 防御性忽略+清选集空退出/timing 精确定位/--action-source timing 对齐恢复完整源文/dry-run 零写入），提示语两分支修复由实测反馈驱动并回归。
+- **1.3.1 状态**：行动层（前置修复+三地基+执行器+UI 批+尾巴修复）全部落库，v1.3.1 发布条件具备（时点与 Release 待用户拍板）；B2 门②行级基线 92 条待复核接受（截止 2026-10-16）；H4b 启动评估待用户拍板。
+
+## [2026-09-26] [D2026-0926-01] H4b 本体启动与实施 [已实施，待提交]（用户拍板"H4b 启动，处理完随新版本一起发布"）
+
+**decision-critic 三轮（R1 三 HRO→R2 全采纳→R3 封盘同意），无 [PRESSURE-OVERRIDE]。**
+
+- **门①判定回写（:770 一次性判定义务）**：分支 b 维持——上游 1.9.3 源码级事实（仅 balanced_pipeline.py 含 telemetry 23 处）+四份 .abtest/out/BAL__* 真实遥测实证；H4b 有效口径=**Balanced opt-in 子集而非全量自适应**，五要素全部落位（见实施节）。
+- **门②判定回写**：**有条件满足**——按定案一语料口径（watch json 权威样本源）B2 已采 92 条真实行级（≥30 达成）；**:770 原文的 golden origin:real 子集（含 suspect/empty 案例、防循环验证记录、gate0_golden_stats 分项）当前 0 条**，critic R1-HRO3 裁定不得由实现方解释为"满足"——**golden origin=real 子集由门②组成部分降为观测项一事待用户追认**（本条目即呈报）；工具面已就绪（gate0_golden_stats.py 支持 origin=real 分项，0 条时如实输出）。
+- **R1 三 HRO（全部采纳）**：①分区两趟破坏跨条目检测语义（repeat 组跨界劈断、end_meta 分区局部重锚致中部误删）→改**单趟全量预计算+逐条 tighten 谓词**；②信任 OR 规则过宽（实测 nsp>0.6 单独命中约 40% 场景）→硬信号单独判（produced_output=False/fallback_segments>0/max_temperature>0/max_compression_ratio>2.4）+软信号合取（max_no_speech_prob>0.6 ∧ mean_avg_logprob<-1.0）；③门②判定修正如上。R3 补两钉：跨分区 repeat 组**就紧原则**（组内任一条目低信任→整组按 tighten 评估，删除件全部进隔离区可回捞）+end_meta 双窗口均锚定全文件 span（禁分区重锚）。
+- **实施**：①解析=asr_meta.load_asr_telemetry（发现=raw_subs/ 前缀匹配剥 .ja.whisperjav 等后缀、禁 naive stem；R6 新鲜度沿 _is_fresh；防御解析=null 字段记不可用不当 0、坏行跳过计数、缺文件静默 present=False、任何异常不抛）；②映射=pipeline_v2.map_entries_to_scenes（场景按序累计 audio_duration_s 得边界，条目 timing 中点落格，超末场景不映射；docstring 声明"场景归属仅供档位划分、非真值"）；③执行=apply_source_filter 增 tighten_entry_predicate（单趟全量预计算保持，谓词仅决定删五类参数取 tighten/base 变体，计数类判定路径不感知谓词，None 缺省逐字节不变；不变量=positions 全局索引/统计求和/valve_tripped=OR/count_positions 与 quarantine_candidates 全局升序）；④五要素：缺失红标=collector.add(stage="gate0", WARNING)（仅 opt-in 触发，限定域防红旗疲劳）/CLI --adaptive-thresholds+GUI refineAdaptiveThresholds 复选框+手册 §2.3 档位段/adaptive_thresholds 进 _CONFIG_FIELDS（asr_telemetry 路径沿 asr_meta 先例不进）/三可数指标（telemetry_scenes/low_trust_scenes/adaptive_entries）进 gate0 upstream 块。
+- **与任务书的一处偏差（critic 语义内）**：upstream 块的 telemetry 子块为**条件并入**（opt-in 或确有遥测/超龄时挂载）——tests/test_pipeline_v2.py:2160 逐字节钉死无信号场景 upstream 键集，无条件并入必破既有契约；键集与设计一致，缺省路径等价性反而更强。
+- **验证**：全量 **1160 passed + 1 skipped**（1115+1→+45 只增不减）；ruff 0；mypy 门禁 0；node --check 过；**四份 BAL 真实遥测全链路实跑 4/4 成功**（场景数 68/55/51/71、低信任 7/5/13/5、硬信号命中 3/0/0/0、零跳行零警告——硬信号稀有与软信号合取主力，与 R1 实证吻合）；golden 等价 compare 见下方追记。
+- **发布口径**：随 v1.3.1 一起发布（用户拍板）；缺省路径行为不变+opt-in 子集口径=发布前置（四份 BAL 实跑+golden EXIT=0）已满足。
+
 ## [2026-09-25] [D2026-0925-02] 批次 6 处置与 1.3.1 开工五决策（D7-D10）三轮记录 [已拍板·实施中]
 
 **用户指令**：每决策选项与子智能体三轮讨论再终选，最终报告逐项写终选。评议方=decision-critic（agent_73f16180），R1 评议→R2 主模型逐项回应→R3 终评，全程三轮闭环，无 [PRESSURE-OVERRIDE]。

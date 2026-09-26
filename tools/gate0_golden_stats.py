@@ -230,6 +230,26 @@ def main() -> int:
               f"FN={m['fn']}  precision={m['precision']:.3f} "
               f"recall={m['recall']:.3f}")
 
+    # origin=real 分项（真实语料标注子集的七类 P/R）：仅汇总呈现，不影响
+    # 全量口径与 tests/test_golden_set.py 硬守卫（守卫仍按全集判定）。
+    real_cases = [c for c in golden["cases"] if c.get("origin") == "real"]
+    print("-- origin=real 真实子集分项 --")
+    if not real_cases:
+        print("origin=real 真实子集：0 条（工具面就绪，待真实语料标注）")
+    else:
+        real_ids = {c["id"] for c in real_cases}
+        matrix_real = confusion_matrix(
+            {"cases": real_cases}, [r for r in results if r["id"] in real_ids])
+        n_real_pass = sum(1 for r in results
+                          if r["id"] in real_ids and r["ok"])
+        print(f"origin=real 真实子集：{len(real_cases)} 条"
+              f"（行为一致 {n_real_pass}/{len(real_cases)}）")
+        for key in ALL_CATS:
+            m = matrix_real[key]
+            print(f"{CATEGORY_LABELS[key]:<10} TP={m['tp']} FP={m['fp']} "
+                  f"FN={m['fn']}  precision={m['precision']:.3f} "
+                  f"recall={m['recall']:.3f}")
+
     macro_p = sum(m["precision"] for m in matrix.values()) / len(matrix)
     macro_r = sum(m["recall"] for m in matrix.values()) / len(matrix)
     n_delete = sum(1 for c in golden["cases"]
