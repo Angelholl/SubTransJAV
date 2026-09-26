@@ -148,6 +148,47 @@ def test_html_i18n_keys_exist_in_js_msg(attr):
         f"index.html 的 {attr} 引用了 app.js MSG 中不存在的键: {dangling}"
 
 
+def test_js_msg_references_defined_in_table():
+    """JS 内 MSG.x 引用 ⊆ MSG 键表（反向悬空钉）。
+
+    f93e426 键表化时 13 个调用点 camelCase 悬空，轮询循环每 tick
+    TypeError 中断（进度冻结、完成分支不可达）；本钉防同类回退。
+    """
+    src = _APP_JS_PATH.read_text(encoding="utf-8")
+    refs = set(re.findall(r"\bMSG\.([A-Za-z_][A-Za-z0-9_]*)", src))
+    assert refs, "app.js 未引用任何 MSG.x"
+    dangling = sorted(refs - _js_msg_keys())
+    assert not dangling, \
+        f"app.js 引用了 MSG 键表中不存在的键: {dangling}"
+
+
+def test_msg_table_has_guide_items_keys():
+    """D11 行动层：导读查看器 items 渲染所需的 MSG 新键存在且为中文文案。
+
+    正向钉（键存在）；guide_items_title 同时被 index.html data-i18n 引用，
+    由 test_html_i18n_keys_exist_in_js_msg 反向覆盖；guideRender 内的
+    MSG.guide_items_none / guide_item_current_label / guide_item_unresolvable /
+    guide_items_more 引用由 test_js_msg_references_defined_in_table 反向覆盖。
+    """
+    keys = _js_msg_keys()
+    required = {
+        "guide_items_title", "guide_items_none", "guide_item_current_label",
+        "guide_item_unresolvable", "guide_items_more",
+    }
+    missing = sorted(required - keys)
+    assert not missing, f"app.js MSG 缺少导读行动条目键: {missing}"
+
+
+def test_guide_viewer_has_items_container():
+    """D11 行动层：查看器面板含 items 容器与 i18n 标题锚（位于章节之后）。"""
+    html = _INDEX_HTML_PATH.read_text(encoding="utf-8")
+    assert 'id="guideItems"' in html, "index.html 缺少 #guideItems 容器"
+    assert 'data-i18n="guide_items_title"' in html, \
+        "index.html 缺少行动条目标题 i18n 锚"
+    assert html.index('id="guideItems"') > html.index('id="guideSections"'), \
+        "#guideItems 应位于 #guideSections 之后"
+
+
 def test_html_has_no_unmarked_user_visible_chinese():
     """防回归：index.html 用户可见内容不再出现未收编的中文文案。
 

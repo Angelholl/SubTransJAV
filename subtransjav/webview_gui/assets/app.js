@@ -201,6 +201,7 @@ const MSG = {
     guide_conclusions: '结论',
     guide_sections: '章节导读',
     guide_companions: '伴生文件',
+    guide_items_title: '行动条目',
 
     // ---- 控制台 / 页脚 ----
     console_header: 'Console',
@@ -282,6 +283,10 @@ const MSG = {
     guide_loading: '加载中…',
     guide_loaded: p => `已加载：${p}`,
     guide_load_failed: m => `加载失败：${m}`,
+    guide_items_none: '行动条目：0',
+    guide_item_current_label: '现译: ',
+    guide_item_unresolvable: '不可自动重翻',
+    guide_items_more: n => `…其余 ${n} 条见 json`,
     gui_initialized: '净语翻译 GUI 已初始化',
     gui_usage_hint: '在上方 Source 区添加 .srt 字幕后点击「▶ 开始净语翻译」',
 };
@@ -875,7 +880,7 @@ const TranslatorManager = {
         if (AppState.isRunning) return;
 
         if (AppState.selectedFiles.length === 0) {
-            ErrorHandler.show(MSG.noFilesTitle, MSG.noFilesHint);
+            ErrorHandler.show(MSG.noFilesTitle, MSG.no_files_hint);
             return;
         }
 
@@ -899,7 +904,7 @@ const TranslatorManager = {
                         .filter(s => s && s.state === 'resumable');
                     if (resumable.length > 0) {
                         ConsoleManager.log(
-                            MSG.resumableFound(resumable.length), 'info');
+                            MSG.resumable_found(resumable.length), 'info');
                         resumable.forEach(s =>
                             ConsoleManager.log(`   ↺ ${s.stem}`, 'info'));
                     }
@@ -983,11 +988,11 @@ const TranslatorManager = {
                 if (status.status === 'running' &&
                     status.heartbeat_age != null && status.heartbeat_age > staleS) {
                     const secs = Math.round(status.heartbeat_age);
-                    text = `${text || MSG.running}${MSG.stillRunning(secs)}`;
+                    text = `${text || MSG.running}${MSG.still_running(secs)}`;
                 }
                 // 风险计数
                 if (status.risk_count > 0) {
-                    text = `${text || MSG.running}${MSG.riskSuffix(status.risk_count)}`;
+                    text = `${text || MSG.running}${MSG.risk_suffix(status.risk_count)}`;
                 }
                 if (text) this.setStatus(text);
 
@@ -1000,7 +1005,7 @@ const TranslatorManager = {
                     fresh.forEach(r => {
                         const where = r.phase ? `（${r.phase}）` : '';
                         ConsoleManager.log(
-                            `⚠️ ${where}${r.message || r.type || MSG.riskWord}`, 'warning');
+                            `⚠️ ${where}${r.message || r.type || MSG.risk_word}`, 'warning');
                     });
                     this._reportedRiskCount = status.risk_count;
                 }
@@ -1015,17 +1020,17 @@ const TranslatorManager = {
                 if (status.status === 'completed') {
                     this.setProgress(100);
                     if (status.untranslated_majority) {
-                        ErrorHandler.show(MSG.untranslatedTitle,
-                            MSG.untranslatedHint);
+                        ErrorHandler.show(MSG.untranslated_title,
+                            MSG.untranslated_hint);
                     } else if (status.warning_level) {
                         const level = status.warning_level === 'critical'
-                            ? MSG.levelCritical : MSG.levelWarning;
+                            ? MSG.level_critical : MSG.level_warning;
                         ConsoleManager.log(
-                            MSG.completedWithRisks(level, status.risk_count || 0),
+                            MSG.completed_with_risks(level, status.risk_count || 0),
                             'warning');
                     } else {
                         ConsoleManager.log(MSG.completedLog, 'success');
-                        ErrorHandler.showSuccess(MSG.completedTitle, MSG.completedDetail);
+                        ErrorHandler.showSuccess(MSG.completed_title, MSG.completed_detail);
                     }
                     if (typeof this.guideAutoDetect === 'function') this.guideAutoDetect();
                     this._finish(MSG.completed);
@@ -1196,7 +1201,7 @@ const KeyboardShortcuts = {
             if (e.key === 'F5') {
                 if (AppState.isRunning) {
                     e.preventDefault();
-                    if (confirm(MSG.confirmReload)) {
+                    if (confirm(MSG.confirm_reload)) {
                         location.reload();
                     }
                 }
@@ -1813,6 +1818,28 @@ function closeAbout() {
       dlS.innerHTML = (data.sections || [])
         .map(s => '<dt>' + esc(s.title) + '</dt><dd>' + esc(s.note) + '</dd>')
         .join('') || '<dt>' + MSG.no_sections + '</dt>';
+    }
+    const divI = $('guideItems');
+    if (divI) {
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) {
+        divI.innerHTML = '<div>' + MSG.guide_items_none + '</div>';
+      } else {
+        const MAX_ITEMS = 50;
+        divI.innerHTML = items.slice(0, MAX_ITEMS).map(it => {
+          const o = it || {};
+          const cur = (o.current_text == null)
+            ? MSG.guide_item_unresolvable
+            : esc(String(o.current_text).slice(0, 80));
+          return '<div>' + esc('#' + o.index) + ' [' + esc(o.category) + '] '
+            + esc(o.timing) + '｜' + esc(o.message) + '｜'
+            + MSG.guide_item_current_label + cur + '｜' + esc(o.status)
+            + '</div>';
+        }).join('')
+          + (items.length > MAX_ITEMS
+            ? '<div>' + MSG.guide_items_more(items.length - MAX_ITEMS) + '</div>'
+            : '');
+      }
     }
     if (ulP) {
       const comp = data.companions || {};
