@@ -345,6 +345,17 @@ def _handle_tm_commands(args):
 
 
 def main(argv=None):
+    # stdio 加固（同 tools/guard_banned_paths.py）：argparse 在 parse 时才打印
+    # 中文 help，stdout 为管道且 locale 码页过窄（CI windows cp1252 实测回归）
+    # 会 UnicodeEncodeError → 退出 1；只放宽 errors 不挂 encoding——本地 cp936
+    # 控制台中文照常，窄码页降级 \uXXXX 转义不崩；流不可 reconfigure 时静默跳过。
+    import sys as _sys
+    for _stream in (_sys.stdout, _sys.stderr):
+        if _stream is None or not hasattr(_stream, "reconfigure"):
+            continue
+        with contextlib.suppress(OSError, ValueError):
+            _stream.reconfigure(errors="backslashreplace")
+
     # 模型缓存重定向到仓库 models/ 目录（不占 C 盘）
     from subtransjav.utils.model_cache import apply_model_cache_env
     apply_model_cache_env()

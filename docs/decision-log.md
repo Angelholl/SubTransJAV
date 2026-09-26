@@ -1235,6 +1235,11 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **验证**：全量 **1160 passed + 1 skipped**（1115+1→+45 只增不减）；ruff 0；mypy 门禁 0；node --check 过；**四份 BAL 真实遥测全链路实跑 4/4 成功**（场景数 68/55/51/71、低信任 7/5/13/5、硬信号命中 3/0/0/0、零跳行零警告——硬信号稀有与软信号合取主力，与 R1 实证吻合）；golden 等价 compare 见下方追记。
 - **发布口径**：随 v1.3.1 一起发布（用户拍板）；缺省路径行为不变+opt-in 子集口径=发布前置（四份 BAL 实跑+golden EXIT=0）已满足。
 
+### CI windows 腿失败诊断与修复追记（2026-09-26，a8c67a6 首跑）
+
+- **诊断**：批二 d80d4c6 的 CI 即已红（当时未察觉），批三 a8c67a6 继承——三条 windows 腿 Test 步失败、ubuntu 全绿；REST API（push 凭据 token）拉日志定位**唯一失败用例** `test_cli.py::test_main_module_entry_forwards_exit_code`：`python -m subtransjav.refine --help` 子进程在 cp1252 管道下打印批二新增中文参数帮助触发 UnicodeEncodeError 退出码 1（退出码传播本身工作正常）。**教训：批二推送后未查 CI 即继续批三——推送→CI 绿→下一批的顺序纪律须严格执行**；交互控制台走 UTF-8 API 不炸、管道捕获走 locale 码页才炸，故本地 cp936 全绿而 CI 红。
+- **修复**：cli.main() 入口加 stdio 加固（reconfigure errors="backslashreplace"，不挂 encoding，沿 guard_banned_paths 批一同款）；回归钉=测试 subprocess 加 PYTHONIOENCODING=cp1252 环境使本地可复现窄码页管道场景（stash 红绿核验：无加固退出 1 本地复现 CI 失败，加固后 0）。工作树现存 cli.py+test_cli.py 两文件待提交。
+
 ## [2026-09-25] [D2026-0925-02] 批次 6 处置与 1.3.1 开工五决策（D7-D10）三轮记录 [已拍板·实施中]
 
 **用户指令**：每决策选项与子智能体三轮讨论再终选，最终报告逐项写终选。评议方=decision-critic（agent_73f16180），R1 评议→R2 主模型逐项回应→R3 终评，全程三轮闭环，无 [PRESSURE-OVERRIDE]。

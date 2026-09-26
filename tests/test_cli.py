@@ -304,7 +304,14 @@ def test_main_module_entry_forwards_exit_code():
     __main__.py 必须经 sys.exit(main()) 转发返回值，否则行动层执行器
     （0=成功/1=全败/2=entries 非法/3=部分降级）的退出码在 python -m 下
     静默丢失为 0。--help 走 argparse SystemExit(0) 覆盖不到该分支，
-    故同钉源码转发行，防止回退成裸 main()。"""
+    故同钉源码转发行，防止回退成裸 main()。
+
+    回归钉：PYTHONIOENCODING=cp1252 强制子进程 stdout（管道）用窄码页，
+    本地复现 CI windows 实测失败——argparse 打印中文 help 即
+    UnicodeEncodeError → 退出 1；main() 开头 stdio 加固
+    （reconfigure(errors="backslashreplace")，同 tools/guard_banned_paths.py
+    批一修复手法）后恢复退出 0。"""
+    import os
     import subprocess
     import sys
     from pathlib import Path
@@ -316,5 +323,6 @@ def test_main_module_entry_forwards_exit_code():
         "__main__.py 丢失 sys.exit(main())，python -m 下退出码将不传播"
     r = subprocess.run(
         [sys.executable, "-m", "subtransjav.refine", "--help"],
-        capture_output=True, cwd=str(repo_root))
+        capture_output=True, cwd=str(repo_root),
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"})
     assert r.returncode == 0
