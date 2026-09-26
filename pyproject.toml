@@ -60,6 +60,10 @@ dev = [
 
 [tool.mypy]
 python_version = "3.12"
+# 钉产品主口径平台（Windows）：CI 与本地单轨一致——linux 平台 typeshed 把
+# msvcrt/winreg/ctypes.windll 属性锁在 sys.platform=="win32" 护栏内，不钉
+# 会产生平台噪声 attr-defined 假报（2026-09-26 CI 首跑实测，ubuntu 腿 9 条）。
+platform = "win32"
 ignore_missing_imports = true
 check_untyped_defs = true
 no_strict_optional = true

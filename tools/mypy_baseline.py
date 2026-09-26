@@ -6,6 +6,12 @@
   与 mypy-baseline.txt 做集合差——不在基线内的错误即退出码 1；基线内存量放行。
 - ``--update``：重写基线文件并在 stdout 打印提示，供决策日志留痕。
 
+退出码校验契约（2026-09-26 审计 M1 项）：mypy 退出码 0=无错；1=有错误行；
+退出码非 0/1（含负值信号终止）=环境故障（进程崩溃、参数错等）。退出码 1 但解析不到任何错误行同样判
+环境故障——不校验则 ``--check`` 落入空差集假绿放行（典型=No module named
+mypy）。环境故障一律脚本退出码 1 并拒绝判定，``--update`` 同时拒绝写
+基线文件，防基线被垃圾输出覆盖。
+
 历史注记（保留）：本脚本强制 ``--python-version 3.12``，不可覆盖。
 pyproject 3.10 时代 legacy：早期 target <3.12 时直跑会因 numpy stub 语法差异
 误报中止；pyproject 已改 3.12，此约束仅作历史防线保留。
@@ -30,8 +36,8 @@ FORCED_PYTHON_VERSION = "3.12"
 ERROR_PREFIX = ": error: "
 
 
-def run_mypy() -> str:
-    """运行 mypy 并返回 stdout（含错误则退出码非 0，不视为脚本失败）。"""
+def run_mypy() -> tuple[int, str]:
+    """运行 mypy，返回 (退出码, 合并输出)；退出码契约见模块 docstring。"""
     cmd = [
         sys.executable,
         "-m",
@@ -41,7 +47,7 @@ def run_mypy() -> str:
         FORCED_PYTHON_VERSION,
     ]
     proc = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return proc.stdout + proc.stderr
+    return proc.returncode, proc.stdout + proc.stderr
 
 
 def parse_errors(output: str) -> set[str]:
@@ -86,8 +92,18 @@ def main() -> int:
     parser.add_argument("--update", action="store_true", help="用当前 mypy 结果重写基线文件")
     args = parser.parse_args()
 
-    output = run_mypy()
+    returncode, output = run_mypy()
     current = parse_errors(output)
+
+    # 退出码校验契约见模块 docstring：退出码非 0/1（含负值信号终止）=环境故障；退出码 1 但零错误行=
+    # 假绿防护（典型=No module named mypy）。两分支对 --check/--update
+    # 共用：环境故障一律退出 1，--update 拒绝写基线，防基线被垃圾输出覆盖。
+    if returncode not in (0, 1):
+        print(f"mypy 异常退出（returncode={returncode}），视为环境故障，拒绝判定与更新基线", file=sys.stderr)
+        return 1
+    if returncode == 1 and not current:
+        print("mypy 退出码 1 但未解析到任何错误行，视为环境故障（假绿防护），拒绝判定与更新基线", file=sys.stderr)
+        return 1
 
     if args.update:
         write_baseline(current)
