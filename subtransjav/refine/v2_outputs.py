@@ -172,6 +172,15 @@ def _remove_stale_risk_reports(out_dir: str, stem: str) -> list:
     导读 json 等本轮新写件不再被同轮清理命中。
     文件名与 risk.py 的 write_reports 双钉，契约测试防漂移；本语义
     在 1.3.0 拆分中属行为等价验收范围，不进"有意变更"豁免清单。
+
+    残余观察①裁定记录（D11）：quality_report=False 的运行不写分歧
+    复核 CSV（{stem}_分歧复核.csv）与术语冲突观察 CSV
+    （{stem}_术语冲突观察.csv），本轮不重写也不清理这两件——上一轮
+    的同名 CSV 作为陈旧残留留存，重跑 quality_report=True 即自然
+    重算覆盖。不收编进本清理表的理由：quality_report=False 的运行
+    里清理会在无备份的情况下删除上一轮成品伴生件，违背备份语义，
+    故按 D11 残余观察①选文档标注留痕，指引见
+    docs/行动层可离线重建与标陈旧清单.md。
     """
     removed = []
     for suffix in ("_风险清单.md", "_风险清单.json", "_质量报告导读.json",
