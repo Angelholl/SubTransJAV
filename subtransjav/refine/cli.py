@@ -129,6 +129,25 @@ def build_parser():
     p.add_argument("--heartbeat-interval", type=float, default=20.0,
                    help="ndjson 心跳间隔秒数（默认 20）")
 
+    # ---- 行动层（D11 契约④⑤：基于导读清单的定点重翻执行器）----
+    # 参数走 CLI 直连、不进 RefineConfig → 天然不进 manifest 指纹
+    grp_action = p.add_argument_group("行动层（质量报告导读定点重翻）")
+    grp_action.add_argument("--action-retranslate", default="",
+                            help="行动层重翻：质量报告导读 json 清单路径"
+                                 "（给定后进入执行器模式并早退，不跑 run_v2）")
+    grp_action.add_argument("--entries", default="",
+                            help="重翻条目选择：逗号分隔的单值与闭区间，"
+                                 "如 3,7,12-15（缺省=全部 open 且有现译的条目）")
+    grp_action.add_argument("--action-source", default="",
+                            help="原始日文 SRT 路径（可选：按 timing 对齐恢复"
+                                 "完整源文；缺省退化为导读摘录）")
+    grp_action.add_argument("--action-model", default="",
+                            help="重翻模型名（缺省用阶段B/槽 B 模型）")
+    grp_action.add_argument("--action-sample", type=int, default=0,
+                            help="只取选中条目的前 N 条（0=不限；供小样对比工作流）")
+    grp_action.add_argument("--apply", action="store_true",
+                            help="真正落盘改写终稿（缺省 dry-run：只打印计划，零写入）")
+
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--clean-tmp-on-exit", action="store_true",
                    help="进程退出时自动清理 .refine_tmp 临时目录")
@@ -319,6 +338,12 @@ def main(argv=None):
         return
 
     cfg = config_from_args(args)
+
+    # ---- 行动层重翻执行器（D11 契约④⑤）：早退分流，同 _handle_tm_commands
+    #      形态——不进 run_v2；退出码 0=成功/1=全败/2=entries 非法/3=部分降级 ----
+    if args.action_retranslate:
+        from .action_retranslate import run_action_retranslate
+        return run_action_retranslate(cfg, args)
 
     # ------------------------------------------------------------------
     # 运行日志：全量落盘（Logs/M-D.txt，同日追加时间）+ 7 天自动清理

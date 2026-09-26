@@ -157,19 +157,25 @@ def _remove_stale_risk_reports(out_dir: str, stem: str) -> list:
     json 等成品伴生件写前清陈旧（导读 json 随质量报告同生共死，失败
     路径不落盘，遗留件属上一轮陈旧残留）。
 
-    主理由（职责边界，D2026-0925-01 A5 用户验收裁定）：风险清单与
-    final_cn.srt/质量报告.txt 同属最终交付物，而 delete_resume_artifacts
-    的契约是清理可重建的恢复现场——成品不进恢复现场清理清单，故不收编。
-    三类清理职责互斥：_backup_existing_outputs 保上一轮成品（备份不删）、
-    本函数清"有清单无终稿"的失败残留（写前清，与隔离区"先清后写"同款
-    纪律）、delete_resume_artifacts 清恢复现场（不碰成品）。
-    "成功路径调用点在 write_reports 之后，收编会误删新报告"仅为当前
-    实现下的辅证，不作裁定依据（调用点会随重构漂移）。
+    D11 契约④：清理表扩第四件 {stem}_重翻记录.json——行动层执行器
+    台账属成品伴生件，写前清旧（新一轮管线产物另起快照，旧台账随
+    上一轮成品一并让位；执行器自身的累积追加语义不受影响）。
+
+    主理由（职责边界，D2026-0925-01 A5 用户验收裁定）：风险清单、
+    重翻台账与 final_cn.srt/质量报告.txt 同属最终交付物，而
+    delete_resume_artifacts 的契约是清理可重建的恢复现场——成品不进
+    恢复现场清理清单，故不收编。三类清理职责互斥：
+    _backup_existing_outputs 保上一轮成品（备份不删）、本函数清
+    "有清单无终稿"的失败残留（写前清，与隔离区"先清后写"同款纪律）、
+    delete_resume_artifacts 清恢复现场（不碰成品）。
+    调用点已上移至本轮最早伴生成品写点之前（先清后写，D11 HRO-1）：
+    导读 json 等本轮新写件不再被同轮清理命中。
     文件名与 risk.py 的 write_reports 双钉，契约测试防漂移；本语义
     在 1.3.0 拆分中属行为等价验收范围，不进"有意变更"豁免清单。
     """
     removed = []
-    for suffix in ("_风险清单.md", "_风险清单.json", "_质量报告导读.json"):
+    for suffix in ("_风险清单.md", "_风险清单.json", "_质量报告导读.json",
+                   "_重翻记录.json"):
         p = Path(out_dir) / f"{stem}{suffix}"
         if p.is_file():
             try:
@@ -187,7 +193,8 @@ def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
     对输出目录中确切名为 ``{stem}_final_cn.srt``、``{stem}_质量报告.txt``、
     ``{stem}_分歧复核.csv``、``{stem}_术语冲突观察.csv``、
     ``{stem}_风险清单.md``、``{stem}_风险清单.json``、
-    ``{stem}_质量报告导读.json`` 的文件，复制为同目录
+    ``{stem}_质量报告导读.json``、``{stem}_重翻记录.json``（D11 契约④：
+    行动层执行器台账属成品伴生件）的文件，复制为同目录
     ``{原名去扩展}_bak_YYYYMMDD_HHMMSS.{原扩展}``；同一次运行共用同一时间戳。
     精确匹配保证旧的 ``*_bak_*`` 文件不会被再次备份。
     """
@@ -197,7 +204,7 @@ def _backup_existing_outputs(out_dir: str, stem: str, collector=None,
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     for suffix in ("_final_cn.srt", "_质量报告.txt", "_分歧复核.csv",
                    "_术语冲突观察.csv", "_风险清单.md", "_风险清单.json",
-                   "_质量报告导读.json"):
+                   "_质量报告导读.json", "_重翻记录.json"):
         p = Path(out_dir) / f"{stem}{suffix}"
         if not p.is_file():
             continue

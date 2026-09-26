@@ -9,7 +9,7 @@ def test_zawei_no_de_in_src_kept():
     """目标含"作为"但源文不含「で」时，不应触发替换（false positive 守卫）。"""
     src = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000", "text": "彼女は美人だ"}]
     tgt = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000", "text": "作为一个女人"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0, f"不应修正但 got fixes={fixes}"
     assert tgt[0]["text"] == "作为一个女人", "文本不应被改动"
     assert not warnings
@@ -22,7 +22,7 @@ def test_zawei_with_de_and_toshite_kept():
             "text": "東京で医者として有名です"}]
     tgt = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
             "text": "作为医生在东京很有名"}]
-    fixes, _, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, _, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0, "源含「として」时不应触发で误译修正"
     assert "作为" in tgt[0]["text"]
 
@@ -36,7 +36,7 @@ def test_detection1_then_detection2_both_fire():
             "text": "学校で僕たちが有名です"}]
     tgt = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
             "text": "我作为学校有名"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     # 检测1 修正 "作为"→"是"（+1）；检测2 仅告警不计数、不改动文本
     assert fixes == 1, f"仅检测1应计为修正，got fixes={fixes}"
     text = tgt[0]["text"]
@@ -82,7 +82,7 @@ def test_subject_topic_wa_correct_translation_no_warning():
     不应告警（(?!は) 盲区修复）。"""
     src = [{"index": 1, "timing": _TIMING, "text": "僕たちは部長で、エースだ"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "我们是部长，也是王牌"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert warnings == []
     assert not flagged
@@ -93,7 +93,7 @@ def test_subject_adnominal_with_comma_warns():
     且文案含实际译文开头（动态引用）与"主语误判"字样。"""
     src = [{"index": 1, "timing": _TIMING, "text": "ボクたち、水泳部の部長で…"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "我，是游泳部的部长"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0                          # 仅告警，不改动译文
     assert len(warnings) == 1
     assert "主语误判" in warnings[0]           # quality_report 归类依赖此四字
@@ -108,7 +108,7 @@ def test_subject_singular_short_head_warns():
     触发告警且文案含完整实际译文开头"我是部长"。"""
     src = [{"index": 1, "timing": _TIMING, "text": "ボクたち、水泳部の部長で…"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "我是部长"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert len(warnings) == 1
     assert "主语误判" in warnings[0]
@@ -122,7 +122,7 @@ def test_subject_plural_predicate_translation_no_warning():
     for plural_tgt in ("我们，是游泳部的部长", "我们是游泳部的部长"):
         src = [{"index": 1, "timing": _TIMING, "text": "ボクたち、水泳部の部長で…"}]
         tgt = [{"index": 1, "timing": _TIMING, "text": plural_tgt}]
-        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
         assert fixes == 0, plural_tgt
         assert warnings == [], f"复数正确方向不应告警: {plural_tgt}"
         assert not flagged, plural_tgt
@@ -140,7 +140,7 @@ def test_warn_only_true_default_behavior():
     """warn_only=true（YAML 默认）：主语误判仅告警，不改动译文、无硬性前缀。"""
     src = [{"index": 1, "timing": _TIMING, "text": "ボクたち、水泳部の部長で"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "我是游泳部的部长"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert len(warnings) == 1
     assert "[硬性]" not in warnings[0]
@@ -171,7 +171,7 @@ def test_warn_only_false_hard_warning(monkeypatch):
         {"index": 1, "timing": _TIMING, "text": "作为部长"},
         {"index": 2, "timing": _TIMING, "text": "我是游泳部的部长"},
     ]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     # dewei：可安全自动修正 → 仍修正，且告警升级为硬性
     assert fixes == 1
     assert tgt[0]["text"] == "是部长"
@@ -192,7 +192,7 @@ def test_antonym_yamete_warns():
     仅告警不改译文、无硬性前缀；告警不含"主语误判"（独立归类）。"""
     src = [{"index": 1, "timing": _TIMING, "text": "やめて、やめてよ…"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "别停，别停呀…"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert len(warnings) == 1
     assert "antonym_yamete" in warnings[0]     # 规则标识（主语误判以外的规则标识）
@@ -207,7 +207,7 @@ def test_antonym_yamete_negative_source_forms_no_warn():
     for neg_src in ("やめないで、続けて…", "やめるなよ"):
         src = [{"index": 1, "timing": _TIMING, "text": neg_src}]
         tgt = [{"index": 1, "timing": _TIMING, "text": "别停下来，继续…"}]
-        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
         assert fixes == 0, neg_src
         assert warnings == [], f"やめないで/やめるな 正译不应告警: {neg_src}"
         assert not flagged, neg_src
@@ -218,7 +218,7 @@ def test_antonym_yamete_correct_target_no_warn():
     for good_tgt in ("住手！", "停下、停下……"):
         src = [{"index": 1, "timing": _TIMING, "text": "やめて！"}]
         tgt = [{"index": 1, "timing": _TIMING, "text": good_tgt}]
-        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
         assert fixes == 0, good_tgt
         assert warnings == [], f"'{good_tgt}'为正确方向不应告警"
         assert not flagged, good_tgt
@@ -229,7 +229,7 @@ def test_antonym_saitei_warns_and_correct_no_warn():
     译"真差劲"为正确方向 → 不告警。"""
     src = [{"index": 1, "timing": _TIMING, "text": "最低じゃねぇな。"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "真不错啊。"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert len(warnings) == 1
     assert "antonym_saitei" in warnings[0]
@@ -239,7 +239,7 @@ def test_antonym_saitei_warns_and_correct_no_warn():
 
     src2 = [{"index": 1, "timing": _TIMING, "text": "最低だな。"}]
     tgt2 = [{"index": 1, "timing": _TIMING, "text": "真差劲啊。"}]
-    _fixes, warnings2, flagged2 = check_and_fix_translation_errors(src2, tgt2)
+    _fixes, warnings2, flagged2, _structured2 = check_and_fix_translation_errors(src2, tgt2)
     assert warnings2 == [] and not flagged2
 
 
@@ -248,7 +248,7 @@ def test_antonym_zurui_warns_and_correct_no_warn():
     （antonym_zurui）；译"狡猾"为正确方向 → 不告警。"""
     src = [{"index": 1, "timing": _TIMING, "text": "ずりーよな"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "滑下去了"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert len(warnings) == 1
     assert "antonym_zurui" in warnings[0]
@@ -258,7 +258,7 @@ def test_antonym_zurui_warns_and_correct_no_warn():
 
     src2 = [{"index": 1, "timing": _TIMING, "text": "ずるいよ、お前。"}]
     tgt2 = [{"index": 1, "timing": _TIMING, "text": "你太狡猾了。"}]
-    _fixes, warnings2, flagged2 = check_and_fix_translation_errors(src2, tgt2)
+    _fixes, warnings2, flagged2, _structured2 = check_and_fix_translation_errors(src2, tgt2)
     assert warnings2 == [] and not flagged2
 
 
@@ -272,7 +272,7 @@ def test_antonym_benign_sentences_no_warn():
     for src_text, tgt_text in pairs:
         src = [{"index": 1, "timing": _TIMING, "text": src_text}]
         tgt = [{"index": 1, "timing": _TIMING, "text": tgt_text}]
-        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
         assert fixes == 0, src_text
         assert warnings == [], f"良性句不应告警: {src_text} → {tgt_text}"
         assert not flagged, src_text
@@ -287,7 +287,7 @@ def test_body_part_kubi_warns():
     （body_part_kubi）；仅告警不改译文、无硬性前缀，flagged 阻断 TM。"""
     src = [{"index": 1, "timing": _TIMING, "text": "首を触られると落ち着く"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "被摸头就会安静下来"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert len(warnings) == 1
     assert "body_part_kubi" in warnings[0]
@@ -306,7 +306,7 @@ def test_body_part_kubi_idiom_no_warn():
     for src_text, tgt_text in pairs:
         src = [{"index": 1, "timing": _TIMING, "text": src_text}]
         tgt = [{"index": 1, "timing": _TIMING, "text": tgt_text}]
-        fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+        fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
         assert fixes == 0, src_text
         assert warnings == [], f"习语句不应告警: {src_text} → {tgt_text}"
         assert not flagged, src_text
@@ -317,7 +317,7 @@ def test_climax_iku_variant_warns():
     （climax_iku_variant）；仅告警不改译文，flagged 阻断 TM。"""
     src = [{"index": 1, "timing": _TIMING, "text": "もうイっちゃう！"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "要去了！"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert len(warnings) == 1
     assert "climax_iku_variant" in warnings[0]
@@ -331,7 +331,7 @@ def test_climax_iku_kanji_go_no_warn():
     """汉字 行く系 负向排除：行った→去了 属普通"去"，不告警。"""
     src = [{"index": 1, "timing": _TIMING, "text": "昨日も行った。"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "去了。"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert warnings == [], "汉字行った被负向排除，不应告警"
     assert not flagged
@@ -342,7 +342,69 @@ def test_climax_iku_glossary_exact_form_no_warn():
     与 glossary 互补不冲突（复核旗只留给 glossary 覆盖不到的假名变体）。"""
     src = [{"index": 1, "timing": _TIMING, "text": "イク！"}]
     tgt = [{"index": 1, "timing": _TIMING, "text": "要去了！"}]
-    fixes, warnings, flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert warnings == [], "glossary 精确形态イク不应告警"
     assert not flagged
+
+
+# ---------------------------------------------------------------------------
+# 结构化告警双写（D11 地基三）：字符串 warnings 是冻结契约，结构化通道
+# 只 additive（与 warnings 同序等长、message 逐字节一致）。
+# ---------------------------------------------------------------------------
+
+def test_structured_warnings_fields_and_message_parity():
+    """结构化告警与字符串告警同序等长：五字段齐、message 与同序字符串
+    逐字节一致、index/timing 取源条目、warn_only 规则 severity=warning。"""
+    src = [{"index": 1, "timing": _TIMING, "text": "ボクたち、水泳部の部長で…"},
+           {"index": 2, "timing": _TIMING, "text": "やめて、やめてよ…"}]
+    tgt = [{"index": 1, "timing": _TIMING, "text": "我，是游泳部的部长"},
+           {"index": 2, "timing": _TIMING, "text": "别停，别停呀…"}]
+    fixes, warnings, flagged, structured = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 0
+    assert len(structured) == len(warnings) == 2
+    for s, w in zip(structured, warnings, strict=True):
+        assert set(s) == {"index", "timing", "severity", "message", "category"}
+        assert s["message"] == w                    # 逐字节一致
+        assert s["severity"] == "warning"           # warn_only 规则
+        assert s["timing"] == _TIMING               # 取源条目 timing
+    assert [s["category"] for s in structured] == ["subject", "antonym_yamete"]
+    assert {s["index"] for s in structured} == {1, 2}
+    assert flagged == {1, 2}
+
+
+def test_structured_warnings_hard_rule_severity_critical(monkeypatch):
+    """warn_only=false（硬性）：结构化 severity=critical，message 含
+    "[硬性] " 前缀且与字符串告警一致；category 记规则名。"""
+    from subtransjav.refine import post_validate as pvm
+
+    compiled = pvm._get_compiled()
+    monkeypatch.setitem(compiled, "subject",
+                        {**compiled["subject"], "warn_only": False})
+    src = [{"index": 3, "timing": _TIMING, "text": "ボクたち、水泳部の部長で"}]
+    tgt = [{"index": 3, "timing": _TIMING, "text": "我是游泳部的部长"}]
+    _fixes, warnings, _flagged, structured = check_and_fix_translation_errors(src, tgt)
+    assert len(structured) == 1
+    assert structured[0]["severity"] == "critical"
+    assert structured[0]["message"] == warnings[0]
+    assert structured[0]["message"].startswith("[硬性] ")
+    assert structured[0]["category"] == "subject"
+    assert structured[0]["index"] == 3
+
+
+def test_structured_warnings_dewei_category_and_missing_timing():
+    """dewei 修正类：category="dewei"；源条目缺 timing 字段时结构化
+    timing 记空串（字符串告警文案不受影响）。本仓 YAML 中 dewei 为
+    warn_only=false 的硬性规则 → severity=critical 且带 [硬性] 前缀。"""
+    src = [{"index": 5, "text": "部長で"}]          # 无 timing 键
+    tgt = [{"index": 5, "timing": _TIMING, "text": "作为部长"}]
+    fixes, warnings, _flagged, structured = check_and_fix_translation_errors(src, tgt)
+    assert fixes == 1
+    assert len(structured) == 1
+    assert structured[0]["category"] == "dewei"
+    assert structured[0]["timing"] == ""            # 源条目缺失 timing → 空串
+    assert structured[0]["index"] == 5
+    assert structured[0]["severity"] == "critical"  # dewei: warn_only=false
+    assert structured[0]["message"] == warnings[0]
+    assert structured[0]["message"].startswith("[硬性] ")
+    assert "で误译修正" in structured[0]["message"]

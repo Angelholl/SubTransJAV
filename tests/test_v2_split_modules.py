@@ -157,22 +157,25 @@ class TestManifestFp:
 
 class TestOutputs:
     def test_remove_stale_risk_reports(self, tmp_path):
-        """_remove_stale_risk_reports：清三件（含 W1a 扩的导读 json 陈旧
-        残留件——此处在"写前清陈旧"语义下，目录里的是上一轮遗留件）并
-        返回文件名名单；新写成品不碰。"""
+        """_remove_stale_risk_reports：清四件（W1a 扩的导读 json 与 D11
+        契约④扩的重翻台账——此处在"写前清陈旧"语义下，目录里的是上一轮
+        遗留件）并返回文件名名单；新写成品不碰。"""
         md = tmp_path / "movie_风险清单.md"
         js = tmp_path / "movie_风险清单.json"
         stale_guide = tmp_path / "movie_质量报告导读.json"   # 上一轮陈旧件
+        stale_ledger = tmp_path / "movie_重翻记录.json"      # 上一轮台账（D11）
         keep = tmp_path / "movie_final_cn.srt"
-        for p in (md, js, stale_guide, keep):
+        for p in (md, js, stale_guide, stale_ledger, keep):
             p.write_text("x", encoding="utf-8")
         removed = v2_outputs._remove_stale_risk_reports(str(tmp_path),
                                                         "movie")
         assert sorted(removed) == ["movie_质量报告导读.json",
+                                   "movie_重翻记录.json",
                                    "movie_风险清单.json",
                                    "movie_风险清单.md"]
         assert not md.exists() and not js.exists()
         assert not stale_guide.exists()   # 陈旧导读 json 已清（写前）
+        assert not stale_ledger.exists()  # 陈旧重翻台账已清（写前）
         assert keep.exists()        # 成品不碰
         # 幂等：再清一次返回空名单
         assert v2_outputs._remove_stale_risk_reports(str(tmp_path),

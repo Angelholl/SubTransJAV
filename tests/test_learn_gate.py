@@ -187,7 +187,7 @@ def test_validator_antonym_warning_blocks_tm_learn(tmp_path):
         "别停，别停呀…",               # 1: 反义误译（仅告警，文本不改）
         "今天天气真好。",              # 2: 干净
     ])
-    _fixes, warnings, flagged = check_and_fix_translation_errors(orig, final)
+    _fixes, warnings, flagged, _structured = check_and_fix_translation_errors(orig, final)
     assert 1 in flagged
     assert any("antonym_yamete" in w for w in warnings)
 

@@ -139,7 +139,8 @@ def _entries(src, tgt):
 
 def test_dewei_mistranslation_fixed():
     src, tgt = _entries(["部長で、エースで。"], ["作为部长，作为王牌。"])
-    fixes, warnings, _flagged = post_validate.check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, _flagged, _structured = \
+    post_validate.check_and_fix_translation_errors(src, tgt)
     assert fixes == 1
     assert tgt[0]["text"] == "是部长，是王牌。"
     assert any("で误译修正" in w for w in warnings)
@@ -147,14 +148,16 @@ def test_dewei_mistranslation_fixed():
 
 def test_dewei_toshite_not_touched():
     src, tgt = _entries(["学生として参加した。"], ["作为学生参加了。"])
-    fixes, _, _flagged = post_validate.check_and_fix_translation_errors(src, tgt)
+    fixes, _, _flagged, _structured = \
+    post_validate.check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert tgt[0]["text"] == "作为学生参加了。"
 
 
 def test_subject_misjudge_warn_only():
     src, tgt = _entries(["僕たち水泳部の部長で。"], ["我是游泳部的部长……"])
-    fixes, warnings, _flagged = post_validate.check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, _flagged, _structured = \
+    post_validate.check_and_fix_translation_errors(src, tgt)
     assert fixes == 0          # 仅告警，不改动译文
     assert tgt[0]["text"] == "我是游泳部的部长……"
     assert any("主语误判" in w for w in warnings)
@@ -162,7 +165,8 @@ def test_subject_misjudge_warn_only():
 
 def test_no_false_positive():
     src, tgt = _entries(["今日はいい天気だ。"], ["今天天气真好。"])
-    fixes, warnings, _flagged = post_validate.check_and_fix_translation_errors(src, tgt)
+    fixes, warnings, _flagged, _structured = \
+    post_validate.check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert warnings == []
 

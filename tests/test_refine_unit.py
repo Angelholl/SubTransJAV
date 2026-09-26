@@ -142,7 +142,7 @@ def test_post_validate_zawei_ja_to_zh():
     from subtransjav.refine.post_validate import check_and_fix_translation_errors
     src = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000", "text": "学校で有名です"}]
     tgt = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000", "text": "作为学校很有名"}]
-    fixes, _, _flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, _, _flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 1
     assert "是" in tgt[0]["text"]
     assert "作为" not in tgt[0]["text"]
@@ -152,7 +152,7 @@ def test_post_validate_zawei_toshite_kept():
     from subtransjav.refine.post_validate import check_and_fix_translation_errors
     src = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000", "text": "医者として有名です"}]
     tgt = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000", "text": "作为医生很有名"}]
-    fixes, _, _flagged = check_and_fix_translation_errors(src, tgt)
+    fixes, _, _flagged, _structured = check_and_fix_translation_errors(src, tgt)
     assert fixes == 0
     assert tgt[0]["text"] == "作为医生很有名"
 

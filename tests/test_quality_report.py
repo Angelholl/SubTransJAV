@@ -316,7 +316,7 @@ def test_guide_sink_collects_snapshot_same_source_as_report():
     exp, final = _w1a_report_inputs()
     sink: dict = {}
     report = build_quality_report(exp, final, "demo", guide_sink=sink)
-    assert sink["version"] == 1
+    assert sink["version"] == 2
     assert sink["source"] == "demo"
     assert sink["basis"] == "基于本次运行"
     # generated_at 与报告头时间戳同串（同源变量 now_str）
@@ -355,7 +355,7 @@ def test_guide_sink_absent_keeps_output_byte_identical():
 def test_write_guide_json_roundtrip_and_empty_noop(tmp_path):
     """write_guide_json：落盘+回读结构齐全；空 guide 直接返回空串不落盘。"""
     import json
-    guide = {"version": 1, "source": "demo", "generated_at": "2026-01-01 "
+    guide = {"version": 2, "source": "demo", "generated_at": "2026-01-01 "
              "00:00:00", "basis": "基于本次运行",
              "conclusions": ["总体：未发现需人工复核的条目"],
              "sections": [{"title": "【统计】", "note": "　（注）"}],
@@ -364,7 +364,7 @@ def test_write_guide_json_roundtrip_and_empty_noop(tmp_path):
     assert p.endswith("movie_质量报告导读.json")
     data = json.loads((tmp_path / "movie_质量报告导读.json")
                       .read_text(encoding="utf-8"))
-    assert data["version"] == 1 and data["stem"] == "movie"
+    assert data["version"] == 2 and data["stem"] == "movie"
     assert data["conclusions"] == ["总体：未发现需人工复核的条目"]
     assert data["sections"] == [{"title": "【统计】", "note": "　（注）"}]
     # companions：终稿在、其余缺 → 存在性布尔如实
@@ -384,3 +384,68 @@ def test_write_guide_json_roundtrip_and_empty_noop(tmp_path):
     empty_path = write_guide_json(str(tmp_path), "other", {})
     assert empty_path == ""
     assert not (tmp_path / "other_质量报告导读.json").exists()
+
+
+# ----------------------------------------------------------------------
+# D11 地基一：导读 json items[] v2（结构化告警 + untranslated）
+# ----------------------------------------------------------------------
+
+def test_guide_items_v2_mixed_sources_sorted_and_resolved():
+    """items v2：structured_warnings 与 untranslated 混合 → 八字段齐、
+    index 升序稳定、current_text 经 resolve_final_block 精确映射、缺失
+    即 None（"不可自动重翻"，不另设字段）、source_excerpt 取源文前 40。"""
+    exp = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+            "text": "あ" * 50},                    # 超 40 字符 → 截前 40
+           {"index": 2, "timing": "00:00:03,000 --> 00:00:04,000",
+            "text": "汉字原文二"}]
+    final = [{"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+              "text": "已译"},
+             {"index": 2, "timing": "00:00:03,000 --> 00:00:04,000",
+              "text": "[未翻译]テスト"}]
+    structured = [
+        {"index": 99, "timing": "00:00:09,000 --> 00:00:09,500",
+         "severity": "warning", "message": "⚠️ #99 antonym_saitei: x",
+         "category": "antonym_saitei"},            # 终稿无 #99 → None
+        {"index": 1, "timing": "00:00:01,000 --> 00:00:02,000",
+         "severity": "warning", "message": "⚠️ #1 主语误判待复核: x",
+         "category": "subject"},
+    ]
+    sink: dict = {}
+    build_quality_report(exp, final, "demo",
+                         structured_warnings=structured, guide_sink=sink)
+    assert sink["version"] == 2
+    items = sink["items"]
+    assert [it["index"] for it in items] == [1, 2, 99]   # index 升序
+    fields = {"index", "timing", "category", "message",
+              "current_text", "source_excerpt", "status", "severity"}
+    assert all(set(it) == fields for it in items)
+    sw1 = items[0]
+    assert sw1["category"] == "subject"
+    assert sw1["current_text"] == "已译"           # 精确映射终稿块
+    assert sw1["timing"] == "00:00:01,000 --> 00:00:02,000"
+    assert sw1["source_excerpt"] == "あ" * 40     # 源文前 40 字符
+    assert sw1["status"] == "open" and sw1["severity"] is None
+    ut = items[1]
+    assert ut["category"] == "untranslated"
+    assert ut["message"] == "整段未翻译"
+    assert ut["current_text"] == "[未翻译]テスト"  # 终稿块全文（含前缀）
+    assert ut["source_excerpt"] == "汉字原文二"
+    assert ut["status"] == "open" and ut["severity"] is None
+    missing = items[2]
+    assert missing["current_text"] is None         # 不可自动重翻
+    assert missing["source_excerpt"] == ""        # 源条目也缺失
+    assert missing["category"] == "antonym_saitei"
+    assert missing["message"] == structured[0]["message"]
+
+
+def test_guide_items_v2_structured_none_only_untranslated():
+    """structured_warnings=None（旧调用方）：items 仅含 untranslated
+    条目，version 仍为 2。"""
+    exp, final = _w1a_report_inputs()
+    sink: dict = {}
+    build_quality_report(exp, final, "demo", guide_sink=sink)
+    assert sink["version"] == 2
+    items = sink["items"]
+    assert [it["category"] for it in items] == ["untranslated"]
+    assert items[0]["index"] == 2
+    assert items[0]["current_text"] == "[未翻译]テスト"

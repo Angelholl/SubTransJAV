@@ -370,7 +370,8 @@ def test_strict_profile_applies_post_validate(tmp_path, monkeypatch):
     # 模拟阶段A产出了误译
     a_entries = [{"index": 1, "timing": entries[0]["timing"],
                   "text": "作为部长，作为王牌。"}]
-    out, warns, clean_merged, flagged, clean_stats = pv._apply_fallback_rules(
+    out, warns, clean_merged, flagged, clean_stats, _structured = \
+        pv._apply_fallback_rules(
         cfg, a_entries, entries)
     assert out[0]["text"] == "是部长，是王牌。"
     assert warns and "で误译修正" in warns[0]
@@ -382,7 +383,8 @@ def test_lenient_profile_skips_fallback(tmp_path):
     entries = _entries("部長で、エースで。")
     a_entries = [{"index": 1, "timing": entries[0]["timing"],
                   "text": "作为部长，作为王牌。"}]
-    out, warns, clean_merged, flagged, clean_stats = pv._apply_fallback_rules(
+    out, warns, clean_merged, flagged, clean_stats, _structured = \
+        pv._apply_fallback_rules(
         cfg, a_entries, entries)
     assert out[0]["text"] == "作为部长，作为王牌。"
     assert warns == [] and clean_merged is None and clean_stats is None
@@ -601,7 +603,7 @@ def test_cleaner_renumbering_index_restored(tmp_path, monkeypatch):
     orig = _entries("あ", "い", "う")
     entries = [{"index": e["index"], "timing": e["timing"], "text": f"译{e['index']}"}
                for e in orig]
-    out, warns, clean_merged, _flagged, clean_stats = \
+    out, warns, clean_merged, _flagged, clean_stats, _structured = \
         pv._apply_fallback_rules(cfg, entries, orig)
     # 合并/删除拆分：该 fake 只删除未合并
     assert clean_merged == 0
@@ -1617,6 +1619,50 @@ def test_a_success_cleans_resume_artifacts(tmp_path, monkeypatch):
     assert summary["files_failed"] == 0
     assert summary["untranslated_majority"] is False
     assert summary["risk_count"] == 0
+
+
+def test_guide_json_survives_stale_cleanup_e2e(tmp_path, monkeypatch):
+    """端到端五件存活契约（D11 前置修复）：写前清陈旧上移后，本轮新写的
+    质量报告导读 json 不再被同轮清理误删；预置的陈旧风险清单/导读被清，
+    终稿/质量报告/分歧复核 CSV 正常落盘，注入词表冲突后冲突观察 CSV 落盘。"""
+    # 预置三件陈旧残留（内容带 STALE 标记，用于与本轮新写件区分）
+    for name, text in (("demo_风险清单.md", "STALE"),
+                       ("demo_风险清单.json", "STALE"),
+                       ("demo_质量报告导读.json", '{"note": "STALE"}')):
+        (tmp_path / name).write_text(text, encoding="utf-8")
+
+    # 注入词表冲突：源文「こんにちは」在词库内而合成译文不含主译法
+    # （手法照抄 test_glossary_conflict.test_run_single_v2_conflict_e2e；
+    #   观察闸 JSON 重定向到 tmp，绝不写真实 Temp/translation_memory）
+    glossary = tmp_path / "g.csv"
+    glossary.write_text("こんにちは,你好\n", encoding="utf-8-sig")
+    watch_path = tmp_path / "watch" / "glossary_conflict_watch.json"
+
+    cfg = _make_cfg(tmp_path, glossary_path=str(glossary))
+    in_srt = _setup_e2e(tmp_path, monkeypatch, FakeClient(fail_b={1}))
+    cfg.inputs = [str(in_srt)]
+    monkeypatch.setattr(pv, "default_watch_path", lambda: str(watch_path))
+    assert cfg.quality_report is True       # 契约前提：质量报告开启
+    summary = {}
+    pv.run_v2(cfg, summary_sink=summary)
+
+    # ① 本轮新写导读 json 存活且不含 STALE（本修复核心回归断言）
+    guide = tmp_path / "demo_质量报告导读.json"
+    assert guide.is_file()
+    assert "STALE" not in guide.read_text(encoding="utf-8")
+    # ② 终稿 / 质量报告 / 分歧复核 CSV 落盘
+    for name in ("demo_final_cn.srt", "demo_质量报告.txt",
+                 "demo_分歧复核.csv"):
+        assert (tmp_path / name).is_file()
+    # ③ fail_b={1} 使本次运行产生风险事件 → 新风险清单覆盖写入且无 STALE
+    assert summary["risk_count"] >= 1
+    risk_md = tmp_path / "demo_风险清单.md"
+    risk_json = tmp_path / "demo_风险清单.json"
+    assert risk_md.is_file() and risk_json.is_file()
+    assert "STALE" not in risk_md.read_text(encoding="utf-8")
+    assert "STALE" not in risk_json.read_text(encoding="utf-8")
+    # ④ 词表冲突已注入 → 冲突观察 CSV 落盘（无需条件降级）
+    assert (tmp_path / "demo_术语冲突观察.csv").is_file()
 
 
 def test_b_interrupt_keeps_manifest_with_stage_a_done(tmp_path, monkeypatch):

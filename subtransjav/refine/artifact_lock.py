@@ -5,8 +5,10 @@
 锁文件落 output_dir（``.{input_sha1[:16]}.subtransjav.lock``），
 锁住首字节即代表占用。
 
-- 锁定失败（他人持有，IOError/OSError）→ 打印中文警告并返回 None，
-  **降级不罢工**：调用方自行决定拒绝处理该文件；
+- 三态语义（D4/M2）：冲突（他方持锁）→ 抛 ArtifactLockConflict，由
+  调用方转 RefineError 走单文件失败隔离；锁机制不可用（锁文件创建
+  失败/加锁 IO 故障/平台无实现）→ 打印警告返回 None，调用方降级
+  无锁继续，不得拒绝处理该文件；
 - 进程意外退出时 OS 自动释放锁（msvcrt.locking 语义：锁随句柄/进程
   终止而失效），不遗留死锁；
 - 跨平台：Windows 用 msvcrt.locking；非 Windows 回退 fcntl.flock
@@ -15,6 +17,7 @@
 """
 
 import contextlib
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -29,6 +32,18 @@ except ImportError:                     # 非 Windows 回退 fcntl
         fcntl = None
 
 _warned_no_lock_impl = False
+
+
+class ArtifactLockConflict(RuntimeError):
+    """同键锁被其他进程持有（冲突拒绝，区别于机制故障降级）。"""
+
+
+# 冲突 errno 集：Windows msvcrt.locking 对已锁区域抛 EACCES/EDEADLOCK；
+# POSIX flock 非阻塞抛 EAGAIN(EWOULDBLOCK)。锁文件能 open 成功，则
+# EACCES 只能来自他方持锁，不可能是自身权限问题。
+_CONFLICT_ERRNOS = {getattr(errno, n, None)
+                    for n in ("EACCES", "EAGAIN", "EWOULDBLOCK",
+                              "EDEADLOCK", "EDEADLK")} - {None}
 
 
 class ArtifactLockHandle:
@@ -73,19 +88,40 @@ def _lock_fd_exclusive(fd) -> None:
 
     Windows: msvcrt.locking LK_NBLCK（非阻塞独占，冲突抛 OSError）；
     POSIX:   fcntl.flock LOCK_EX | LOCK_NB。
+    errno 命中冲突集（他方持锁）→ 翻译为 ArtifactLockConflict；
+    其余 IO 故障原样上抛，由调用方按机制故障降级。
     """
     if msvcrt is not None:
         os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as e:
+            if e.errno in _CONFLICT_ERRNOS:
+                raise ArtifactLockConflict(
+                    "产物锁被其他进程持有（首字节已锁定）") from e
+            raise
     elif fcntl is not None:
         # Windows 存根无 fcntl 符号，仅 POSIX 运行时走到（下行忽略 attr-defined）
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+        except OSError as e:
+            if e.errno in _CONFLICT_ERRNOS:
+                raise ArtifactLockConflict(
+                    "产物锁被其他进程持有（非阻塞 flock 被拒）") from e
+            raise
     else:
         raise RuntimeError("no lock implementation")
 
 
 def acquire_artifact_lock(input_path: str, output_dir: str):
-    """获取产物锁；冲突/降级时返回 None（调用方拒绝处理该文件）。
+    """获取产物锁（三态契约）。
+
+    - 返回 ArtifactLockHandle：持锁成功；
+    - 返回 None：锁机制不可用（锁文件创建失败/加锁 IO 故障/平台无
+      实现），已打印降级警告——调用方应无锁继续，不得拒绝处理该文件；
+    - 同键冲突（他方持锁）：抛 ArtifactLockConflict，调用方转
+      RefineError 走单文件失败隔离（本模块不打印冲突文案，消息由
+      调用方统一输出）。
 
     锁键 = 输入文件 sha1 前 16 位 + output_dir（锁文件物理落在
     output_dir 内，天然按输出目录分域）。
@@ -103,12 +139,16 @@ def acquire_artifact_lock(input_path: str, output_dir: str):
         return None
     try:
         _lock_fd_exclusive(fd)
-    except OSError:
-        # 首字节已被他人锁住 → 冲突
+    except ArtifactLockConflict:
         with contextlib.suppress(OSError):
             os.close(fd)
-        print(f"⚠️ [lock] 产物锁被其他进程占用，跳过该文件冲突保护: "
-              f"{lock_path}")
+        raise
+    except OSError as e:
+        # 机制故障（非冲突 IO 错误）→ 降级不罢工
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        print(f"⚠️ [lock] 产物锁加锁 IO 故障（降级不锁，继续处理）: "
+              f"{lock_path} ({e})")
         return None
     except RuntimeError:
         with contextlib.suppress(OSError):

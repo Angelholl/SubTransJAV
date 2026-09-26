@@ -538,12 +538,12 @@ def test_delete_resume_artifacts_never_touches_final_deliverables(tmp_path):
     """A5 职责边界防回退（D2026-0925-01 用户验收轮）：三类清理职责互斥——
     _backup_existing_outputs 保上一轮成品、_remove_stale_risk_reports 清
     "有清单无终稿"失败残留、delete_resume_artifacts 只清恢复现场。
-    风险清单/final_cn/质量报告属最终交付物，任何重构（含 1.3.0 拆分）
-    不得收编进恢复现场清理清单。"""
+    风险清单/final_cn/质量报告/重翻台账（D11 契约④）属最终交付物，
+    任何重构（含 1.3.0 拆分）不得收编进恢复现场清理清单。"""
     deliverables = ("ep01_final_cn.srt", "ep01_质量报告.txt",
                     "ep01_分歧复核.csv", "ep01_术语冲突观察.csv",
                     "ep01_风险清单.md", "ep01_风险清单.json",
-                    "ep01_质量报告导读.json")
+                    "ep01_质量报告导读.json", "ep01_重翻记录.json")
     recovery = ["ep01_manifest.json", "ep01_refine_A.srt",
                 "ep01_幻觉处置报告.json", "ep01_隔离区.srt"]
     for name in deliverables + tuple(recovery):
@@ -568,8 +568,9 @@ def test_config_hash_tracks_v2_stage_prompts(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_backup_existing_outputs_covers_risk_reports(tmp_path):
-    """--force 备份表必须覆盖全部 7 个产物（含风险清单 md/json 与导读
-    json），且同一次调用共用同一时间戳（防漂移契约）。"""
+    """--force 备份表必须覆盖全部 8 个产物（含风险清单 md/json、导读
+    json 与 D11 契约④的重翻台账），且同一次调用共用同一时间戳（防漂移
+    契约）。"""
     from subtransjav.refine import pipeline_v2 as pv
 
     names = [
@@ -580,12 +581,13 @@ def test_backup_existing_outputs_covers_risk_reports(tmp_path):
         "ep01_风险清单.md",
         "ep01_风险清单.json",
         "ep01_质量报告导读.json",
+        "ep01_重翻记录.json",
     ]
     for n in names:
         (tmp_path / n).write_text("x", encoding="utf-8")
     pv._backup_existing_outputs(str(tmp_path), "ep01")
     baks = sorted(p.name for p in tmp_path.iterdir() if "_bak_" in p.name)
-    assert len(baks) == 7
+    assert len(baks) == 8
     for n in names:
         assert (tmp_path / n).is_file()          # 原文件仍在
         stem, ext = n.rsplit(".", 1)
@@ -606,13 +608,18 @@ def test_backup_existing_outputs_noop_when_no_outputs(tmp_path):
 
 
 def test_remove_stale_risk_reports_matches_writer_names(tmp_path):
-    """双钉契约：清理函数的文件名必须与 RiskCollector.write_reports 产出
-    完全一致；只删目标两文件，同目录无关文件不受影响。"""
+    """双钉契约：清理函数的文件名必须覆盖 RiskCollector.write_reports
+    产出，并按 W1a/D11 契约④扩至四件（导读 json + 重翻台账写前清旧）；
+    同目录无关文件不受影响。"""
     from subtransjav.refine import pipeline_v2 as pv
     from subtransjav.refine.risk import RiskCollector
 
     unrelated = tmp_path / "ep01_final_cn.srt"
     unrelated.write_text("1\n", encoding="utf-8")
+    stale_guide = tmp_path / "ep01_质量报告导读.json"
+    stale_ledger = tmp_path / "ep01_重翻记录.json"
+    stale_guide.write_text("{}", encoding="utf-8")
+    stale_ledger.write_text("[]", encoding="utf-8")
     collector = RiskCollector()
     collector.add(stage="final", file="a.srt", reason="测试风险",
                   action="忽略", severity="warning")
@@ -620,8 +627,9 @@ def test_remove_stale_risk_reports_matches_writer_names(tmp_path):
     assert reports is not None
     written = {Path(reports["md"]).name, Path(reports["json"]).name}
     removed = pv._remove_stale_risk_reports(str(tmp_path), "ep01")
-    assert set(removed) == written
-    assert sorted(removed) == ["ep01_风险清单.json", "ep01_风险清单.md"]
+    assert set(removed) == written | {stale_guide.name, stale_ledger.name}
+    assert sorted(removed) == ["ep01_质量报告导读.json", "ep01_重翻记录.json",
+                               "ep01_风险清单.json", "ep01_风险清单.md"]
     for n in removed:
         assert not (tmp_path / n).exists()
     assert unrelated.is_file()

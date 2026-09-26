@@ -8,6 +8,7 @@
 import logging
 import re
 
+from .risk import SEVERITY_CRITICAL, SEVERITY_WARNING
 from .rules_loader import load_rules
 
 logger = logging.getLogger(__name__)
@@ -77,27 +78,54 @@ def _get_compiled():
     return _compiled
 
 
-def _emit_warning(warnings: list[str], text: str, warn_only: bool):
-    """把告警写入 warnings 列表；非 warn_only 规则升级为硬性告警。"""
+def _emit_warning(warnings: list[str], text: str, warn_only: bool) -> str:
+    """把告警写入 warnings 列表；非 warn_only 规则升级为硬性告警。
+
+    返回实际写入 warnings 的文案（硬性告警含 "[硬性] " 前缀），供
+    结构化告警的 message 复用——两条路径的文案必须逐字节一致。
+    """
     if warn_only:
         warnings.append(text)
-    else:
-        msg = f"[硬性] {text}"
-        warnings.append(msg)
-        logger.error(msg)
+        return text
+    msg = f"[硬性] {text}"
+    warnings.append(msg)
+    logger.error(msg)
+    return msg
 
 
 def check_and_fix_translation_errors(
     src_entries: list[dict],
     tgt_entries: list[dict],
-) -> tuple[int, list[str], set]:
+) -> tuple[int, list[str], set, list[dict]]:
     """
     翻译质量后验拦截：逐条比对源文与目标文，检测并修正系统性误译。
-    返回：(修正条数, 警告列表, flagged_indexes)
+    返回：(修正条数, 警告列表, flagged_indexes, structured_warnings)
+
+    structured_warnings 与 warnings 同序等长，每条形如
+    {"index", "timing", "severity", "message", "category"}：
+    - message 与同序字符串告警逐字节一致（quality_report 靠 #{idx}
+      正则反解、测试靠子串断言，字符串 warnings 的文案与格式是冻结
+      契约，结构化通道只是 additive 双写）；
+    - severity 与 _emit_warning 的硬性升级口径一致：warn_only 规则为
+      "warning"，硬性（加 "[硬性] " 前缀）规则为 "critical"（取值与
+      RiskEvent 严重度词表同值）；
+    - timing 取源条目 timing 字符串，缺失给 ""。
     """
     fixes = 0
     warnings: list[str] = []
     flagged_indexes: set = set()
+    structured_warnings: list[dict] = []
+
+    def _record(index, timing, category, warn_only, text) -> None:
+        """字符串告警 + 结构化告警双写（message 逐字节一致）。"""
+        message = _emit_warning(warnings, text, warn_only)
+        structured_warnings.append({
+            "index": index,
+            "timing": timing or "",
+            "severity": SEVERITY_CRITICAL if not warn_only else SEVERITY_WARNING,
+            "message": message,
+            "category": category,
+        })
 
     rules = _get_compiled()
     dewei = rules["dewei"]
@@ -128,11 +156,10 @@ def check_and_fix_translation_errors(
             tgt_text = fixed          # 同步局部变量，供检测 2 使用
             fixes += 1
             flagged_indexes.add(idx)
-            _emit_warning(
-                warnings,
+            _record(
+                idx, src.get("timing"), "dewei", dewei["warn_only"],
                 f"⚠️ #{idx} で误译修正: '{dewei['target'].pattern}' → "
-                f"'{dewei['replacement']}' | 源: {src_text[:30]}",
-                dewei["warn_only"])
+                f"'{dewei['replacement']}' | 源: {src_text[:30]}")
 
         # 检测 2：主语误判（僕たち→单数"我"）—— 主语推断需上下文，没有
         # 可靠的自动修正手段，无论 warn_only 取值都不改动译文；
@@ -142,11 +169,10 @@ def check_and_fix_translation_errors(
         if subject["source"].search(src_text) \
                 and subject["target"].match(tgt_text):
             flagged_indexes.add(idx)
-            _emit_warning(
-                warnings,
+            _record(
+                idx, src.get("timing"), "subject", subject["warn_only"],
                 f"⚠️ #{idx} 主语误判待复核: 源含'僕たち/我们'但目标以"
-                f"'{tgt_text[:6]}'开头 | 源: {src_text[:30]}",
-                subject["warn_only"])
+                f"'{tgt_text[:6]}'开头 | 源: {src_text[:30]}")
 
         # 检测 3：双侧锚定误译（批次 B2 antonym_* + 批次 B 闭环
         # body_part_*/climax_*）—— 源文命中指定形态 且 译文命中目标集才告警
@@ -163,14 +189,13 @@ def check_and_fix_translation_errors(
                 flagged_indexes.add(idx)
                 head = ("反义误译待复核" if name.startswith("antonym_")
                         else "误译待复核")
-                _emit_warning(
-                    warnings,
+                _record(
+                    idx, src.get("timing"), name, rule["warn_only"],
                     f"⚠️ #{idx} {head}[{name}]: 源文命中该形态"
                     f"但译文出现'{rule['target'].pattern}'"
-                    f" | 源: {src_text[:30]}",
-                    rule["warn_only"])
+                    f" | 源: {src_text[:30]}")
 
-    return fixes, warnings, flagged_indexes
+    return fixes, warnings, flagged_indexes, structured_warnings
 
 
 # [未翻译] 占位标记的形态契约：生成侧 UNTRANSLATED_PREFIX（pipeline_v2，

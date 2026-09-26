@@ -36,23 +36,28 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
     """兜底规则层（profile 驱动）：
     local(strict) → cleaner_rules 清洗 + post_validate 误译拦截；
     cloud(lenient) → 跳过（仅保留语言白名单等零维护校验）。
-    返回 (entries, validator_warnings, clean_merged, flagged_indexes, clean_stats)：
+    返回 (entries, validator_warnings, clean_merged, flagged_indexes,
+    clean_stats, structured_warnings)：
       validator_warnings — post_validate 告警列表（传给质量报告）；
       clean_merged — cleaner 碎片合并减少的条数（int，lenient 档为 None；
         删除数不再混入，见 clean_stats["deleted"]）；
       flagged_indexes — post_validate 标记的行 index 集合（TM 学习准入用）；
       clean_stats — cleaner 结构化统计 dict（merged/deleted/deleted_by_rule/
-        kept_by_source_evidence；lenient 档或清洗失败时为 None）。"""
+        kept_by_source_evidence；lenient 档或清洗失败时为 None）；
+      structured_warnings — post_validate 结构化告警列表（与
+        validator_warnings 同序等长的 dict；lenient 档或拦截失败为空列表，
+        additive 通道，传给质量报告导读 items）。"""
     if cfg.v2_profile != "local":
-        return entries, [], None, set(), None
+        return entries, [], None, set(), None, []
 
     # post_validate：で误译修正 + 主语误判告警（YAML 单一数据源驱动）
     validator_warnings = []
     flagged_indexes: set = set()
+    structured_warnings: list = []
     try:
         from .post_validate import check_and_fix_translation_errors
-        fixes, warnings, flagged_indexes = check_and_fix_translation_errors(
-            orig_entries, entries)
+        fixes, warnings, flagged_indexes, structured_warnings = \
+            check_and_fix_translation_errors(orig_entries, entries)
         if fixes:
             print(f"   🔍 兜底拦截: 修正 {fixes} 条误译")
         for w in warnings:
@@ -105,7 +110,8 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
                 restored += 1
         if restored:
             print(f"   🔧 已按时间轴恢复 {restored} 条原始编号（防错位）")
-        return cleaned_entries, validator_warnings, clean_merged, flagged_indexes, clean_stats
+        return (cleaned_entries, validator_warnings, clean_merged,
+                flagged_indexes, clean_stats, structured_warnings)
     except Exception as e:
         print(f"   ⚠️ 兜底清洗失败（忽略）: {e}")
         if collector is not None:
@@ -114,7 +120,8 @@ def _apply_fallback_rules(cfg: RefineConfig, entries: list,
                           action="跳过规则清洗",
                           affected_count=len(entries),
                           severity=SEVERITY_WARNING)
-        return entries, validator_warnings, 0, flagged_indexes, None
+        return (entries, validator_warnings, 0, flagged_indexes, None,
+                structured_warnings)
 
 
 def _filter_language(cfg: RefineConfig, entries: list, stage_idx: int) -> list:

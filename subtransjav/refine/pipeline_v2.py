@@ -31,7 +31,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from .artifact_lock import acquire_artifact_lock, release_artifact_lock
+from .artifact_lock import (
+    ArtifactLockConflict,
+    acquire_artifact_lock,
+    release_artifact_lock,
+)
 from .asr_meta import SUSPECT_STATUSES, load_asr_meta
 from .config import (
     DEEPSEEK_BASE_DEFAULT,
@@ -999,24 +1003,27 @@ def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                    emitter=None, learn_threads: list | None = None) -> str:
     """产物锁挂点（v1.3.0 D4，D2026-0925-01 终选）：锁键=输入 sha1+output_dir。
 
-    锁在 _resolve_stage_paths 之后、写任何产物之前获取；获锁失败
-    （同输入同输出目录已被其他进程处理）→ 打印中文错误并抛
-    RefineError，由上层既有单文件失败路径兜底（不返回空串：run_v2
-    对空返回按成功计数，语义不符）。finally 释放，进程死 OS 自动释放。
+    锁在 _resolve_stage_paths 之后、写任何产物之前获取。三态：持锁成功→
+    正常处理；同键冲突（ArtifactLockConflict）→ 打印中文错误并抛
+    RefineError，由上层既有单文件失败路径兜底；锁机制不可用（返回
+    None）→ 降级无锁继续，不拒绝文件。finally 释放，进程死 OS 自动释放。
     """
     resolved_in, resolved_out, _stem = _resolve_stage_paths(cfg, in_path)
-    lock = acquire_artifact_lock(resolved_in, resolved_out)
-    if lock is None:
+    lock = None
+    try:
+        lock = acquire_artifact_lock(resolved_in, resolved_out)
+    except ArtifactLockConflict as e:
         print(f"❌ [v2] 产物锁被其他进程占用，拒绝处理该文件："
               f"{Path(resolved_in).name}（输出目录 {resolved_out}）")
         raise RefineError(
-            f"产物锁被其他进程占用：{Path(resolved_in).name}")
+            f"产物锁被其他进程占用：{Path(resolved_in).name}") from e
     try:
         return _run_single_v2_impl(cfg, in_path, collector=collector,
                                    emitter=emitter,
                                    learn_threads=learn_threads)
     finally:
-        release_artifact_lock(lock)
+        if lock is not None:
+            release_artifact_lock(lock)
 
 
 def _run_single_v2_impl(cfg: RefineConfig, in_path: str, collector=None,
@@ -1029,6 +1036,11 @@ def _run_single_v2_impl(cfg: RefineConfig, in_path: str, collector=None,
 
     in_path, out_dir, stem = _resolve_stage_paths(cfg, in_path)
     fname = Path(in_path).name
+    # D11 契约④：行动层重翻台账存在 → 本轮是重翻后的管线重算，产物将
+    # 另起快照。只告警不阻断、此处不删除——旧台账由本轮写前清
+    # （_remove_stale_risk_reports）按"成品伴生件写前清旧"纪律清掉。
+    if (Path(out_dir) / f"{stem}_重翻记录.json").is_file():
+        print("⚠️ 检测到重翻台账，本轮产物将另起快照；台账保留供审计")
     tmp_dir = refine_tmp_dir(in_path, stem)
     with _tmp_dirs_lock:
         if tmp_dir not in CREATED_TMP_DIRS:
@@ -1215,7 +1227,8 @@ def _run_single_v2_impl(cfg: RefineConfig, in_path: str, collector=None,
             "reused": reused_a})
 
         # ---- 兜底规则层（strict/lenient）----
-        a_entries, validator_warnings, clean_merged, flagged_indexes, clean_stats = \
+        a_entries, validator_warnings, clean_merged, flagged_indexes, clean_stats, \
+            structured_warnings = \
             _apply_fallback_rules(cfg, a_result.entries, orig_entries,
                                   collector=collector, file_name=fname)
 
@@ -1336,6 +1349,13 @@ def _run_single_v2_impl(cfg: RefineConfig, in_path: str, collector=None,
             _auto_learn_glossary(cfg, in_path, out_final_path,
                                  collector=collector, file_name=fname,
                                  threads=learn_threads)
+
+        # 写前清陈旧（风险清单 md/json + 质量报告导读 json 三件），无条件
+        # 执行；必须先于本轮最早的伴生成品写点——本轮要写的导读 json 也
+        # 在清理表内，清理若在其后会把新导读同轮误删（D11 HRO-1）。
+        removed_stale = _remove_stale_risk_reports(out_dir, stem)
+        if removed_stale:
+            print(f"🧹 已清理上轮残留风险清单/导读: {', '.join(removed_stale)}")
 
         # ---- 自动质量报告（cfg.quality_report，落盘到输出目录）----
         if cfg.quality_report:
@@ -1488,6 +1508,7 @@ def _run_single_v2_impl(cfg: RefineConfig, in_path: str, collector=None,
                     expected_entries=orig_entries,
                     merge_stats=merge_stats,
                     validator_warnings=validator_warnings,
+                    structured_warnings=structured_warnings,
                     pass_disagreement=disag,
                     pass_mode=pass_mode,
                     gate0_deletions=gate0_deletions,
@@ -1519,9 +1540,6 @@ def _run_single_v2_impl(cfg: RefineConfig, in_path: str, collector=None,
                               severity=SEVERITY_INFO)
 
         # ---- 风险清单报告（有风险才写 {stem}_风险清单.md/.json）----
-        removed_stale = _remove_stale_risk_reports(out_dir, stem)
-        if removed_stale:
-            print(f"🧹 已清理上轮残留风险清单: {', '.join(removed_stale)}")
         reports = collector.write_reports(out_dir, stem)
         if reports:
             print(f"\n📋 风险清单已生成: {Path(reports['md']).name}")

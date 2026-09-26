@@ -503,6 +503,23 @@ def _render_plain_guide(items_count: int,
     return lines
 
 
+def resolve_final_block(final_entries: list[dict], index: int) -> dict | None:
+    """报告 index → 终稿块的官方映射（首次精确 index 匹配）。
+
+    契约（D11）：
+    - 精确 index 匹配为主，不做 timing 猜测；
+    - 合并块 index 非单射：v2_premerge 合并保留首条 index，被并条目
+      index 成空洞；同 index 出现多块（如语言过滤伪条目 index 缺省 0
+      与真实 #0 重号）时取列表顺序首个；
+    - 禁止算术外推：找不到精确命中的 index 时返回 None（调用方按
+      "不可自动重翻" 处理），绝不 ±1 猜测相邻块。
+    """
+    for e in final_entries or []:
+        if e.get("index") == index:
+            return e
+    return None
+
+
 def build_quality_report(orig_entries: list, final_entries: list,
                          source_name: str = "",
                          expected_entries: list | None = None,
@@ -520,7 +537,8 @@ def build_quality_report(orig_entries: list, final_entries: list,
                          conflict_watch_advice: str | None = None,
                          tm_exact_hits: int | None = None,
                          tm_learned_count: int | None = None,
-                         guide_sink: dict | None = None) -> str:
+                         guide_sink: dict | None = None,
+                         structured_warnings: list[dict] | None = None) -> str:
     """对比 期望条目（预合并后） 与 终稿条目，返回复核工单式报告文本。
 
     Parameters
@@ -599,8 +617,18 @@ def build_quality_report(orig_entries: list, final_entries: list,
     profile : str
         档位名（"local"=strict / "cloud"=lenient），仅用于规则清洗
         未运行时的展示措辞。
+    structured_warnings : list[dict] | None
+        post_validate 的结构化告警（check_and_fix_translation_errors
+        第四返回值，与 validator_warnings 同序等长的 dict 列表）。
+        提供时进入导读 json 的 items[]（version 2）；None（旧调用方）
+        时 items 仅含 untranslated 条目。items 的 current_text 经
+        resolve_final_block 按精确 index 映射终稿块，映射不到（被并/
+        被删/被隔离移出）即为 null——语义即"不可自动重翻"，不另设
+        字段。
     """
-    from .pipeline_v2 import _timing_span
+    # 拆分后不再反向依赖 facade（pipeline_v2）：_timing_span 以叶子模块
+    # v2_premerge 为准（与 v2_rules/v2_outputs 同源）
+    from .v2_premerge import _timing_span
 
     expected = expected_entries if expected_entries is not None else orig_entries
     merge_stats = merge_stats or {}
@@ -1012,8 +1040,47 @@ def build_quality_report(orig_entries: list, final_entries: list,
             if hit_prefix and all(s["title"] != hit_prefix for s in sections):
                 sections.append({"title": hit_prefix,
                                  "note": dict(_SECTION_NOTES)[hit_prefix]})
+        # 导读 items[]（version 2，D11）：机器可消费的结构化复核条目。
+        # current_text=None 即"不可自动重翻"（终稿无该 index 的官方块，
+        # 如被并/被删/被隔离移出），不另设字段。txt 渲染路径不感知本段。
+        src_by_idx: dict = {}
+        for e in expected:
+            src_by_idx.setdefault(e.get("index"), e)   # 同 index 取列表首个
+        guide_items: list[dict] = []
+        # 来源 A：post_validate 结构化告警（None 则空，additive）
+        for sw in (structured_warnings or []):
+            sw_idx = sw.get("index")
+            fe = resolve_final_block(final_entries, sw_idx)
+            se = src_by_idx.get(sw_idx)
+            guide_items.append({
+                "index": sw_idx,
+                "timing": sw.get("timing") or "",
+                "category": sw.get("category") or "",
+                "message": sw.get("message") or "",
+                "current_text": (fe or {}).get("text"),
+                "source_excerpt": ((se or {}).get("text") or "")[:40],
+                "status": "open",
+                "severity": None,
+            })
+        # 来源 B：untranslated 条目全量纳入（不设 20 上限；txt 小节的
+        # 列举上限不约束此处）
+        for e in untranslated:
+            se = src_by_idx.get(e.get("index"))
+            guide_items.append({
+                "index": e.get("index"),
+                "timing": e.get("timing") or "",
+                "category": "untranslated",
+                "message": "整段未翻译",
+                "current_text": e.get("text") or "",   # 终稿块全文（含前缀）
+                "source_excerpt": ((se or {}).get("text") or "")[:40],
+                "status": "open",
+                "severity": None,
+            })
+        # index 升序稳定排序（None 防御：无 index 的排末尾）
+        guide_items.sort(key=lambda it: (it["index"] is None,
+                                         it["index"] if it["index"] is not None else 0))
         guide_sink.update({
-            "version": 1,
+            "version": 2,
             "source": source_name,
             "generated_at": now_str,
             "basis": "基于本次运行",
@@ -1023,6 +1090,7 @@ def build_quality_report(orig_entries: list, final_entries: list,
                 "对齐率": f"{align_rate:.1f}%",
                 "漏覆盖率": f"{miss_rate:.1f}%",
             },
+            "items": guide_items,
         })
     return "\n".join(lines)
 

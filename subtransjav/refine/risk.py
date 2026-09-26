@@ -40,6 +40,11 @@ class RiskEvent:
     suggestion: str = ""           # 处理建议
     severity: str = SEVERITY_WARNING
     timestamp: str = field(default_factory=_iso_now)
+    # additive 诊断字段（D11）：只进 asdict 路径（风险清单.json 与事件
+    # payload）；md 表格（_render_markdown）/ summary_lines /
+    # content_degraded 均不感知，旧调用点零影响。
+    timing_range: str = ""         # 首条→末条 timing，如 "t0→t1"（单条时两段相同）
+    entry_timings: list = field(default_factory=list)  # 受影响条目的 timing 全列表
 
 
 class RiskCollector:
@@ -66,8 +71,13 @@ class RiskCollector:
             self._info_lines.append(str(line))
 
     def add(self, stage=None, file=None, entry_range=None, reason=None, action=None,
-            affected_count=0, samples=None, suggestion=None, severity="warning") -> RiskEvent:
-        """记录一条风险；samples 自动截断到 3 条，None 入参归一为空串/0。"""
+            affected_count=0, samples=None, suggestion=None, severity="warning",
+            timing_range="", entry_timings=None) -> RiskEvent:
+        """记录一条风险；samples 自动截断到 3 条，None 入参归一为空串/0。
+
+        timing_range/entry_timings 为 additive 诊断字段（仅进 asdict
+        路径），缺省归一为空串/空列表——既有调用点零破坏。
+        """
         event = RiskEvent(
             stage=stage or "",
             file=file or "",
@@ -78,6 +88,8 @@ class RiskCollector:
             samples=list(samples or [])[:_MAX_SAMPLES],
             suggestion=suggestion or "",
             severity=severity or SEVERITY_WARNING,
+            timing_range=timing_range or "",
+            entry_timings=list(entry_timings or []),
         )
         self.events.append(event)
         if self._emitter is not None:
@@ -88,6 +100,40 @@ class RiskCollector:
                 self._emitter.emit(event_type, phase=event.stage, file=event.file,
                                    payload=asdict(event))
         return event
+
+    def add_entry_ranged(self, *, stage, file, entries, reason,
+                         action="", severity=SEVERITY_WARNING,
+                         suggestion="") -> RiskEvent:
+        """按条目集合记录一条风险：范围/时间轴字段由本 helper 统一推导
+        （调用点禁止手拼 "12-15" 范围串）。
+
+        - entries：条目 dict 列表（含 index/timing）；空列表安全（各范围
+          字段记空串、affected_count=0，不抛异常）；
+        - entry_range 按 "12-15" 惯例取 index min-max（单条/同值记 "N"，
+          index 缺失的条目不参与）；
+        - timing_range = 首条→末条 timing；entry_timings = 全部 timing
+          列表（additive 字段，只进 asdict 路径）；
+        - affected_count = len(entries)。
+        闸门0 不用本 helper、不建风险事件：闸门0 计数信息走
+        add_summary_line（信息行不进风险清单、不影响 content_degraded），
+        防止同一批删除在风险事件与信息行双计（D11 ⑥）。
+        """
+        entries = list(entries or [])
+        timings = [(e.get("timing") or "") for e in entries]
+        indexes = [e.get("index") for e in entries
+                   if e.get("index") is not None]
+        if not indexes:
+            entry_range = ""
+        elif min(indexes) == max(indexes):
+            entry_range = str(min(indexes))
+        else:
+            entry_range = f"{min(indexes)}-{max(indexes)}"
+        timing_range = f"{timings[0]}→{timings[-1]}" if timings else ""
+        return self.add(stage=stage, file=file, entry_range=entry_range,
+                        reason=reason, action=action,
+                        affected_count=len(entries), severity=severity,
+                        suggestion=suggestion, timing_range=timing_range,
+                        entry_timings=timings)
 
     def mark_untranslated_majority(self, file=None, total=0, kept=0) -> None:
         """记录"整段未翻译"标志（保留日文原文占比过高/全部未译）。
