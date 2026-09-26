@@ -8,6 +8,11 @@
 - manifest.compute_config_hash：语义指纹（fingerprint），信号有无/内容
   变化使旧产物失效（R1）。
 
+H4b 场景级遥测通道（load_asr_telemetry）：读上游逐场景转写遥测
+（raw_subs/<名>.asr_telemetry.jsonl），派生场景低信任信号
+（scene_low_trust）供条目级阈值自适应消费；同样纯读取、全容错，
+绝不抛异常、绝不阻断翻译管线。
+
 设计约束：
 - 纯读取、全容错：文件缺失/不可读/JSON 损坏/字段不识别一律降级为
   "无信号 + 警告"，绝不抛异常、绝不阻断翻译管线；
@@ -37,6 +42,37 @@ _COVERAGE_KEYS = ("mileage", "mileage_pct", "coverage", "coverage_pct",
 
 # 可疑 run 状态集合：命中即收紧闸门0（消费方：pipeline_v2；本模块只透传）
 SUSPECT_STATUSES = frozenset(("suspect", "empty", "failed"))
+
+# ---------------------------------------------------------------------------
+# H4b：场景级转写遥测（上游 Balanced 模式产出 raw_subs/<名>.asr_telemetry.jsonl，
+# 逐行 JSONL dict，实测 schema 见 1.9.3：scene 为 1-based int，字段可为 null）
+# ---------------------------------------------------------------------------
+
+# 遥测旁车文件后缀（自动发现：SRT 同目录 raw_subs/ 下 <前缀>.asr_telemetry.jsonl）
+ASR_TELEMETRY_SUFFIX = ".asr_telemetry.jsonl"
+
+# SRT 文件名需逐段剥除的语言/管线后缀（发现遥测时定位文件名前缀用）。
+# 真实命名：SRT=4k2.me@mihd-002.ja.whisperjav.srt 而遥测=4k2.me@mihd-002.
+# asr_telemetry.jsonl——禁止 naive stem（剥 .srt 后直接拿来当匹配前缀必零命中）。
+_STEM_STRIP_SUFFIXES = (".ja.whisperjav", ".whisperjav", ".ja")
+
+# 遥测中保留的信号字段（media/scene/elapsed_s/wall_s 为身份与耗时元数据，
+# 不参与信任判定，不入 scenes）；字段值为 null → 该信号不可用（刻意
+# 不记 0、不判低信任），仅在 dict 中缺省。
+_TELEMETRY_SIGNAL_FIELDS = (
+    "produced_output", "model_epoch", "rtf", "n_segments",
+    "max_temperature", "fallback_segments", "min_avg_logprob",
+    "mean_avg_logprob", "max_compression_ratio", "max_no_speech_prob",
+    "cuda_used_mb", "cuda_allocated_mb", "cuda_reserved_mb", "rss_mb",
+)
+
+# 场景低信任判定常量（实测出处：whisperjav 1.9.3 Balanced 模式 4 份 BAL
+# 样本 .abtest/out/BAL__*/raw_subs/*.asr_telemetry.jsonl——硬信号在正常
+# 转写中稀有，可单独收紧；max_no_speech_prob 单独命中约 40% 场景
+# （静音/音乐段常态），单独使用会大范围误收紧，故与 mean_avg_logprob 合取）。
+_TRUST_MAX_COMPRESSION_RATIO = 2.4   # 压缩比硬上限（>此值多为循环/幻听）
+_TRUST_NO_SPEECH_PROB = 0.6          # 无语音概率软信号阈值
+_TRUST_MIN_MEAN_LOGPROB = -1.0       # 平均 logprob 软信号阈值（越负越不可信）
 
 
 # ---------------------------------------------------------------------------
@@ -197,3 +233,211 @@ def fingerprint(meta) -> str | None:
         return None
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# H4b：场景级转写遥测（load_asr_telemetry / scene_low_trust）
+# ---------------------------------------------------------------------------
+
+def _num_signal(v) -> float | None:
+    """宽容取数：bool/字符串/NaN/inf → None（信号不可用），其余 → float。"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
+
+def _strip_stem_suffixes(stem: str) -> str:
+    """剥 SRT 文件名的语言/管线后缀（逐段剥，直至无可剥）。"""
+    changed = True
+    while changed and stem:
+        changed = False
+        low = stem.lower()
+        for suf in _STEM_STRIP_SUFFIXES:
+            if low.endswith(suf) and len(stem) > len(suf):
+                stem = stem[: -len(suf)]
+                changed = True
+                break
+    return stem
+
+
+def _discover_telemetry_path(cfg, srt_path: str, warnings: list) -> str | None:
+    """遥测路径解析（副作用仅写 warnings，绝不抛）。
+
+    - 显式 cfg.asr_telemetry：直接用、不做新鲜度（沿 asr_meta 显式路径
+      先例：视为用户有意识提供的信号）；
+    - 未配置：在 SRT 同目录 raw_subs/ 下前缀匹配——SRT stem 剥语言/管线
+      后缀后作为前缀，恰一个命中才用；零或多命中 → None + 警告。
+    """
+    explicit = str(getattr(cfg, "asr_telemetry", "") or "").strip()
+    if explicit:
+        if not os.path.isfile(explicit):
+            warnings.append(f"显式 asr_telemetry 不存在: {explicit}")
+            return None
+        return explicit
+    if not srt_path:
+        return None
+    srt_dir = os.path.dirname(os.path.abspath(srt_path))
+    stem = _strip_stem_suffixes(
+        os.path.splitext(os.path.basename(srt_path))[0])
+    raw_dir = os.path.join(srt_dir, "raw_subs")
+    hits: list = []
+    if os.path.isdir(raw_dir):
+        try:
+            for name in os.listdir(raw_dir):
+                if not name.lower().endswith(ASR_TELEMETRY_SUFFIX):
+                    continue
+                if name[: -len(ASR_TELEMETRY_SUFFIX)].startswith(stem):
+                    hits.append(os.path.join(raw_dir, name))
+        except OSError as e:
+            warnings.append(f"asr_telemetry 目录扫描失败（忽略）: {e}")
+            return None
+    if not hits:
+        warnings.append(
+            f"未发现 asr_telemetry（SRT 同目录 raw_subs/ 下无文件名前缀 "
+            f"{stem!r} 匹配的 *{ASR_TELEMETRY_SUFFIX}）")
+        return None
+    if len(hits) > 1:
+        warnings.append(
+            "asr_telemetry 前缀匹配到多个文件，弃用: "
+            + ", ".join(sorted(os.path.basename(h) for h in hits)))
+        return None
+    return hits[0]
+
+
+def _parse_telemetry_line(line: str):
+    """解析单行遥测：返回 (scene_no, 信号 dict)；坏行返回 None。
+
+    - scene 非整数 / audio_duration_s 缺失或坏值 → 整行坏行；
+    - 字段值为 null → 该信号不可用（不入 dict，不当 0、不判低信任）；
+    - 数值字段类型漂移（bool/字符串/NaN/inf）→ 该信号不可用（跳过）。
+    """
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    scene = obj.get("scene")
+    if isinstance(scene, bool) or not isinstance(scene, int):
+        return None
+    try:
+        dur = float(obj.get("audio_duration_s"))
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(dur) or math.isinf(dur) or dur < 0:
+        return None
+    scene_data: dict = {"audio_duration_s": dur}
+    for key in _TELEMETRY_SIGNAL_FIELDS:
+        v = obj.get(key)
+        if v is None:
+            continue                      # null=信号不可用（刻意不记 0）
+        if key == "produced_output":
+            if isinstance(v, bool):
+                scene_data[key] = v
+            continue
+        if _num_signal(v) is None:
+            continue
+        scene_data[key] = v
+    return scene, scene_data
+
+
+def load_asr_telemetry(cfg, srt_path: str) -> dict:
+    """加载场景级 ASR 转写遥测（H4b；全容错，任何异常不抛、不阻断管线）。
+
+    参数
+    ----
+    cfg : RefineConfig（读 asr_telemetry 显式路径 / v2_asr_meta_stale_max_hours）
+    srt_path : 当前输入 SRT 路径（自动发现锚点；显式路径时可为空）
+
+    返回
+    ----
+    {"present": bool, "stale": bool, "file": str|None,
+     "scenes": {scene_no: {非 None 信号字段..., "audio_duration_s": float}},
+     "skipped_lines": int, "warnings": [str]}
+
+    约束：
+    - 显式路径直接用、不做新鲜度；自动发现要求文件新鲜（R6，沿 _is_fresh
+      手法）：telemetry mtime 比 SRT mtime 旧超 cfg.v2_asr_meta_stale_max_hours
+      → stale=True 且信号弃用；
+    - 坏行（非 dict/缺 scene/scene 非整数/坏数值）跳过并计数；重复 scene
+      行按坏行计（保留首行）；无场景文本/无时间码——遥测只含逐场景统计。
+    """
+    result: dict = {"present": False, "stale": False, "file": None,
+                    "scenes": {}, "skipped_lines": 0, "warnings": []}
+    try:
+        path = _discover_telemetry_path(cfg, srt_path, result["warnings"])
+        if not path:
+            return result
+        result["file"] = os.path.basename(path)
+        # 仅自动发现做新鲜度检查（显式路径视为有意识提供，沿先例）
+        if (not str(getattr(cfg, "asr_telemetry", "") or "").strip()
+                and not _is_fresh(path, srt_path, cfg)):
+            result["stale"] = True
+            result["warnings"].append(
+                f"asr_telemetry 已超龄（比 SRT 旧超过 "
+                f"{_stale_max_hours(cfg):g} 小时），信号弃用")
+            return result
+        scenes: dict = {}
+        skipped = 0
+        with open(path, encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                parsed = _parse_telemetry_line(line)
+                if parsed is None:
+                    skipped += 1
+                    continue
+                scene_no, scene_data = parsed
+                if scene_no in scenes:
+                    skipped += 1        # 重复 scene 行：按坏行计（保留首行）
+                    continue
+                scenes[scene_no] = scene_data
+        result["present"] = True
+        result["scenes"] = scenes
+        result["skipped_lines"] = skipped
+    except Exception as e:              # 全容错红线：遥测故障绝不阻断管线
+        result["present"] = False
+        result["scenes"] = {}
+        result["warnings"].append(f"asr_telemetry 读取失败（忽略）: {e}")
+    return result
+
+
+def scene_low_trust(scene: dict) -> bool:
+    """场景低信任判定（H4b 信任派生，独立于解析的纯函数；输入非 dict/信号
+    缺失一律不判低信任，防御性返回 False）。
+
+    硬信号任一命中即低信任：produced_output 为 False / fallback_segments>0 /
+    max_temperature>0 / max_compression_ratio>2.4；
+    软信号合取（None 信号不参与、不判低信任）：max_no_speech_prob>0.6
+    且 mean_avg_logprob<-1.0。
+
+    常量实测出处见模块级 _TRUST_* 注释（1.9.3 Balanced 模式 4 份 BAL 样本：
+    硬信号稀有、nsp 单独命中约 40% 故合取）。
+
+    铁律：自适应仅收紧闸门0 删五类参数（YAML tighten 覆盖块），计数类
+    （孤立应答词/无意义音节连缀）永不解锁为删除——契约由
+    tests/test_source_hallucination.py 钉住，不得松动。
+    """
+    if not isinstance(scene, dict):
+        return False
+    if scene.get("produced_output") is False:
+        return True
+    fb = _num_signal(scene.get("fallback_segments"))
+    if fb is not None and fb > 0:
+        return True
+    temp = _num_signal(scene.get("max_temperature"))
+    if temp is not None and temp > 0:
+        return True
+    cr = _num_signal(scene.get("max_compression_ratio"))
+    if cr is not None and cr > _TRUST_MAX_COMPRESSION_RATIO:
+        return True
+    nsp = _num_signal(scene.get("max_no_speech_prob"))
+    mlp = _num_signal(scene.get("mean_avg_logprob"))
+    if nsp is None or mlp is None:
+        return False                    # 软信号缺一：不参与合取、不判低信任
+    return (nsp > _TRUST_NO_SPEECH_PROB
+            and mlp < _TRUST_MIN_MEAN_LOGPROB)

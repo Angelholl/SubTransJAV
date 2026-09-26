@@ -58,6 +58,9 @@ TUNABLE_FIELD_TYPES = {
     # v1.2.2 Beta 剧情自摘要：开关（bool 白名单字面量收敛）与采样字符预算
     "auto_synopsis": bool,
     "synopsis_max_chars": int,
+    # H4b：条目级阈值自适应开关（bool 白名单字面量收敛）与显式遥测路径
+    "adaptive_thresholds": bool,
+    "asr_telemetry": str,
 }
 
 # ---- 服务商预设 ----
@@ -292,6 +295,15 @@ class RefineConfig:
     # 发现 SRT 同目录 whisperjav_run.json。刻意不进 manifest._CONFIG_FIELDS
     # （路径变化不应误失效；信号内容经 asr_meta_sha1 入指纹，R1）
     asr_meta: str = ""
+    # 上游场景级 ASR 转写遥测（H4b 信号通道）：JSONL 文件路径，空=自动发现
+    # SRT 同目录 raw_subs/ 下前缀匹配的 <名>.asr_telemetry.jsonl。刻意不进
+    # manifest._CONFIG_FIELDS（路径变化不应误失效；沿 asr_meta 字段不进指纹
+    # 的同一先例——自适应与否由 adaptive_thresholds 开关入指纹承载）
+    asr_telemetry: str = ""
+    # H4b 分支 b 子集口径：条目级阈值自适应开关——需上游 Balanced 模式产出
+    # 的 asr_telemetry.jsonl；缺失/超龄时按默认阈值执行（风险清单标注）。
+    # 仅收紧删五类参数，计数类永不解锁（见 asr_meta.scene_low_trust 铁律）。
+    adaptive_thresholds: bool = False
     # 上游 ASR 信号阈值：覆盖率告警下限（%）/ 运行 manifest 新鲜度上限（小时）
     v2_asr_meta_min_coverage_pct: int = DEFAULT_V2_ASR_META_MIN_COVERAGE_PCT
     v2_asr_meta_stale_max_hours: int = DEFAULT_V2_ASR_META_STALE_MAX_HOURS

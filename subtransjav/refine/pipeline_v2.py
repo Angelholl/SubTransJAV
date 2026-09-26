@@ -36,7 +36,12 @@ from .artifact_lock import (
     acquire_artifact_lock,
     release_artifact_lock,
 )
-from .asr_meta import SUSPECT_STATUSES, load_asr_meta
+from .asr_meta import (
+    SUSPECT_STATUSES,
+    load_asr_meta,
+    load_asr_telemetry,
+    scene_low_trust,
+)
 from .config import (
     DEEPSEEK_BASE_DEFAULT,
     RefineConfig,
@@ -999,6 +1004,49 @@ def run_v2(cfg: RefineConfig, *, summary_sink: dict | None = None,
         emitter.close()
 
 
+def map_entries_to_scenes(entries: list, scenes: dict) -> dict:
+    """H4b：条目 → 场景归属映射（dict[条目编号 index → 场景号 scene_no]）。
+
+    场景按 scene_no 升序累计 audio_duration_s 得时间边界（秒）；条目按
+    timing 中点落格（复用 _timing_span 解析，放本层以保持 asr_meta 零新
+    依赖）。超出末场景累计边界的条目不映射（禁外推）；timing 不可解析
+    或缺条目编号的条目同样不映射。
+
+    注意：场景归属仅供档位划分、非真值——场景边界为"时长累计"近似
+    （上游按音频分段产出遥测，无时间码），与真实时间轴可能存在漂移。
+    """
+    if not scenes:
+        return {}
+    boundaries: list = []
+    acc = 0.0
+    for scene_no in sorted(scenes):
+        scene = scenes[scene_no] or {}
+        try:
+            dur = float(scene.get("audio_duration_s") or 0.0)
+        except (TypeError, ValueError):
+            dur = 0.0
+        acc += max(0.0, dur)
+        boundaries.append((scene_no, acc))
+    total = boundaries[-1][1]
+    mapping: dict = {}
+    for e in entries:
+        idx = e.get("index")
+        if idx is None:
+            continue
+        start, end = _timing_span(e.get("timing"))
+        # v2_premerge._timing_span 解析失败约定返回 (-1, -1)（非 None）
+        if start is None or end is None or start < 0 or end < 0:
+            continue
+        mid = (start + end) / 2.0
+        if mid > total:
+            continue                  # 超出末场景累计边界：不映射（禁外推）
+        for scene_no, upper in boundaries:
+            if mid <= upper:
+                mapping[idx] = scene_no
+                break
+    return mapping
+
+
 def _run_single_v2(cfg: RefineConfig, in_path: str, collector=None,
                    emitter=None, learn_threads: list | None = None) -> str:
     """产物锁挂点（v1.3.0 D4，D2026-0925-01 终选）：锁键=输入 sha1+output_dir。
@@ -1105,13 +1153,65 @@ def _run_single_v2_impl(cfg: RefineConfig, in_path: str, collector=None,
         upstream_block["warnings"].append(
             f"语音覆盖率 {mileage:g}% 低于阈值 {min_cov:g}%")
 
+    # H4b：场景级转写遥测（Balanced 模式 raw_subs/<名>.asr_telemetry.jsonl）
+    # → 场景低信任 → 条目级阈值自适应（仅收紧删五类参数，计数类永不解锁）。
+    # 映射/谓词组装在本层完成（asr_meta 保持零新依赖，不 import v2_premerge）。
+    telemetry = load_asr_telemetry(cfg, in_path)
+    telemetry_scenes = telemetry.get("scenes") or {}
+    adaptive_opt_in = bool(getattr(cfg, "adaptive_thresholds", False))
+    adaptive = (adaptive_opt_in and bool(telemetry.get("present"))
+                and not bool(telemetry.get("stale")))
+    low_trust_scene_nos = {no for no, sc in telemetry_scenes.items()
+                           if scene_low_trust(sc)}
+    scene_of_entry: dict = {}
+    adaptive_entries = 0
+    if adaptive:
+        scene_of_entry = map_entries_to_scenes(orig_entries, telemetry_scenes)
+        adaptive_entries = sum(
+            1 for e in orig_entries
+            if scene_of_entry.get(e.get("index")) in low_trust_scene_nos)
+        print(f"   📡 上游场景遥测：{len(telemetry_scenes)} 场景 / "
+              f"低信任 {len(low_trust_scene_nos)} 场景 / "
+              f"自适应收紧条目 {adaptive_entries} 条"
+              f"（跳行 {telemetry.get('skipped_lines', 0)}）")
+    elif adaptive_opt_in:
+        # 红标（限定触发域=仅 opt-in 后）：遥测缺失/超龄 → 默认阈值执行
+        collector.add(stage="gate0", file=fname,
+                      reason="自适应阈值已启用但未发现可用 asr_telemetry"
+                             "（仅上游 Balanced 模式产出），本轮按默认阈值执行",
+                      action="按默认档位执行",
+                      severity=SEVERITY_WARNING)
+    # 三可数指标并入 upstream block（键= present/stale/file/scenes/low_trust/
+    # adaptive_entries/skipped_lines）。条件并入：opt-in 或确有遥测时才挂
+    # telemetry 子块——既有 gate0_summary payload 契约测试
+    # （tests/test_pipeline_v2.py）钉死无信号场景 upstream 键集，
+    # 缺省路径必须零变化。
+    telemetry_block = {
+        "present": bool(telemetry.get("present")),
+        "stale": bool(telemetry.get("stale")),
+        "file": telemetry.get("file"),
+        "scenes": len(telemetry_scenes),
+        "low_trust": len(low_trust_scene_nos),
+        "adaptive_entries": adaptive_entries,
+        "skipped_lines": int(telemetry.get("skipped_lines") or 0),
+    }
+    if adaptive_opt_in or telemetry.get("present") or telemetry.get("stale"):
+        upstream_block["telemetry"] = telemetry_block
+
     # 闸门0：送翻前源侧幻觉检测（预合并前对原始条目生效，两档 profile 均执行；
     # gate0_stats 由质量报告【处置】章节与 gate0_summary 事件消费）。
     # H5：候选 position 指向本次检测输入，先留快照供条目编号对齐。
+    # H4b：自适应开启时按"场景低信任 → 条目"谓词逐条收紧删五类参数。
     gate0_input = orig_entries
+    tight_pred = None
+    if adaptive:
+        def _tight_pred(e, _m=scene_of_entry, _lt=low_trust_scene_nos):
+            return _m.get(e.get("index")) in _lt
+        tight_pred = _tight_pred
     orig_entries, gate0_stats = apply_source_filter(
         orig_entries, cfg, source_name=fname, tighten=tighten,
-        samples_limit=_GATE0_REPORT_SAMPLE_CAP)
+        samples_limit=_GATE0_REPORT_SAMPLE_CAP,
+        tighten_entry_predicate=tight_pred)
     # H5：候选原始下标 → 条目编号 对齐表（隔离区回捞用；候选仅保险阀
     # 降级路径非空。D1 后 noise_left_empty 恒 0，不再需要计数类条目编号
     # 集合，原 gate0_noise_indexes 一并移除）

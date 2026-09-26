@@ -582,6 +582,130 @@ def test_tighten_never_unlocks_count_only_categories():
     assert stats["categories"]["无意义音节连缀"] == {"detected": 1, "deleted": 0}
 
 
+# ---------------------------------------------------------------------------
+# 8b. H4b：条目级阈值自适应（tighten_entry_predicate）
+# ---------------------------------------------------------------------------
+
+def test_adaptive_predicate_none_byte_identical_to_legacy_call():
+    """缺省路径零变化：tighten_entry_predicate=None 时与旧签名调用逐字节
+    一致（含全局 tighten 两态）。"""
+    entries = _entries("みんな", "みんな", "みんな", "こんにちは",
+                       "さようなら", "また明日", "寒いね", "そうだね",
+                       "。。。", "！！")
+    for kw in ({}, {"tighten": True}):
+        k1, s1 = apply_source_filter(entries, _cfg("default"), **kw)
+        k2, s2 = apply_source_filter(entries, _cfg("default"),
+                                     tighten_entry_predicate=None, **kw)
+        assert k1 == k2 and s1 == s2
+
+
+def test_adaptive_repeat_group_tightened_by_any_low_trust_member():
+    """critic 钉①（跨分区 repeat 组就紧）：3 连组横跨低信任/默认条目 →
+    整组按 tighten 参数评估删除（防低信任条目渗漏进默认组漏删，
+    也防默认条目被牵连误放）。"""
+    entries = _entries("みんな", "みんな", "みんな",   # 3 连 < base min_run 4
+                       "こんにちは", "さようなら",
+                       "また明日", "寒いね", "そうだね", "熱くなる")
+
+    def pred(e):
+        return e.get("index") == 1                    # 仅组首条目低信任
+
+    kept, stats = apply_source_filter(entries, _cfg("default"),
+                                      tighten_entry_predicate=pred)
+    assert [e["text"] for e in kept] == ["こんにちは", "さようなら",
+                                         "また明日", "寒いね", "そうだね",
+                                         "熱くなる"]
+    assert stats["categories"]["重复循环"] == {"detected": 3, "deleted": 3}
+    # positions 恒为全局输入索引（组内默认条目一并删除，无渗漏）
+    assert stats["count_positions"] == []
+
+
+def test_adaptive_predicate_false_everywhere_behaves_like_base():
+    """谓词恒 False（低信任集为空）→ 参数与 base 变体一致：3 连保留。"""
+    entries = _entries("みんな", "みんな", "みんな", "こんにちは",
+                       "さようなら", "また明日")
+
+    def pred(e):
+        return False
+
+    kept, stats = apply_source_filter(entries, _cfg("default"),
+                                      tighten_entry_predicate=pred)
+    assert len(kept) == 6
+    assert stats["categories"]["重复循环"] == {"detected": 0, "deleted": 0}
+
+
+def test_adaptive_end_meta_window_anchored_to_full_file_span():
+    """critic 钉②（end_meta 全文件 span 锚定）：低信任条目自身位于末 20%
+    带（末 10% 外）→ 按全文件 span 的 0.2 窗口检出删除；若实现按低信任
+    分区局部重锚（窗口锚到低信任子集的 span），该条检不出。"""
+    pairs = [(2, "こんにちは"), (20, "さようなら"), (40, "また明日"),
+             (60, "寒いね"), (80, "そうだね"), (100, "熱くなる"),
+             (120, "水泳部"), (140, "ほんとに"),
+             (170, "チャンネル登録お願いします"),   # 末 20% 内、末 10% 外
+             (195, "部長でエースで")]
+    entries = _entries_at(pairs)
+
+    def pred(e):
+        return e.get("index") == 9               # 仅末 20% 带内的条目低信任
+
+    _, stats = apply_source_filter(entries, _cfg("default"),
+                                   tighten_entry_predicate=pred)
+    assert stats["categories"]["片尾元信息"] == {"detected": 1, "deleted": 1}
+
+
+def test_adaptive_end_meta_tight_window_only_for_low_trust_entries():
+    """同一 window 内逐条目选参数：末 20% 带内的非低信任条目不删，
+    末 10% 带内的条目（无论谓词）按 base 窗口删除。"""
+    pairs = [(2, "こんにちは"), (100, "ほんとに"),
+             (170, "チャンネル登録お願いします"),   # 仅 0.2 带内、谓词 False
+             (195, "チャンネル登録お願いします")]   # 0.1 带内 → base 删
+    entries = _entries_at(pairs)
+
+    def pred(e):
+        return e.get("index") == 2               # 仅中段条目低信任
+
+    kept, stats = apply_source_filter(entries, _cfg("default"),
+                                      tighten_entry_predicate=pred)
+    assert [e["text"] for e in kept].count("チャンネル登録お願いします") == 1
+    assert stats["categories"]["片尾元信息"] == {"detected": 1, "deleted": 1}
+
+
+def test_adaptive_predicate_never_unlocks_count_categories():
+    """计数类判定路径完全不感知谓词：全部条目低信任也不解锁删除。"""
+    entries = _entries("うんうん", "こんにちは", "あじゃあじゃあじゃあじゃ",
+                       "ありがとう", "うんうん")
+    kept, stats = apply_source_filter(entries, _cfg("default"),
+                                      tighten_entry_predicate=lambda e: True)
+    assert len(kept) == 5
+    assert stats["categories"]["孤立应答词"] == {"detected": 2, "deleted": 0}
+    assert stats["categories"]["无意义音节连缀"] == {"detected": 1, "deleted": 0}
+
+
+def test_adaptive_predicate_ignored_in_strict_mode():
+    """谓词只作用于 default 档删五类；strict 档不受影响（min_run 仍 4）。"""
+    entries = _entries("みんな", "みんな", "みんな", "こんにちは",
+                       "さようなら", "また明日", "寒いね", "そうだね")
+    kept, stats = apply_source_filter(entries, _cfg("strict"),
+                                      tighten_entry_predicate=lambda e: True)
+    assert len(kept) == 8
+    assert stats["categories"]["重复循环"]["deleted"] == 0
+
+
+def test_adaptive_valve_still_counts_full_batch_with_predicate():
+    """阀门按全量 rate 计（谓词收紧后的待删集合为输入）：超阈值照常降级。"""
+    entries = _entries("みんな", "みんな", "みんな", "。。。", "！！",
+                       "kkkk", "こんにちは", "さようなら", "また明日",
+                       "ほんとに", "部長でエースで", "水泳部", "熱くなる",
+                       "寒いね", "そうだね", "わかった", "やっていく")
+    def pred(e):
+        return True                            # 全量低信任：3 连也入待删
+
+    kept, stats = apply_source_filter(entries, _cfg("default", valve=10),
+                                      tighten_entry_predicate=pred)
+    assert stats["valve_tripped"] is True and stats["deleted"] == 0
+    assert len(kept) == len(entries)
+
+
 def test_samples_limit_appends_deleted_entry_samples():
     """samples_limit>0 时 stats 附带已删条目样本（编号/类别/原文）。"""
     entries = _entries("。。。", "こんにちは", "！！", "さようなら")

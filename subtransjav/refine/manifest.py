@@ -341,6 +341,9 @@ _CONFIG_FIELDS = (
     # 闸门0：档位与保险阀阈值都直接影响送翻条目集合，必须参与指纹
     "v2_source_filter",
     "v2_source_filter_valve_pct",
+    # v1.9.x H4b 分支 b（条目级阈值自适应）：开关决定场景低信任条目是否按
+    # 收紧参数评估——影响送翻/删除产物内容，必须参与指纹
+    "adaptive_thresholds",
     "premerge_enabled",
     # P1-5：影响产物内容的收口字段（温度/预合并阈值变化须使旧 manifest 失效）。
     # 刻意不加入：timeout_llm/timeout_http/timeout_probe/v2_concurrency_max——

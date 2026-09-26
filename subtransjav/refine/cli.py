@@ -37,6 +37,14 @@ def build_parser():
     grp_input.add_argument("--asr-meta", default="",
                            help="上游 WhisperJAV 运行 manifest（可选，文件或目录）；"
                                 "未给时自动发现 SRT 同目录同名旁车文件 whisperjav_run.json")
+    grp_input.add_argument("--asr-telemetry", default="",
+                           help="上游场景级 ASR 转写遥测 JSONL 路径（可选）；"
+                                "未给时自动发现 SRT 同目录 raw_subs/ 下前缀匹配"
+                                "的 <名>.asr_telemetry.jsonl")
+    grp_input.add_argument("--adaptive-thresholds", action="store_true",
+                           help="条目级阈值自适应（H4b，默认关闭）：场景低信任条目按收紧"
+                                "参数执行闸门0（仅收紧删五类）；需上游 Balanced 模式的"
+                                "asr_telemetry.jsonl，缺失时按默认阈值执行并在风险清单标注")
 
     p.add_argument("-o", "--output-dir", default="", help="输出目录（默认与输入同目录）")
 
@@ -248,6 +256,8 @@ def config_from_args(args):
         v2_source_filter=args.source_filter,
         auto_synopsis=not args.no_auto_synopsis,
         asr_meta=args.asr_meta,
+        asr_telemetry=args.asr_telemetry,
+        adaptive_thresholds=args.adaptive_thresholds,
         force=args.force,
         resume=args.resume,
         force_resume=args.force_resume,

@@ -20,6 +20,10 @@
 - H5 翻译后回捞（隔离区）：保险阀降级未删成的删五类条目作为候选随
   stats 暴露，管线在 final 组装后按 quarantine_review 复核——译文为
   流畅中文的移入 {stem}_隔离区.srt 供人工复核（只移动不删除）；
+- H4b 条目级阈值自适应（tighten_entry_predicate）：谓词只决定删五类
+  参数取 tighten 变体还是 base 变体（逐条目选择）；跨条目预计算
+  （repeat 连续组 / end_meta 全文件窗口 / 计数类计数）仍在全量条目上
+  单趟完成，计数类判定路径完全不感知谓词（永不解锁为删除）；
 - resume 场景：阶段A 复用分支会跳过阶段A，闸门0 因此不重跑——
   这是设计内行为，由指纹失效机制兜底（档位/阈值/规则库任一变化
   都会改变 config_hash，旧阶段A产物即被判失效强制重跑）。
@@ -272,6 +276,47 @@ def _detect_repeat_flags(norms: list, min_run: int, min_norm_len: int) -> set:
     return flags
 
 
+def _detect_repeat_flags_adaptive(norms: list, base_cfg: dict,
+                                  tight_cfg: dict,
+                                  tight_positions: set) -> set:
+    """H4b 条目级重复循环判定（连续组就紧原则）。
+
+    "连续组" = 相邻位置规范化文本完全相同的极大段。跨条目组归属规则：
+    组内任一条目为低信任（tighten_entry_predicate 命中）→ 整组按
+    tighten 参数评估（收紧侧就紧：防低信任条目渗漏进默认组漏删，
+    也防默认条目被牵连误放）；纯默认条目组不受影响。删除判定取
+    base/tighten 两参数集的并集——防用户收紧块误配出更宽阈值时
+    自适应反而漏删（自适应仅收紧铁律）。
+
+    计数类判定路径完全不感知本函数（谓词不参与）。
+    """
+    min_run_b = int(base_cfg.get("min_run", 4))
+    min_len_b = int(base_cfg.get("min_norm_len", 2))
+    min_run_t = int(tight_cfg.get("min_run", min_run_b))
+    min_len_t = int(tight_cfg.get("min_norm_len", min_len_b))
+    floor_len = min(min_len_b, min_len_t)
+    flags: set[int] = set()
+    n = len(norms)
+    i = 0
+    while i < n:
+        v = norms[i]
+        if not v or len(v) < floor_len:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and norms[j + 1] == v:
+            j += 1
+        run = j - i + 1
+        if any(p in tight_positions for p in range(i, j + 1)):
+            if (run >= min_run_t and len(v) >= min_len_t) \
+                    or (run >= min_run_b and len(v) >= min_len_b):
+                flags.update(range(i, j + 1))
+        elif run >= min_run_b and len(v) >= min_len_b:
+            flags.update(range(i, j + 1))
+        i = j + 1
+    return flags
+
+
 def _detect_iso_flags(norms: list, iso_words: set, keep_set: set,
                       min_run: int, max_ratio: float) -> set:
     """孤立应答词 strict 删除标记：同词连续 ≥min_run 或检出占比 >max_ratio。
@@ -378,7 +423,8 @@ def _archive_dropped(entries, delete_positions, cat_by_pos, errors_dir,
 def apply_source_filter(entries: list, cfg, *, source_name: str = "",
                         config_dir: str = None, rules: dict = None,
                         errors_dir: str = None, tighten: bool = False,
-                        samples_limit: int = 0) -> tuple:
+                        samples_limit: int = 0,
+                        tighten_entry_predicate=None) -> tuple:
     """闸门0 主入口：对原始条目序列做源侧幻觉检测。
 
     参数
@@ -395,6 +441,19 @@ def apply_source_filter(entries: list, cfg, *, source_name: str = "",
     samples_limit : >0 时 stats 附带 "samples"（已删条目样本，H3 报告
               消费，上限即本参数，防爆体积）；默认 0 不附（保持既有
               stats 字段契约不变）
+    tighten_entry_predicate : 条目级自适应谓词（H4b），
+              Callable[[dict], bool] | None——按条目决定删五类参数取
+              tighten 变体还是 base 变体。约束（缺省路径零变化）：
+              * 谓词只选参数变体，跨条目预计算仍在全量条目上单趟完成；
+              * 跨条目组归属就紧原则：repeat_loop 等"连续组"组内任一
+                条目谓词为真 → 整组按 tighten 参数评估（收紧侧就紧）；
+              * end_meta 窗口仍锚定全文件 span（同一 window 内逐条目选
+                参数，禁止分区局部重锚）；
+              * 计数类（isolated_response/nonsense_syllables）判定路径
+                完全不感知谓词——永不解锁为删除；
+              * strict/off 档谓词不生效；None 时行为与本参数加入前
+                逐字节一致（positions 恒为全局输入索引、categories/
+                total/deleted 为两配置合并统计、阀门按全量 rate 计）。
 
     返回
     ----
@@ -441,25 +500,60 @@ def apply_source_filter(entries: list, cfg, *, source_name: str = "",
     keep_set = {_normalize_text(w) for w in (rules.get("keep_list") or [])
                 if _normalize_text(w)}
 
-    # H4a：tighten 收紧覆盖块（仅 default 档删五类生效；键缺省回退基础值）
-    tighten_block = (rules.get("tighten") or {}) \
-        if (mode == "default" and tighten) else {}
+    # H4a/H4b：tighten 收紧覆盖块（仅 default 档删五类生效；键缺省回退
+    # 基础值）。全局 tighten=True（H4a run 信号）→ 全部条目取 tighten
+    # 变体；H4b 谓词 → 逐条目选择（预计算一次低信任位置集，谓词异常按
+    # 非低信任处理——链路容错惯例）。tighten_entry_predicate=None 且
+    # tighten=False 时 tight_positions 恒空：缺省路径零变化。
+    adaptive_tighten = mode == "default" and (
+        tighten or tighten_entry_predicate is not None)
+    tighten_block = (rules.get("tighten") or {}) if adaptive_tighten else {}
+    if adaptive_tighten and tighten:
+        tight_positions = set(range(len(entries)))
+    elif adaptive_tighten and tighten_entry_predicate is not None:
+        tight_positions = set()
+        for _p, _e in enumerate(entries):
+            try:
+                if tighten_entry_predicate(_e):
+                    tight_positions.add(_p)
+            except Exception:           # 谓词异常按非低信任处理（容错惯例）
+                continue
+    else:
+        tight_positions = set()
 
-    def _cat_cfg(name: str) -> dict:
+    def _cat_cfg(name: str, pos: int = None) -> dict:
+        """类别参数：base 变体；pos 命中低信任集时叠加 tighten 覆盖块。"""
         base = dict(rules.get(name) or {})
-        base.update(tighten_block.get(name) or {})
+        if pos is not None and pos in tight_positions:
+            base.update(tighten_block.get(name) or {})
         return base
+
+    def _tight_cfg(name: str, base: dict) -> dict:
+        """tighten 变体（预计算用）：base 叠加该类收紧覆盖块。"""
+        merged = dict(base)
+        merged.update(tighten_block.get(name) or {})
+        return merged
 
     norms = [_normalize_text(e.get("text")) for e in entries]
     raws = [(e.get("text") or "").strip() for e in entries]
 
     # 跨条目预计算：重复循环 / 片尾窗口 / 孤立应答词 strict 标记
+    # （单趟全量预计算语义保持：低信任只决定参数变体选择，预计算集合
+    #   仍对全量条目计算，禁止分区局部预计算）
     cfg_repeat = _cat_cfg("repeat_loop")
-    repeat_flags = _detect_repeat_flags(
-        norms, int(cfg_repeat.get("min_run", 4)),
-        int(cfg_repeat.get("min_norm_len", 2)))
+    cfg_repeat_tight = (_tight_cfg("repeat_loop", cfg_repeat)
+                        if tight_positions else cfg_repeat)
+    if tight_positions:
+        repeat_flags = _detect_repeat_flags_adaptive(
+            norms, cfg_repeat, cfg_repeat_tight, tight_positions)
+    else:
+        repeat_flags = _detect_repeat_flags(
+            norms, int(cfg_repeat.get("min_run", 4)),
+            int(cfg_repeat.get("min_norm_len", 2)))
     starts = [_timing_span(e.get("timing"))[0] for e in entries]
     cfg_meta = _cat_cfg("end_meta")
+    cfg_meta_tight = (_tight_cfg("end_meta", cfg_meta)
+                      if tight_positions else cfg_meta)
     words_ja = [w for w in (cfg_meta.get("words_ja") or []) if w]
     words_en = [str(w).lower() for w in (cfg_meta.get("words_en") or []) if w]
     min_start = min((s for s in starts if s is not None), default=None)
@@ -471,6 +565,14 @@ def apply_source_filter(entries: list, cfg, *, source_name: str = "",
             and max_end > min_start:
         window_start = min_start + (max_end - min_start) * \
             (1.0 - float(cfg_meta.get("window_ratio", 0.1)))
+    # H4b：tighten 窗口（0.1→0.2 等）——仍锚定全文件 span（同一 window 内
+    # 逐条目选参数，禁止按低信任分区局部重锚）
+    window_start_tight = None
+    if tight_positions and min_start is not None and max_end is not None \
+            and max_end > min_start:
+        window_start_tight = min_start + (max_end - min_start) * \
+            (1.0 - float(cfg_meta_tight.get(
+                "window_ratio", cfg_meta.get("window_ratio", 0.1))))
     cfg_iso = rules.get("isolated_response") or {}
     iso_words = {(str(w) or "").strip()
                  for w in (cfg_iso.get("words") or []) if str(w).strip()}
@@ -498,16 +600,20 @@ def apply_source_filter(entries: list, cfg, *, source_name: str = "",
                 count_positions.append(pos)
             continue
         cat = None
-        if _is_exclamation_run(raw, _cat_cfg("exclamation").get("min_run", 2)):
+        if _is_exclamation_run(raw, _cat_cfg(
+                "exclamation", pos).get("min_run", 2)):
             cat = "exclamation"
         elif _is_pure_punctuation(raw):
             cat = "pure_punctuation"
-        elif _is_unpronounceable(norm, _cat_cfg("unpronounceable")):
+        elif _is_unpronounceable(norm, _cat_cfg("unpronounceable", pos)):
             cat = "unpronounceable"
         elif pos in repeat_flags:
             cat = "repeat_loop"
-        elif (window_start is not None and starts[pos] is not None
-              and starts[pos] >= window_start
+        elif (((window_start is not None and starts[pos] is not None
+                and starts[pos] >= window_start)
+               or (pos in tight_positions and window_start_tight is not None
+                   and starts[pos] is not None
+                   and starts[pos] >= window_start_tight))
               and _match_meta_words(raw, words_ja, words_en)):
             cat = "end_meta"
         elif norm and norm in iso_words:

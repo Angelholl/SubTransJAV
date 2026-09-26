@@ -18,6 +18,7 @@ from subtransjav.refine.asr_meta import (
     SUSPECT_STATUSES,
     fingerprint,
     load_asr_meta,
+    load_asr_telemetry,
 )
 
 # ---------------------------------------------------------------------------
@@ -25,7 +26,8 @@ from subtransjav.refine.asr_meta import (
 # ---------------------------------------------------------------------------
 
 def _cfg(**kw) -> types.SimpleNamespace:
-    base = {"asr_meta": "", "v2_asr_meta_stale_max_hours": 24}
+    base = {"asr_meta": "", "asr_telemetry": "",
+            "v2_asr_meta_stale_max_hours": 24}
     base.update(kw)
     return types.SimpleNamespace(**base)
 
@@ -271,3 +273,166 @@ def test_config_defaults_for_asr_meta_fields():
     assert cfg.v2_asr_meta_stale_max_hours == 24
     assert DEFAULT_V2_ASR_META_MIN_COVERAGE_PCT == 30
     assert DEFAULT_V2_ASR_META_STALE_MAX_HOURS == 24
+
+
+# ---------------------------------------------------------------------------
+# 6. H4b：场景级转写遥测（load_asr_telemetry 解析/防御例）
+# ---------------------------------------------------------------------------
+
+def _scene(n, **kw) -> dict:
+    """实测 1.9.3 schema 的合成场景行（字段可为 null）。"""
+    base = {"media": "demo", "scene": n, "elapsed_s": 1.0,
+            "audio_duration_s": 10.0, "wall_s": 1.0, "produced_output": True,
+            "model_epoch": 1, "rtf": 0.1, "n_segments": 5,
+            "max_temperature": 0.0, "fallback_segments": 0,
+            "min_avg_logprob": -0.5, "mean_avg_logprob": -0.5,
+            "max_compression_ratio": 1.2, "max_no_speech_prob": 0.1,
+            "cuda_used_mb": 1000.0, "cuda_allocated_mb": 0.0,
+            "cuda_reserved_mb": 0.0, "rss_mb": 900.0}
+    base.update(kw)
+    return base
+
+
+def _write_telemetry(directory, scenes, stem="demo"):
+    raw = directory / "raw_subs"
+    raw.mkdir(exist_ok=True)
+    p = raw / f"{stem}.asr_telemetry.jsonl"
+    p.write_text(
+        "\n".join(json.dumps(s, ensure_ascii=False) for s in scenes) + "\n",
+        encoding="utf-8")
+    return p
+
+
+def test_telemetry_parse_keeps_non_null_signal_fields(tmp_path):
+    _write_telemetry(tmp_path, [_scene(1), _scene(2, max_temperature=0.5)])
+    r = load_asr_telemetry(_cfg(), str(_write_srt(tmp_path)))
+    assert r["present"] is True and r["stale"] is False
+    assert r["file"] == "demo.asr_telemetry.jsonl"
+    assert set(r["scenes"]) == {1, 2}
+    assert r["scenes"][1]["audio_duration_s"] == 10.0
+    assert r["scenes"][1]["produced_output"] is True
+    assert r["scenes"][2]["max_temperature"] == 0.5
+    assert r["skipped_lines"] == 0 and r["warnings"] == []
+
+
+def test_telemetry_null_fields_dropped_not_zeroed(tmp_path):
+    """字段 null → 该信号不可用（dict 缺省，不当 0、不判低信任）；
+    produced_output=False 保留布尔值（硬信号）。"""
+    _write_telemetry(tmp_path, [
+        _scene(1, max_no_speech_prob=None, mean_avg_logprob=None,
+               max_compression_ratio=None),
+        _scene(2, produced_output=False, max_temperature=None,
+               min_avg_logprob=None, mean_avg_logprob=None,
+               max_compression_ratio=None, max_no_speech_prob=None),
+    ])
+    r = load_asr_telemetry(_cfg(), str(_write_srt(tmp_path)))
+    s1 = r["scenes"][1]
+    assert "max_no_speech_prob" not in s1
+    assert "mean_avg_logprob" not in s1
+    assert "max_compression_ratio" not in s1
+    assert r["scenes"][2]["produced_output"] is False
+
+
+def test_telemetry_bad_lines_skipped_and_counted(tmp_path):
+    """坏行（坏 JSON/非 dict/缺 scene/scene 非整数/bool scene/坏时长）
+    逐行跳过并计数；空行静默忽略不计数。"""
+    raw = tmp_path / "raw_subs"
+    raw.mkdir()
+    (raw / "demo.asr_telemetry.jsonl").write_text("\n".join([
+        json.dumps(_scene(1)),
+        "{not json",
+        json.dumps(["not", "a", "dict"]),
+        json.dumps({"audio_duration_s": 5.0}),                    # 缺 scene
+        json.dumps({"scene": "2", "audio_duration_s": 5.0}),      # scene 非整数
+        json.dumps({"scene": True, "audio_duration_s": 5.0}),     # bool scene
+        json.dumps({"scene": 2, "audio_duration_s": "x"}),        # 坏时长
+        json.dumps({"scene": 3, "audio_duration_s": -1.0}),       # 负时长
+        "",
+        json.dumps(_scene(4)),
+    ]), encoding="utf-8")
+    r = load_asr_telemetry(_cfg(), str(_write_srt(tmp_path)))
+    assert r["present"] is True
+    assert set(r["scenes"]) == {1, 4}
+    assert r["skipped_lines"] == 7
+
+
+def test_telemetry_duplicate_scene_counted_as_bad_line(tmp_path):
+    _write_telemetry(tmp_path, [_scene(1)])
+    raw = tmp_path / "raw_subs" / "demo.asr_telemetry.jsonl"
+    raw.write_text(json.dumps(_scene(1)) + "\n" + json.dumps(_scene(1)) + "\n",
+                   encoding="utf-8")
+    r = load_asr_telemetry(_cfg(), str(_write_srt(tmp_path)))
+    assert r["present"] is True and set(r["scenes"]) == {1}
+    assert r["skipped_lines"] == 1
+
+
+def test_telemetry_missing_file_zero_hit_warns(tmp_path):
+    srt = _write_srt(tmp_path)
+    r = load_asr_telemetry(_cfg(), str(srt))
+    assert r["present"] is False and r["file"] is None
+    assert r["scenes"] == {} and r["skipped_lines"] == 0
+    assert r["warnings"] and "未发现" in r["warnings"][0]
+
+
+def test_telemetry_explicit_path_used_directly(tmp_path):
+    p = tmp_path / "explicit.jsonl"
+    p.write_text(json.dumps(_scene(1)), encoding="utf-8")
+    r = load_asr_telemetry(_cfg(asr_telemetry=str(p)), "")
+    assert r["present"] is True and r["file"] == "explicit.jsonl"
+    expected_scene = {k: v for k, v in _scene(1).items()
+                      if k in ("produced_output", "model_epoch", "rtf",
+                               "n_segments", "max_temperature",
+                               "fallback_segments", "min_avg_logprob",
+                               "mean_avg_logprob", "max_compression_ratio",
+                               "max_no_speech_prob", "cuda_used_mb",
+                               "cuda_allocated_mb", "cuda_reserved_mb",
+                               "rss_mb")}
+    expected_scene["audio_duration_s"] = 10.0
+    assert r["scenes"] == {1: expected_scene}
+    assert r["warnings"] == []
+
+
+def test_telemetry_explicit_missing_yields_warning(tmp_path):
+    cfg = _cfg(asr_telemetry=str(tmp_path / "nope.jsonl"))
+    r = load_asr_telemetry(cfg, str(_write_srt(tmp_path)))
+    assert r["present"] is False
+    assert r["warnings"] and "不存在" in r["warnings"][0]
+
+
+def test_telemetry_stale_auto_discovered_rejected(tmp_path):
+    """自动发现超龄（比 SRT 旧超过 24h）→ stale=True 弃用信号（R6）。"""
+    srt = _write_srt(tmp_path)
+    p = _write_telemetry(tmp_path, [_scene(1)])
+    now = time.time()
+    os.utime(str(srt), (now, now))
+    stamp = now - 25 * 3600
+    os.utime(str(p), (stamp, stamp))
+    r = load_asr_telemetry(_cfg(), str(srt))
+    assert r["present"] is False and r["stale"] is True
+    assert r["file"] == "demo.asr_telemetry.jsonl"
+    assert r["scenes"] == {}
+    assert r["warnings"] and "超龄" in r["warnings"][0]
+
+
+def test_telemetry_stale_threshold_configurable(tmp_path):
+    """阈值复用 v2_asr_meta_stale_max_hours：1 小时上限时旧 2 小时即超龄。"""
+    srt = _write_srt(tmp_path)
+    p = _write_telemetry(tmp_path, [_scene(1)])
+    now = time.time()
+    os.utime(str(srt), (now, now))
+    stamp = now - 2 * 3600
+    os.utime(str(p), (stamp, stamp))
+    r = load_asr_telemetry(_cfg(v2_asr_meta_stale_max_hours=1), str(srt))
+    assert r["present"] is False and r["stale"] is True
+    r2 = load_asr_telemetry(_cfg(v2_asr_meta_stale_max_hours=3), str(srt))
+    assert r2["present"] is True and r2["stale"] is False
+
+
+def test_telemetry_corrupt_file_never_raises(tmp_path):
+    """不可解码字节 → 无信号 + 警告，绝不抛异常（全容错红线）。"""
+    raw = tmp_path / "raw_subs"
+    raw.mkdir()
+    (raw / "demo.asr_telemetry.jsonl").write_bytes(b"\xff\xfe\x00bad")
+    r = load_asr_telemetry(_cfg(), str(_write_srt(tmp_path)))
+    assert r["present"] is False and r["scenes"] == {}
+    assert r["warnings"] and "读取失败" in r["warnings"][0]
