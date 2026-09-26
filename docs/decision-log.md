@@ -1189,6 +1189,31 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **查看器 items 渲染（D11 验收门 GUI 批）**：index.html 面板加 #guideItems 容器+guide_items_title 锚；app.js guideRender 增 items 渲染（index/category/timing/message/现译截断 80 字；current_text=null 显示"不可自动重翻"；>50 条渲染前 50+汇总行；全部 json 字段走既有 esc() 转义防注入）；MSG 键表 +5 键（guide_items_title/guide_items_none/guide_item_current_label/guide_item_unresolvable/guide_items_more）；+2 静态钉用例。GUI 已验证=B5 三层（真实窗口启动存活 14s 受控终止/桥接层含于全量/node --check；点击流黑盒不可自动化）。
 - **基线更新**：全量 **1099 passed + 1 skipped**（1078+1→+21：执行器 19 用例+查看器钉 2，只增不减）；ruff 零告警；mypy 门禁 0（新增 action_retranslate 全程注解）；CLI --help 冒烟过（含"行动层"参数组）。
 
+### 落库执行追记（2026-09-26，五段推送 95216aa）
+
+- **五段提交**（用户终端脚本 Temp/commit_0926_all_segments.sh，PRECHECK 33 文件全过）：c3524bd（guard 加固）/f8583d3（mypy 平台钉+M1）/a186ff4（refine 层 H2/M2+三地基+执行器+台账，22 文件）/2d5666a（gui H1+查看器 items）/95216aa（docs 四追记+B2 首期+甄别表双基线）。
+- **三查+blobs 复扫**：①工作树干净（0 未提交）；②恰五段、文件归属 2/3/22/3/3=33 与分段设计逐段一致；③committed blobs 十类凭据模式零命中，3 行 raw 命中全部定性=甄别表 seal 内容哈希（sha256:53010c48… 历史 anchor 与 sha256:79eae27d… 新基线，seal 纪律要求留痕的公开摘要，非凭据）。
+- **push 复核**：`5e1b335..95216aa main -> main`；ls-remote refs/heads/main=95216aa50f7e430cbcbdb184904c385cc7a558a4 与本地 HEAD 一致，status -sb 零领先零落后。
+- **CI 预期**：ubuntu 腿 mypy 门禁（platform=win32 钉后应为 0 错）与 windows 腿 guard 两用例（cp1252 加固后应退出 0）为本轮两处 CI 修复的首个验证点，推送后首跑结果待观察追记。
+- **待办移交**：__main__.py 退出码传播小修/force-resume+学习闸 UI/行动层 GUI 实测/B2 补采（重跑五片归档术语冲突观察 CSV）。
+
+### 行动层 UI 批与 CI 收口追记（2026-09-26，D6 遗留交付 [已实施，待提交]）
+
+- **CI 双腿首跑收口**：推送 95216aa 的 CI run=**completed/success**（上轮 5e1b335=failure）——ubuntu 腿 mypy 门禁（platform=win32 钉后 0 错）与 windows 腿 guard 两用例（cp1252 加固后退出 0）双双通过真实 CI 验证，本轮两处 CI 修复闭环，D9"首跑确认"条款兑现。
+- **学习闸三开关身份考证**：D6 终选原文（:1150）未逐字点名字段名；代码侧证据链取**进了 manifest 指纹的三个学习行为开关**（manifest.py:356-368 注释"影响学习行为的开关"）=glossary_learn_enabled/glossary_conflict_block/tm_learn_gate（auto_glossary 不进指纹不列）。其中 glossary_learn_enabled 与 glossary_conflict_block 原本无任何 CLI/GUI 通道。
+- **实施**：①CLI 补 `--glossary-learn`/`--glossary-conflict-block` 两参（store_true，接线 config_from_args；两字段入指纹故开启影响 resume 校验=设计内）；②`__main__.py` 改 `sys.exit(main())`（python -m 退出码传播，含行动层 0/1/2/3；+源码钉防回退）；③GUI：index.html 加 refineForceResume（"指纹不匹配仍复用"默认不勾）+refineGlossaryLearn+refineGlossaryConflictBlock 三复选框；app.js buildRefineOptions 加 force_resume/glossary_learn/glossary_conflict_block 三键；api._build_refine_args 加三分支（force_resume 隐含 resume 由 config.__post_init__ 保证）；MSG +4 键（force_resume_label/title、glossary_learn_label、glossary_conflict_block_label）。tm_learn_gate 不加 GUI 开关（与 TM 勾选语义重叠，CLI --no-tm-learn-gate 通道保留，api 分支注释留痕）。
+- **验证**：全量 **1108 passed + 1 skipped**（1099+1→+9 恰为新用例数）；ruff 0；mypy 门禁 0；node --check 过；GUI 真实窗口启动存活 12s 受控终止（B5 层①；点击流黑盒不可自动化）。已知边界：cli.py 自身 `__main__` 块同样不转发返值（GUI 子进程走 `-m subtransjav.refine.cli`，当前 GUI 不传行动层参数无实际影响），列入后续小修。
+- **B2 补采重跑**：五片（hro2-golden-inputs 存档件）经真实管线重跑启动（隔离 TM 库 Temp/b2_corpus_rerun_20260926/tm_b2.db、输出 Temp 同目录不入库、config/glossary.csv 词库、槽 A/B 生产默认模型），目的=取得行级术语冲突观察 CSV 更新 B2 基线；结果与掩码样本回填见后续追记。watch json 将按设计追加本次记录（观察闸数据自然增长，B3 观察口径不变）。
+- **B2 补采闭合（同日）**：五片全部 EXIT=0，术语冲突观察 CSV 实产 **逻辑记录 92 条**（物理 95 行，jur-550 一条 actual_text 含两处换行多行字段致差 3，解析后 6 字段规整）；词级=マンコ 44/お客様 37/チンチン 7/クリ 2/ざこ 1/イク 1/ちんぽ 0（ちんぽ 聚合 1 条本轮零命中，如实呈现）；行级 ≥30 门槛起额闭合（92≫30），docs/B2-门②语料基线-20260926.md 演进式回填（补采更新块/并列小表/3.4 节 31 条掩码样本/缺口改写为已闭合），提取脚本 Temp/extract_b2_rerun.py 只读不入库；原始 CSV+质量报告归档树外 D:\SubTransJAV-internal-archive\B2-corpus-20260926\（公开仓库不入库）；watch json 自然增至 10 记录（09-24 五条+09-26 五条）。门②口径=基线移交复核，2026-10-16 截止前结案。
+
+### 尾巴修复批追记（2026-09-26，审计 L3/M2-②③+残余观察① [已实施，待提交]）
+
+- **L3 lmstudio 编码**：`_run_lms` subprocess.run 补 `encoding="utf-8", errors="replace"`（全文件唯一 subprocess 调用点）——消除 Windows locale（cp936）解码条件性 UnicodeDecodeError；删除 `_loaded_parallel` 从未消费的 `timeout` 死参数并同步 2 处调用点+1 处测试；+2 例防回退钉（mock 捕获 kwargs 断言编码参数）。TimeoutExpired 孙进程挂死问题按约定未动另行排期。
+- **M2-② POSIX 释放顺序竞态**：`ArtifactLockHandle.release()` 重排双分支——msvcrt 维持 解锁→close→remove（区域锁未解文件不可删）；fcntl 改**持锁先 os.remove（unlink-under-lock，非阻塞锁语义下安全）→解锁→close**，消除 close 与 remove 窗口内他人同 inode 获锁后被 remove 脚下抽锁、第三进程建新文件致双"同键"锁的竞态；幂等卫句与 OSError suppress 保留，docstring 写明两平台差异理由；+源码钉与 Windows 行为不变测试。
+- **M2-③ 锁键大小写误判**：`in_sha1` 无条件 `.lower()` 改 `os.path.normcase`（Windows 小写化=既有大小写不敏感行为不变；POSIX 原样=Foo.srt/foo.srt 不再误判同键误拒）；docstring 注明 normcase 语义随平台、锁为运行期临时件无持久化兼容问题。
+- **D11 残余观察①（二选一裁定=文档标注）**：不扩清陈旧表（扩表会在 quality_report=False 运行中无备份删除上轮成品伴生件，违背备份语义），改 `_remove_stale_risk_reports` docstring 裁定记录+行动层清单文档第 5 条显式记录（两 CSV 在 quality_report=False 运行中不重写不清理，重跑即自然重算）。
+- **验证**：全量 **1115 passed + 1 skipped**（1108+1→+7 只增不减）；ruff 0；mypy 门禁 0。工作区现存三批待提交（批二 9 文件三段脚本 commit_0926_batch2.sh、批三 7 文件三段脚本 commit_0926_batch3.sh，BASE 均=95216aa，互不重叠）。
+
 ## [2026-09-25] [D2026-0925-02] 批次 6 处置与 1.3.1 开工五决策（D7-D10）三轮记录 [已拍板·实施中]
 
 **用户指令**：每决策选项与子智能体三轮讨论再终选，最终报告逐项写终选。评议方=decision-critic（agent_73f16180），R1 评议→R2 主模型逐项回应→R3 终评，全程三轮闭环，无 [PRESSURE-OVERRIDE]。
