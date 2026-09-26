@@ -164,6 +164,7 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
       deepseek_key / zen_key / custom_key: str
       source_filter: str                闸门0 源侧幻觉检测档位 strict|default|off（缺省 default 不传参）
       auto_synopsis: bool               剧情自摘要（默认 True；显式 False 才传 --no-auto-synopsis）
+      adaptive_thresholds: bool         条目级阈值自适应（H4b，默认 False；勾选才传 --adaptive-thresholds）
       dry_run: bool                     试运行（仅生成执行计划，不调用模型）
       verbose: bool
     """
@@ -262,6 +263,10 @@ def _build_refine_args(options: dict[str, Any]) -> list[str]:
     # 剧情自摘要（默认开启；仅显式关闭时传反转开关）
     if options.get("auto_synopsis") is False:
         args.append("--no-auto-synopsis")
+
+    # H4b 条目级阈值自适应（默认关闭；显式勾选才传旗标）
+    if options.get("adaptive_thresholds"):
+        args.append("--adaptive-thresholds")
 
     # 试运行：仅生成执行计划，不调用模型、不产出字幕
     if options.get("dry_run"):

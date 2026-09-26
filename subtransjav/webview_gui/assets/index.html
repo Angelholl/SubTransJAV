@@ -307,6 +307,9 @@
       <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="synopsis_title" title="剧情自摘要（Beta）：默认开启，摘要仅注入翻译提示词，不产生任何输出内容">
         <input type="checkbox" id="refineAutoSynopsis" checked> <span data-i18n="synopsis_label">剧情自摘要</span>
       </label>
+      <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="adaptive_thresholds_title" title="条目级阈值自适应：需上游 Balanced 模式的 asr_telemetry.jsonl，缺失时按默认阈值执行并在风险清单标注">
+        <input type="checkbox" id="refineAdaptiveThresholds"> <span data-i18n="adaptive_thresholds_label">阈值自适应</span>
+      </label>
       <label style="display:flex; align-items:center; gap:4px;" data-i18n-title="dry_run_title" title="试运行：仅生成执行计划，不调用模型、不产出字幕">
         <input type="checkbox" id="refineDryRun"> <span data-i18n="dry_run_label">试运行</span>
       </label>

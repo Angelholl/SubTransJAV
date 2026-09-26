@@ -181,6 +181,8 @@ const MSG = {
     sf_title: '闸门0 送翻前源侧幻觉检测档位：严格=叠加启发式删除 | 标准=仅明确幻觉删除 | 关闭=关闭检测',
     synopsis_label: '剧情自摘要',
     synopsis_title: '剧情自摘要（Beta）：默认开启，摘要仅注入翻译提示词，不产生任何输出内容',
+    adaptive_thresholds_label: '阈值自适应',
+    adaptive_thresholds_title: '条目级阈值自适应：需上游 Balanced 模式的 asr_telemetry.jsonl，缺失时按默认阈值执行并在风险清单标注',
     dry_run_label: '试运行',
     dry_run_title: '试运行：仅生成执行计划，不调用模型、不产出字幕',
     fallback_local_label: '云端故障时本地接管',
@@ -1368,6 +1370,8 @@ function closeAbout() {
       verbose: !!($('debugLogging') || {}).checked,
       source_filter: (($('refineSourceFilter') || {}).value || 'default'),
       auto_synopsis: !($('refineAutoSynopsis') && !$('refineAutoSynopsis').checked),
+      // H4b 条目级阈值自适应：默认不勾选不传旗标（api.py 侧按需转 --adaptive-thresholds）
+      adaptive_thresholds: !!($('refineAdaptiveThresholds') || {}).checked,
       dry_run: !!($('refineDryRun') || {}).checked,
       // 翻译记忆库：勾选取消时才传 no_tm（--no-tm）；路径/阈值非空才传
       no_tm: !!($('refineTmEnable') && !$('refineTmEnable').checked),
