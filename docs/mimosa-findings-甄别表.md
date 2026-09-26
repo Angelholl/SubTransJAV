@@ -1,16 +1,17 @@
 # Mimosa 扫描发现三态甄别表（v1.3.1 D7a-3，D2026-0925-02）
 
 - **数据源**：`C:\Users\57850\.mimosa\security-scans\project-84b400c5f32332301acf457f\scan-2026-09-24T17-54-12.317Z-a0276cc48beb\findings.json`
-- **Seal digest**：`sha256:53010c48d878099dfb2c3b91443593f3654baf79619c60063efbaa44bae080da`（seal.json，artifacts 含 findings.json sha256:51623f83…）
+- **Seal digest（历史锚：2026-09-24 首扫基线，下表甄别结论即对该次快照作出）**：`sha256:53010c48d878099dfb2c3b91443593f3654baf79619c60063efbaa44bae080da`（seal.json，artifacts 含 findings.json sha256:51623f83…）
+- **Seal digest（2026-09-26 复扫后新基线）**：`sha256:79eae27d882b5b250dc2bac8574dd2ed3accd42cc29adbf0fa19f485bedecd2e`，findingCount=**24**，零新增；净减 2 = `tools/tm_promote.py` SQL 字面量化与 `create_shortcut.py` 换 `subprocess` 两处修复在复扫中兑现消除；依赖扫描 completion=completed / packagesScanned=60 / matchedAdvisories=1。
 - **行号声明**：下表 line 号为扫描时点快照，会随代码演进而漂移；以 `identity.anchor`（findings.json 内 sha256 锚）为准做身份比对，行号仅作定位便利。
-- **口径修正声明**：主控下发口径按 :786 分类相加为 25≠26；本表以 findings.json 实际数据为准：**20 路径穿越 + 2 SSRF + 1 SQL 注入 + 1 命令注入 + 2 弱随机 = 26 条**。
+- **口径修正声明（双基线并列）**：旧基线（2026-09-24 首扫，即上行历史锚 seal）——主控下发口径按 :786 分类相加为 25≠26；该次以 findings.json 实际数据为准：**20 路径穿越 + 2 SSRF + 1 SQL 注入 + 1 命令注入 + 2 弱随机 = 26 条（历史口径，仅指首扫快照）**。新基线（2026-09-26 复扫，即上新基线 seal）——findingCount=**24 条**，零新增，净减 2 = tm_promote.py SQL 注入 1 条与 create_shortcut.py 命令注入 1 条兑现消除。两引擎口径差异分列有先例：**D2026-0921-03 27/26 分列**。
 
 三态定义：
 1. **已修复**：本轮改动消除（入库）。
 2. **树外签注**：目标文件 UNTRACKED/.gitignore，不入仓库基线；本机一次性处置/留存声明，不构成仓库基线修复面（UNTRACKED 2 文件 3 条统一用此表述；Temp 瞬态脚本不修，留存期间深扫面不减）。
 3. **留痕维持**：本地单机工具，无不可信输入面，维持现状并留痕判据。
 
-## 三态统计：①已修复 1 ｜ ②树外签注 3 ｜ ③留痕维持 22
+## 三态统计（双基线并列）：旧基线（2026-09-24 首扫，26 条，历史口径）：①已修复 1 ｜ ②树外签注 3 ｜ ③留痕维持 22 ｜ 新基线（2026-09-26 复扫，24 条）：上式净减 ①中 tm_promote.py SQL 1 条与 ②中 create_shortcut.py 1 条（兑现消除，①已从扫描面消除）→ ②剩 2（Temp/build_blind_pack.py 弱随机）｜ ③ 22 不变
 
 ---
 

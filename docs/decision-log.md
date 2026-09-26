@@ -1162,6 +1162,33 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **残余观察（非阻塞）**：①quality_report=False 时分歧/术语 CSV 陈旧残留——扩清陈旧表至五件或文档标注二选一留痕；②重翻台账契约语义入 docstring。
 - **实施交下轮按本契约执行**（前置修复+三地基+执行器）。本轮 decision-log 曾出现"Edit 后被外部进程还原"异常（提交链执行时磁盘内容已回退致空提交）——**教训：docs 追记后须在提交前 grep 自证内容在位，提交后 git show 复核**。
 
+### 前置修复执行追记（2026-09-26，开工首件四项落位 [已执行，待用户终端提交]）
+
+- **W1a 生命周期修复（HRO-1）✅**：`_remove_stale_risk_reports` 调用点上移至 `_run_single_v2_impl` 内 `if cfg.quality_report:` 块之前（无条件清理语义保持，先于含导读 json 在内的全部伴生成品写点，风险清单 write_reports 原位不动）；端到端五件存活契约测试落位（final_cn/质量报告.txt/导读 json/分歧复核 CSV/术语冲突观察 CSV 全存活 + fail_b 注入真实风险事件验风险清单覆盖写 + 词表注入验术语 CSV 落盘），红绿核验=还原旧码复现"本轮新写导读被同轮清理删除"（v2_outputs docstring 调用点描述同步）。
+- **48h 审计 H1 ✅**：app.js 13 个 camelCase 悬空调用点对齐键表现有 snake_case 键（键表零改动零新增键，:878 noFilesTitle 系键表 camelCase 段既有键不属悬空不误改）+test_strings_and_shortcut 新增"JS 内 MSG.x 引用 ⊆ 键表"反向悬空钉；GUI 已验证=B5 三层（真实窗口启动存活 14s 受控终止/桥接层含于全量/node --check）。
+- **48h 审计 M1 ✅**：mypy_baseline 退出码校验（rc≥2 或 rc=1 且零错误行——典型 No module named mypy——判环境故障拒绝 PASS；--update 同门拒写基线防垃圾覆盖）+4 例测试（rc=0 通过/rc=1 基线内通过/rc=1 零错误行拒绝/rc=2 拒写基线）。
+- **48h 审计 M2 ✅**：artifact_lock 三态契约——同键冲突抛新异常 ArtifactLockConflict（调用方转 RefineError 单文件失败隔离）；机制性 OSError（非冲突 errno）打印警告降级返回 None（调用方无锁继续，不再误拒）；无锁实现警告一次降级。冲突 errno 集=EACCES/EAGAIN/EWOULDBLOCK/EDEADLOCK(EDEADLK)（文件 open 成功前提下 EACCES 只能来自他方持锁）；回归四路径（真实双获锁冲突/EACCES 冲突/EIO 降级/无实现降级）。
+- **基线更新**：全量 **1066 passed + 1 skipped**（1057+1→+9：guard 1/mypy_baseline 4/strings 1/pipeline e2e 1/artifact_lock 2，只增不减）；mypy 门禁 --check 退出 0（存量 0/当前 0/基线外 0）；ruff 全仓零告警；Mimosa 深扫 seal 79eae27d… **24 findings**（D7a 预警的 26→24 兑现，零新增，24 转为新基线）。审计 LOW（L1 提示词语义/L3 lmstudio/L4 客户端泄漏）与 D11 残余观察仍挂账未修。
+- **执行通道**：Mimosa git-gate 拦截 ZCode 内提交（历史误报文件，与待提交 12 文件零交集）——按 [[standing mode]]（D2026-0921-03）走用户终端脚本直提，五段语义提交（guard/mypy/H2+M2/H1/docs），脚本 Temp/commit_0926_five_segments.sh，暂存区非空即停+分段计数断言，不含 push。
+
+### 三地基实施追记（2026-09-26，D11 契约①②③⑥ [已实施，待用户终端提交]）
+
+- **地基三（⑥）**：post_validate 告警结构化——check_and_fix_translation_errors 签名三→四元组（+structured_warnings：index/timing/severity/message/category 五键；字符串 warnings 文案逐字节不变，quality_report #{idx} 反解路径零影响；severity 按 warn_only 口径=warning/critical，dewei 经 YAML 实证 warn_only=false 取 critical）；_apply_fallback_rules 五→六元组贯穿 v2_rules→pipeline_v2→全部测试调用点；RiskEvent additive 字段 timing_range/entry_timings（只进 asdict 路径=风险清单.json/事件 payload，md 表格与 summary_lines 不感知，钉测试固化）；RiskCollector.add_entry_ranged 集中式 helper（entry_range "12-15" 惯例 min-max、timing_range 首末条、entry_timings 全列表、空列表安全；docstring 钉闸门0 不建风险事件走 add_summary_line 防双计；本批零生产调用点，执行器批接线）。
+- **地基二（③）**：resolve_final_block 官方映射落 quality_report.py（精确 index 匹配为主、不做 timing 猜测、合并块 index 非单射=同 index 取列表顺序首个、禁算术外推找不到返回 None）；:603 懒加载 from pipeline_v2 改指 v2_premerge._timing_span（拆分后零 facade 反向依赖）；四位移 fixture 契约测试（预合并合并 index 空洞/cleaner 删除重编号恢复/隔离区移出保留其余 index/语言过滤伪条目 index 0 重号——各自用真实 _premerge_entries/_align_orig_by_timing/quarantine_review 复现机制）。
+- **地基一（①②）**：导读 json version 1→2 加 items[]（结构化告警+untranslated 全量两来源，按 index 升序；字段=index/timing/category/message/current_text（resolve_final_block 映射，None=整条缺失"不可自动重翻"）/source_excerpt（源文前 40 仅展示）/status 恒 "open"/severity 恒 None（H4b 预留）；txt 渲染路径零改动，有界投影=译文全量、源文截断、无渲染章节）；build_quality_report 加 structured_warnings 可选参（默认 None 旧调用零影响）；write_guide_json/companions/查看器消费字段零改动（查看器 items 渲染归行动层 GUI 批）。
+- **等价域纪律（D8 三地基 5 纪律）兑现**：动工前确认 post-guidebar/post-sqlfix 快照完好（R3 定案口径）；地基后 hro2_gate capture 重拍 post-foundations-20260926（打桩全真管线，配置指纹 ctx 22272/并发 1/TM on/synopsis off 不变）vs post-guidebar **compare EXIT=0**（final 逐字节全等/报告归一化全等）——三地基在等价域零扰动，与"additive 只进 json"设计一致，逐处归类=无差异可归类。
+- **基线更新**：全量 **1078 passed + 1 skipped**（1066+1→+12：post_validate 3/d11_foundations 3/resolve_final_block 4/quality_report 2，只增不减）；ruff 零告警；mypy 门禁 0。
+- **执行通道**：pipeline_v2.py/test_pipeline_v2.py 为 H2/M2 与三地基共同载体，为保证每段提交独立可编译，refine 层合并一段提交；提交脚本合并版 Temp/commit_0926_all_segments.sh（五段：guard/mypy/refine 层合并/gui/docs），暂存区非空即停+23 文件集断言+恰五段断言，不含 push。
+
+### 执行器批与查看器实施追记（2026-09-26，D11 契约④⑤+验收门 [已实施，待用户终端提交]）
+
+- **执行器（⑤）**：新建 refine/action_retranslate.py——读清单（校验 version==2/items/stem）→--entries 解析（"3,7,12-15" 惯例，非法退出 2）→目标块按 item.timing 与 final srt 块 timing **精确字符串匹配**（timing=身份标识；歧义/缺 timing 记 failed 不猜）→源文恢复（--action-source parse_srt 建 timing→源文映射，未命中退化 source_excerpt 标 source_partial）→串行重翻（并发 1、永不写 TM；槽 B 默认，--action-model 经 dataclasses.replace 换模型；客户端经 _make_action_client 模块级注入点便于测试/扩展）→失败最小质量门（非空/非旧文/无 [未翻译] 前缀/非纯 ASCII/过 is_fluent_zh——与隔离区回捞同口径；不过保留原文 outcome=failed）→**恒等式硬断言**（条数/timing 全等+仅目标块 text 变化，失败抛 AssertionError 不落盘）→apply 覆盖 final（不另做备份文件，台账 old_text 即回滚依据）→台账 {stem}_重翻记录.json 累积追加（index/timing/category/old_text/new_text/model_used/outcome/reason/ts/source_partial）→导读快照刷新（write_guide_json 重算 companions、generated_at 同源、current_text 重定位、顶层加 retranslated_at、conclusions/sections 保真）→标陈旧打印（txt/分歧 CSV/术语 CSV 三件）。dry-run 缺省零写入；--action-sample 供 5 条小样对比工作流（槽 B 默认 vs --action-model 各跑后 diff 台账）。
+- **CLI（④）**：行动层参数组六参（--action-retranslate/--entries/--action-source/--action-model/--action-sample/--apply），config_from_args 后早退分流（同 _handle_tm_commands 形态；置于日志 Tee 前以保证退出码 0/1/2/3 传播）；**参数不进 RefineConfig=天然不进 _CONFIG_FIELDS**（负向钉固化：字段不在 _CONFIG_FIELDS 且哈希不变）。已知边界：`python -m subtransjav.refine` 裸调 main() 不传播行动层退出码（console script 正常），__main__.py 改 sys.exit(main()) 列入下批小修。
+- **台账生命周期**：备份表 7→8、写前清 3→4（+_重翻记录.json，成品伴生件写前清旧）；delete_resume_artifacts 不收编（A5 先例）；三处契约测试同步（备份 8 件/清理 4 件/deliverables 八件不碰/清四件）。run_v2 侧：_run_single_v2_impl 路径解析后台账存在告警不阻断（管线启动侧，覆盖 GUI 路径）。
+- **实施首件交付物（"可离线重建/标陈旧"清单）**：docs/行动层可离线重建与标陈旧清单.md——final_cn.srt=可离线重建（build_srt 整文件重建+恒等式）；导读 json=可离线重建（快照刷新，结论区保真度注记）；txt/分歧复核 CSV/术语冲突观察 CSV=**标陈旧**（需 merge_stats/gate0/校验告警等管线态，离线不可得；重跑管线自然重算）——D11"重算范围四件"的逐件归类依据即此清单，偏离点显式留痕。
+- **查看器 items 渲染（D11 验收门 GUI 批）**：index.html 面板加 #guideItems 容器+guide_items_title 锚；app.js guideRender 增 items 渲染（index/category/timing/message/现译截断 80 字；current_text=null 显示"不可自动重翻"；>50 条渲染前 50+汇总行；全部 json 字段走既有 esc() 转义防注入）；MSG 键表 +5 键（guide_items_title/guide_items_none/guide_item_current_label/guide_item_unresolvable/guide_items_more）；+2 静态钉用例。GUI 已验证=B5 三层（真实窗口启动存活 14s 受控终止/桥接层含于全量/node --check；点击流黑盒不可自动化）。
+- **基线更新**：全量 **1099 passed + 1 skipped**（1078+1→+21：执行器 19 用例+查看器钉 2，只增不减）；ruff 零告警；mypy 门禁 0（新增 action_retranslate 全程注解）；CLI --help 冒烟过（含"行动层"参数组）。
+
 ## [2026-09-25] [D2026-0925-02] 批次 6 处置与 1.3.1 开工五决策（D7-D10）三轮记录 [已拍板·实施中]
 
 **用户指令**：每决策选项与子智能体三轮讨论再终选，最终报告逐项写终选。评议方=decision-critic（agent_73f16180），R1 评议→R2 主模型逐项回应→R3 终评，全程三轮闭环，无 [PRESSURE-OVERRIDE]。
@@ -1175,6 +1202,13 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **实施序（R3 定案）**：D9 口径测量→main.py cast PR→7b③ 受限实验→7a/7c/D10 并行；D8 三地基动工前确认 post-guidebar/post-sqlfix 快照完好。
 - **实施留痕**：D9+7b=c25（pyproject/main.py cast/mypy_baseline.py/mypy-baseline.txt 空基线/ci.yml 去 || true+钉版/markers+pytestmark）；批次 6+D10=c26（tm_promote 字面量化/create_shortcut 树外签注/甄别表/buffering=1+回归 3 例/guard+5 例）；**主模型终验：全量 1054 passed+1 skipped、mypy 本地含 gui 0 错（51 文件）、mypy_baseline --check 退出码 0（硬门禁生效）、guard 144 tracked 零命中、缓冲回归 3 passed、ruff 零告警**。create_shortcut.py 为 UNTRACKED 树外文件不入库（签注态）。
 - **1.3.1 状态**：批次 6 结清（三件全部落账）；D9 硬门禁生效；1.3.1 主体（行动层三地基+执行器、legacy providers 清理、C1 持久化档位实施、force-resume UI、7b③ gui 腿实验）按本条目终选排期推进。
+
+### CI 首跑修正追记（2026-09-26）
+
+- **D9 推演证伪与修正**：ubuntu 腿 mypy 门禁首跑（3.12 腿）报 9 条基线外 attr-defined（raw 12 条按 行:code 去重：artifact_lock:50/:79 msvcrt、secrets:47/55/62/70 与 process_manager:36 与 main:359 ctypes.windll、main:255 winreg.OpenKey）——全部为 linux 运行平台下 typeshed 将 Windows API 置于 `sys.platform=="win32"` 护栏内的平台噪声，"CI 无 gui 0 错推演"不成立。修复口径=pyproject [tool.mypy] 钉 `platform = "win32"`（产品主口径单轨：DPAPI/msvcrt/winreg 均核心路径，与本地基线同口径），**非**写基线文件吞错；windows 腿无 mypy 门禁不受影响。
+- **D9 顺带（48h 审计 M1）**：mypy_baseline 补退出码校验防假绿（详见 D11 前置修复追记）。
+- **D10 顺带（48h 审计跨端兼容）**：guard 中文输出在 Windows CI cp1252 控制台 UnicodeEncodeError——干净仓也退出 1（test_clean_repo_exits_0/test_staged_mode_only_checks_staged 两用例红）。修复=reconfigure(errors="backslashreplace") 不挂 encoding（本地 cp936 控制台中文不变，窄码页降级 \uXXXX 转义）+PYTHONIOENCODING=cp1252 干净仓回归钉。
+- **Mimosa 基线更新**：深扫 seal 79eae27d… 24 findings（较 D7a 口径 26 净减 2，tm_promote SQL 字面量化等修复兑现、双引擎口径差异如实分列），零新增；此后以 24 为新基线，甄别表 seal/计数表述更新列入下轮 docs 批。
 
 ### L2 收尾复查裁定（2026-09-25 深夜，三处均误报）
 
@@ -1198,6 +1232,7 @@ ftkd-030 事故（2026-09-23 02:13）：跑批中 LM Studio 引擎被卸载，�
 - **v1.3.0 发布完成**：annotated tag v1.3.0（→e9d1631，refs/tags/v1.3.0=e0fb31f9）push 复核在位；GitHub Release id 396740632（https://github.com/Angelholl/SubTransJAV/releases/tag/v1.3.0 ，name"v1.3.0 — 架构版收口"，REST API 经代理 10808）。
 - **7b③ 探针结果（run 36157469106，#1，completed/success）**：windows-latest+3.12 装 `.[dev,gui]` 成功（pywebview/pythonnet 无头安装无 RuntimeError）；**collected=1058 与主口径（1057+1）一致**——两 kill-criterion 均通过；tests/test_gui_api **35 passed**。**探针判定=成功，按定案二成功不自动纳入 required（gui-probe.yml 保持 workflow_dispatch 手动），纳入与否待二次评审。**"collected 断言基线按 HEAD 实测"精度修正的必要性获得验证（1058≠历史 1046，固定值假触发如期发生）。
 - **剩余移交**：行动层实施（前置修复+三地基+执行器，D11 契约）与 B2 门②语料收集（截止 2026-10-16，责任人暂定主模型）交新会话按 D2026-0925-03 定案推进。
+- **B2 门②语料基线首期（2026-09-26）**：docs/B2-门②语料基线-20260926.md 落档——聚合权威口径复核一致（7 词 93 条，Temp/translation_memory/glossary_conflict_watch.json 五记录）；行级挖掘实证 **口径内真实样本 0 条**（Logs/*.txt 97 文件 11824 行全行扫描零命中：行级明细落盘在工作区"术语冲突观察.csv"产物、仓库外，.txt 日志仅存聚合行——Logs/9-24-1631.txt 五条 CSV 生成通知与 watch JSON 逐一吻合）；关联变体层 7 条去重（イク族 5+まんこ/ちんこ 各 1，○ 掩码）明确标注非口径不折算；缺口如实（0/30，含关联仍差 23），补采路径=后续运行按片归档术语冲突观察 CSV/工单收集/构造集补位前先经用户确认；不造数凑 30，滚动更新至 2026-10-16 门②截止。一次性提取脚本 Temp/extract_b2_corpus.py（只读，Temp 不入库）。同批：甄别表新增 2026-09-26 复扫 seal（79eae27d…，24 findings 零新增）与旧 seal 历史锚并列，计数改双基线并列表述（净减 2=tm_promote SQL 字面量化+create_shortcut 换 subprocess 兑现），26 条 findingId 甄别结论行原样未动。
 
 ### 决策日志字段
 
