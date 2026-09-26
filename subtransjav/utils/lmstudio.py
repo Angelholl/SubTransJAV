@@ -80,12 +80,13 @@ def _loaded_ctx(root: str, model: str, log=None) -> int:
     return 0
 
 
-def _loaded_parallel(lms: str, model: str, timeout: float, log=None) -> int:
+def _loaded_parallel(lms: str, model: str, log=None) -> int:
     """读取已载模型的实际并发数（lms ps --json 条目顶层 parallel 字段）。
 
     ps schema 无正式兼容承诺，全面容错：条目未找到 / 字段缺失 /
     值非数值（null/字符串/布尔）/ 非正数 / JSON 解析失败 / 超时 /
     非零退出码 → 一律返回 0（拿不到 ≠ 失配，宁可放过也不误判重载）。
+    ps 探测超时由模块常量 _PS_TIMEOUT_S 统一控制（本函数不收超时参数）。
     """
     warn = log or (lambda m: None)
     if not lms:
@@ -123,7 +124,12 @@ def _loaded_parallel(lms: str, model: str, timeout: float, log=None) -> int:
 
 
 def _run_lms(lms: str, args: list, timeout: float) -> subprocess.CompletedProcess:
+    # 必须显式 encoding="utf-8"：缺省时 Windows 按 locale（cp936）解码
+    # 子进程输出，模型名/输出含非 GBK 字符会条件性 UnicodeDecodeError，
+    # 且不被上层 except 捕获；lms 输出为 UTF-8，errors="replace" 兜底
+    # 保证任何字节序列都可解码（钉死见 tests/test_lmstudio_encoding.py）。
     return subprocess.run([lms, *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
                           timeout=timeout)
 
 
@@ -172,8 +178,7 @@ def ensure_lmstudio_model(endpoint: str, model: str,
     parallel_mismatch = False
     parallel_actual = 0
     if (not need_load) and parallel is not None and int(parallel) > 0:
-        parallel_actual = _loaded_parallel(_find_lms(), model, load_timeout,
-                                           log=log)
+        parallel_actual = _loaded_parallel(_find_lms(), model, log=log)
         parallel_mismatch = (parallel_actual > 0
                              and parallel_actual != int(parallel))
 
@@ -215,7 +220,7 @@ def ensure_lmstudio_model(endpoint: str, model: str,
         loaded = _loaded_ids(root)
         if model in loaded:
             if parallel is not None:
-                p_actual = _loaded_parallel(lms, model, load_timeout, log=log)
+                p_actual = _loaded_parallel(lms, model, log=log)
                 if p_actual > 0 and p_actual != int(parallel):
                     log(f"   ⚠️ 引擎未兑现并发配置: 请求 parallel={int(parallel)}，"
                         f"实际 {p_actual}（可能被引擎钳制），不二次重载")

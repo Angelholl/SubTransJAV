@@ -41,7 +41,8 @@ class _FakeRun:
         self.ps_timeout = ps_timeout
         self.ps_returncode = ps_returncode
 
-    def __call__(self, args, capture_output, text, timeout):
+    def __call__(self, args, capture_output, text, timeout,
+                 encoding=None, errors=None):
         self.calls.append(list(args))
         sub = args[1:2]
         if sub == ["ps"]:
@@ -272,9 +273,9 @@ def test_real_ps_schema_parses_parallel(monkeypatch):
                         lambda *a, **k: types.SimpleNamespace(
                             returncode=0, stdout=_ps([PS_ENTRY]), stderr=""))
     logs = []
-    got = lm._loaded_parallel("lms-fake",
-                              "qwen3.8-27b-uncensored-joyfox-aggressive",
-                              5, log=logs.append)
+    got = lm._loaded_parallel(
+        "lms-fake", "qwen3.8-27b-uncensored-joyfox-aggressive",
+        log=logs.append)
     assert got == 2
     assert logs == []
 

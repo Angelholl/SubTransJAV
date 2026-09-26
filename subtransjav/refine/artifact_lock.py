@@ -56,23 +56,42 @@ class ArtifactLockHandle:
         self._released = False
 
     def release(self) -> None:
+        """释放锁并尽力删除锁文件（幂等；OSError 全程吞掉，OS 兜底随进程回收）。
+
+        两平台删除时序有意不同（源码钉见 tests/test_artifact_lock.py）：
+        - POSIX（fcntl 分支）：持锁状态下先删锁文件、再解锁、再关闭
+          （unlink-under-lock，非阻塞锁语义下安全）。若先关闭再删除，
+          关闭与删除之间的窗口内其他进程可在同一路径新建锁文件并持锁，
+          随后的删除会把他人锁文件从脚下删掉，第三个进程再建新文件加锁
+          → 两进程各持不同 inode 的"同键"锁；持锁期先删则竞争者要么
+          打开旧 inode 加锁被拒（我们仍持锁），要么打开删除后新建的
+          inode，与我们不再相干；
+        - Windows（msvcrt 分支）：文件区域被本进程锁定期间无法删除，
+          必须先解锁并关闭句柄才能删，故维持 解锁→关闭→删除 原序；
+          同路径竞态由"open 成功后加锁冲突"的语义兜住。
+        """
         if self._released:
             return
         self._released = True
-        try:
-            if msvcrt is not None:
+        if msvcrt is not None:
+            try:
                 os.lseek(self._fd, 0, os.SEEK_SET)
                 msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
-            elif fcntl is not None:
-                # Windows 存根无 fcntl 符号，仅 POSIX 运行时走到（下行忽略 attr-defined）
-                fcntl.flock(self._fd, fcntl.LOCK_UN)  # type: ignore[attr-defined]
-        except OSError:
-            pass                        # 释放失败不阻断：OS 兜底随进程回收
-        finally:
+            except OSError:
+                pass                        # 释放失败不阻断：OS 兜底随进程回收
             with contextlib.suppress(OSError):
                 os.close(self._fd)
             with contextlib.suppress(OSError):
                 os.remove(self.path)
+        elif fcntl is not None:
+            # 持锁状态下先删锁文件（消除 close→remove 窗口竞态，见 docstring）。
+            # Windows 存根无 fcntl 符号，仅 POSIX 运行时走到（下行忽略 attr-defined）
+            with contextlib.suppress(OSError):
+                os.remove(self.path)
+            with contextlib.suppress(OSError):
+                fcntl.flock(self._fd, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+            with contextlib.suppress(OSError):
+                os.close(self._fd)
 
     # 上下文管理器糖衣
     def __enter__(self):
@@ -125,10 +144,16 @@ def acquire_artifact_lock(input_path: str, output_dir: str):
 
     锁键 = 输入文件 sha1 前 16 位 + output_dir（锁文件物理落在
     output_dir 内，天然按输出目录分域）。
+
+    路径归一用 os.path.normcase（语义随平台）：Windows 下小写化——
+    大小写不敏感文件系统上同一路径的大小写变体归一为同键（保持既有
+    行为）；POSIX 下原样——大小写敏感文件系统上 ``Foo.srt`` 与
+    ``foo.srt`` 是不同文件，不再被误判为同键互斥。锁文件为运行期
+    临时件，键口径变化无持久化兼容问题。
     """
     global _warned_no_lock_impl
     in_sha1 = hashlib.sha1(
-        Path(input_path).resolve().as_posix().lower().encode("utf-8")
+        os.path.normcase(Path(input_path).resolve().as_posix()).encode("utf-8")
     ).hexdigest()
     lock_path = str(Path(output_dir) / f".{in_sha1[:16]}.subtransjav.lock")
     try:
